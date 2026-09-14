@@ -45,7 +45,11 @@ test('client 无条件导出 name/inject/apply（否则面板静默不注册）'
 })
 
 test('client bundle 内联了纯逻辑函数（UI 直接引用闭包里的名字）', () => {
-  for (const fn of ['function summarize(', 'function sortTasks(', 'function toggleStatus(', 'function pct(']) {
+  for (const fn of [
+    'function summarize(', 'function sortTasks(', 'function toggleStatus(', 'function pct(',
+    'function priorityLabel(', 'function nextPriority(', 'function delegateText(',
+    'function flattenNodes(', 'function focusList(', 'function filterCounts(',
+  ]) {
     assert.ok(client.includes(fn), 'bundle 缺少内联函数 ' + fn)
   }
 })
@@ -63,8 +67,9 @@ test('host 半身导出 name/inject/apply', () => {
 
 test('host 半身注册了完整的 plan_* 工具集', () => {
   for (const tool of [
-    'plan_show', 'plan_goal_add', 'plan_kr_add', 'plan_task_add',
-    'plan_task_set', 'plan_kr_set', 'plan_goal_set',
+    'plan_show', 'plan_goal_add', 'plan_kr_add', 'plan_task_add', 'plan_todo_add',
+    'plan_task_set', 'plan_kr_set', 'plan_goal_set', 'plan_priority_set',
+    'plan_delegate_set', 'plan_delegate_receipt', 'plan_delegated',
     'plan_snapshot', 'plan_history', 'plan_restore',
   ]) {
     assert.ok(host.includes("'" + tool + "'"), 'host 缺少工具 ' + tool)
@@ -73,7 +78,7 @@ test('host 半身注册了完整的 plan_* 工具集', () => {
 
 test('host 半身暴露 /api/workbench 数据面', () => {
   assert.match(host, /'\/api\/workbench' \+ path/)
-  for (const route of ['/get', '/task-set', '/init', '/snapshot', '/history']) {
+  for (const route of ['/get', '/task-set', '/node-set', '/todo-add', '/init', '/snapshot', '/history']) {
     assert.ok(host.includes("route('" + route + "'"), 'host 缺少路由 ' + route)
   }
 })
