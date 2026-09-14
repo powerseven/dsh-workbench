@@ -244,7 +244,7 @@ agent 会把这条产出作为证据附在完成项上（`plan_todo_set` 的
 后续规划见 [docs/ROADMAP.md](./docs/ROADMAP.md)。
 
 ```sh
-npm test        # 构建 + 247 个测试
+npm test        # 构建 + 252 个测试
 ```
 
 ## 许可证
