@@ -5,8 +5,9 @@
 ## 这个项目是什么
 
 `dsh-workbench` 是一个 **DeepSeek Harness（dsh）Web 插件**，做「个人工作台」：
-工作计划的**待办 / 计划 / 子计划 / 委派**四条主线，加**重要程度（管控强度）**与
-**版本留档**；数据以 Markdown/JSON 落在用户自己的工作区里、纳入 git。
+工作计划的**待办 / 计划 / 子计划 / 委派**四条主线，加**重要程度（管控强度）**
+——它决定这个节点要走多少流程：周期与负责人、逾期提醒、落后预警、完成证据——
+再加**版本留档**；数据以 Markdown/JSON 落在用户自己的工作区里、纳入 git。
 
 它不是独立 web 应用。它跑在 `dsh web` 里，作为侧边栏的一个 tab 存在。
 
@@ -33,7 +34,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（170 个）
+node --test test/*.test.mjs   # 跑测试（213 个）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -78,15 +79,35 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 每个节点都可以带这几个**可选**字段（缺省行为与加字段之前完全一致）：
 
 - `priority`：`high` / `normal`（默认） / `low` —— **管控强度开关，不是彩色标签**。
-  `high` 要求计划有周期与负责人、待办有截止；缺口由 `nodeWarnings()` 以**警告**
-  形式指出而**不硬拦**——在捕获的那一刻硬拦，人会干脆不记。默认 `normal` 也是有意的：
-  默认 `high` 会让人人标 `high`，管控机制立刻失效。
+  `high` 要求计划有周期与负责人、待办有截止、完成要有证据；缺口由 `nodeWarnings()`
+  以**警告**形式指出而**不硬拦**——在捕获的那一刻硬拦，人会干脆不记。默认 `normal`
+  也是有意的：默认 `high` 会让人人标 `high`，管控机制立刻失效。
 - `delegate`：`{ to, at, expectAt, status }`，`status` ∈ `pending` / `accepted` /
   `declined` / `returned`。两种逾期**分开算**：`overdueReceipt`（该去问一句「接不接」）
   与 `overdueWork`（该去催进度）。重新委派会重置回执——换人意味着上一轮作废。
 - `doneAt` / `startedAt`：完成与开工时间戳，是所有时间维度统计（周报）的上游。
   离开 `done` 会**清掉** `doneAt`，否则被撤回的完成会一直出现在「本周完成」里。
 - `metric`：`{ target, current, unit }`，可计数的节点按它算进度（原量化 KR 的字段）。
+  写入是**逐字段合并**，不是整体替换：只传 `current` 不能把 `target` 抹掉（见坑 #10）。
+- `evidence`：`[{ kind, ref, note?, at }]`，**追加式**（不是覆盖）。`kind` ∈
+  `file` / `session` / `command` / `link` / `note`，缺省按 `note`。同 `kind` + 同 `ref`
+  视为同一条，不重复追加。只有 `file` 会被核验（查文件是否存在，相对工作区根解析），
+  其余四种只记录、不假装能验。
+
+**三个派生量不落盘**（与 `progress` 同理，避免两个真相源漂移）：
+
+- `pace` / `behind`：配速 = `(今天 − start) / (end − start)` 与 `nodeProgress` 比，
+  差 ≥ `PACE_THRESHOLD`（0.15）算落后。只在「有完整周期 + 周期正在走」时才算，
+  四种情况一律返回 `null`：没周期 / `start` 还没到 / 已过 `end`（那是**逾期**，
+  两种信号分开才能触发不同动作）/ 已完成或已放弃。
+- `unverified`：已完成且 `evidence` 为空。它是本插件**独有的议题**——人类工具不需要
+  防自己，但一个会自己打勾的 agent 需要。与 `nodeWarnings` **分开**：警告是「补元信息」，
+  它是「去核验」，混在一个 ⚠ 里两个信号都会变糊；它靠「筛选 + 清单」暴露，
+  不靠 ⚠。`⚠` 里只对 `high` 档加了一条「完成但没有证据」——那一档才是承诺了完整流程的。
+
+**这三个派生量的口径要在 `annotate`（host）和 `logic.cjs`（client）两边一致。**
+不需要算数的（`unverified`）可以在客户端兜底；要算日期的（`behind`）**一律只读服务端标注**，
+不在客户端重算——重算就会出现「面板与服务端算出不同答案」而没人知道哪个对。
 
 **`type` 可以改（换型）**：`plan_node_set` 传 `type` 就把节点在原位改成计划或待办——
 随手记的待办后来发现要拆，提升为计划继续拆；拆完发现不必，降回待办。两条约束：
@@ -96,8 +117,15 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 筛选、角标**静默错值**。
 
 **写入路径唯一**：面板（HTTP 面）与 agent 工具都调用 `store.js` 的同一组函数
-（`applyFields` / `setStatus` / `setNodeType` / `setPriority` / `setDelegate` / `setReceipt`），
-谁都不另写一套；每一次写入都自动归档版本，所以没有「绕过留档」的路径。
+（`applyFields` / `setStatus` / `setNodeType` / `setPriority` / `setDelegate` /
+`setReceipt` / `addEvidence`），谁都不另写一套；每一次写入都自动归档版本，
+所以没有「绕过留档」的路径。
+
+**加能力的默认姿势是「不加工具、不加路由」**：落后预警是整个算出来的派生量，
+完成证据是 `plan_node_set` / `plan_todo_set` 上的一个可选参数（`evidenceKind` /
+`evidenceRef` / `evidenceNote`，一次一条，要多条就调多次——正好契合追加语义）。
+工具数维持在 13 个、路由 9 条。**工具面按节点组织这条线要守住**：每冒出一个概念
+就长一套 API，agent 花在「该用哪个」上的注意力迟早超过事情本身。
 
 **为什么 JSON 为真相、Markdown 为视图**：计划是需要程序增删改查的树（进度汇总、
 按 id 定位、版本回滚），直接解析 Markdown 需要稳健解析器且格式漂移会静默丢数据；
@@ -154,6 +182,23 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
    `todoCounts` 数计划与待办、`collectNodes` 定位节点，最初都只遍历了顶层——
    表现为「嵌套计划里的待办不计数」「新建节点与深层节点重号」。改数据结构后
    第一件事是把所有遍历改成递归，并用测试覆盖「第三层」这种深度。
+
+10. **「不传就不动」对**每个**字段都要成立，包括嵌在对象里的。** `metric` 曾经是整体
+    替换，于是 `plan_node_set { current: 10 }`（只想更新当前值）把 `target` 静默抹掉，
+    进度从「10/12」变成「没有指标、按状态算」——看起来只是数字变小，想不到是丢了数据。
+    现在 `metric` 逐字段合并。**加字段时顺手问一句：它是个对象吗？那合并还是替换？**
+    这条是 `test/host.test.mjs` 的配速用例顺带抓出来的（想验「进度跟上后标记消失」，
+    结果标记没消失，因为 `target` 没了）。
+
+11. **`file` 类证据的核验基准是工作区根目录，不是插件目录、也不是进程 cwd。**
+    `evidenceWarnings(node, root)` 要显式传 root——`withProgress(plan, store.root)`
+    一路带下来，别再改成从别处取路径。另外 `path.join(root, '/abs')` 会把绝对路径
+    拼成相对路径（`join('/a','/b')` → `/a/b`），所以绝对路径必须先判 `startsWith('/')`。
+
+12. **客户端不重算要算日期的派生量。** `behind` 只读服务端标注（阈值/日期只在
+    `store.js` 一处实现）；只有像 `unverified` 这种**不含阈值与日期运算**的判定
+    才允许在 `logic.cjs` 里兜底。原因是重算会出现「面板显示落后、服务端说没落后」
+    而没人知道哪个对——这正是 NFR-2「派生量不落盘」要避免的那类漂移。
 
 ## 约定
 
