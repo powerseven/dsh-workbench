@@ -565,6 +565,156 @@ test('HTTP 面板接口缺少 sessionId 时报错（不能猜工作区）', asyn
   assert.match(payload.error, /缺少 sessionId/)
 })
 
+// ------------------------------------------------- 落后预警 / 完成证据
+
+/** 相对今天偏移 n 天的 YYYY-MM-DD——配速要一个「正在走」的周期。 */
+const dayOffset = (n) => {
+  const d = new Date()
+  d.setDate(d.getDate() + n)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return d.getFullYear() + '-' + m + '-' + dd
+}
+
+/** 在 plan_show 的结果里按标题挖一个节点（整棵树，不限层级）。 */
+const shownNode = async (title) => {
+  const shown = await call('plan_show', {})
+  return { plan: shown.plan, node: flatNodes(shown.plan.nodes).find((n) => n.title === title) }
+}
+
+test('落后的计划会被 plan_show 标出来，进度跟上后标记消失', async () => {
+  await call('plan_node_add', {
+    title: '落后预警测试计划', type: 'plan', start: dayOffset(-10), end: dayOffset(10), target: 10, current: 0,
+  })
+  const before = await shownNode('落后预警测试计划')
+  assert.equal(before.node.behind, true, '时间过了一半、进度 0 → 落后')
+  assert.equal(before.node.pace.expected, 0.5)
+  assert.equal(before.node.pace.actual, 0)
+  assert.ok(before.plan.behind.some((x) => x.id === before.node.id), 'behind 清单里要有它')
+  assert.ok(before.plan.control.behind >= 1)
+
+  // 进度跟上之后标记自动消失——它是派生量，不需要谁去清。
+  const updated = await call('plan_node_set', { node: '落后预警测试计划', current: 10 })
+  assert.equal(updated.plan.control.behind, 0)
+  const after = await shownNode('落后预警测试计划')
+  assert.equal(after.node.behind, false)
+  assert.equal(after.node.pace.actual, 1, 'target 没被只传 current 的那次更新抹掉')
+  assert.ok(after.node.pace.gap < 0, '超前于期，gap 为负')
+})
+
+test('待办没有周期，只讲截止不讲配速', async () => {
+  await call('plan_node_add', { title: '一个有截止的待办', type: 'todo', due: dayOffset(3) })
+  const { node } = await shownNode('一个有截止的待办')
+  assert.equal(node.pace, null, '待办的落后表现就是逾期，不走配速')
+  assert.equal(node.behind, false)
+})
+
+test('已过周期但没完成的计划算逾期，不算落后（两种信号分开）', async () => {
+  await call('plan_node_add', {
+    title: '逾期但不算落后的计划', type: 'plan', start: dayOffset(-20), end: dayOffset(-1),
+  })
+  const { node } = await shownNode('逾期但不算落后的计划')
+  assert.equal(node.overdue, true)
+  assert.equal(node.pace, null, '已过结束日交给逾期信号，不重复报落后')
+  assert.equal(node.behind, false)
+})
+
+test('plan_todo_set 标完成时附证据：落盘、可核验、退出无证据清单', async () => {
+  // 造一个真实存在的交付物——file 类证据是按工作区根解析并核验的。
+  await writeFile(join(dir, '交付物.md'), '# 产物\n')
+  await call('plan_node_add', { title: '带证据的待办', type: 'todo' })
+  const r = await call('plan_todo_set', {
+    todo: '带证据的待办', status: 'done', evidenceKind: 'file', evidenceRef: '交付物.md',
+  })
+  assert.equal(r.unverified, false, '附了证据就不该进「无证据」')
+  assert.deepEqual(r.evidenceWarnings, [], '文件确实在工作区里')
+  assert.equal(r.todo.evidence.length, 1)
+
+  const disk = await readPlan()
+  const saved = flatNodes(disk.nodes).find((n) => n.title === '带证据的待办')
+  assert.equal(saved.evidence[0].kind, 'file')
+  assert.equal(saved.evidence[0].ref, '交付物.md')
+  assert.ok(saved.evidence[0].at, '证据要带时间戳')
+
+  const { plan } = await shownNode('带证据的待办')
+  assert.equal(plan.unverified.some((x) => x.title === '带证据的待办'), false)
+})
+
+test('无证据的完成项进 unverified 清单（agent 打的勾要能一次审查）', async () => {
+  await call('plan_node_add', { title: '没证据的完成', type: 'todo' })
+  const r = await call('plan_todo_set', { todo: '没证据的完成', status: 'done' })
+  assert.equal(r.unverified, true)
+
+  const { node, plan } = await shownNode('没证据的完成')
+  assert.equal(node.unverified, true)
+  assert.ok(plan.unverified.some((x) => x.title === '没证据的完成'))
+  assert.ok(plan.control.unverified >= 1)
+})
+
+test('证据指向不存在的文件会被标出来（唯一能机器核验的一类）', async () => {
+  await call('plan_node_add', { title: '证据指向空气', type: 'todo' })
+  const r = await call('plan_todo_set', {
+    todo: '证据指向空气', status: 'done', evidenceKind: 'file', evidenceRef: '不存在的产物.md',
+  })
+  assert.equal(r.evidenceWarnings.length, 1)
+  assert.match(r.evidenceWarnings[0], /证据所指的文件不存在/)
+
+  const { node } = await shownNode('证据指向空气')
+  assert.equal(node.evidenceWarnings.length, 1, '标注也要带上，面板才有得显示')
+})
+
+test('note 类证据只记录、不核验（不假装能验）', async () => {
+  await call('plan_node_add', { title: '只说一句的完成', type: 'todo' })
+  const r = await call('plan_todo_set', {
+    todo: '只说一句的完成', status: 'done', evidenceRef: '口头确认过，无需文件',
+  })
+  assert.equal(r.todo.evidence[0].kind, 'note', '不传 kind 按 note')
+  assert.deepEqual(r.evidenceWarnings, [])
+  assert.equal(r.unverified, false)
+})
+
+test('同一条证据重复提交不会追加两条（agent 重试不该污染留档）', async () => {
+  await call('plan_node_add', { title: '重复附证据的待办', type: 'todo' })
+  await call('plan_node_set', { node: '重复附证据的待办', evidenceKind: 'link', evidenceRef: 'https://example.com/x' })
+  await call('plan_node_set', { node: '重复附证据的待办', evidenceKind: 'link', evidenceRef: 'https://example.com/x' })
+  const disk = await readPlan()
+  const saved = flatNodes(disk.nodes).find((n) => n.title === '重复附证据的待办')
+  assert.equal(saved.evidence.length, 1)
+})
+
+test('plan_node_set 传错证据类型时报错，不写半截数据', async () => {
+  await call('plan_node_add', { title: '证据类型写错', type: 'todo' })
+  await assert.rejects(
+    () => call('plan_node_set', { node: '证据类型写错', evidenceKind: 'filee', evidenceRef: 'x.md' }),
+    /证据类型必须是/,
+  )
+})
+
+test('HTTP /todo-set 也能附证据（工具与数据面走同一条路径）', async () => {
+  const added = await post('/node-add', { sessionId: SESSION_ID, title: '面板上带证据完成' })
+  const id = added.payload.node.id
+  const done = await post('/todo-set', {
+    sessionId: SESSION_ID, todo: id, status: 'done', evidenceKind: 'session', evidenceRef: 'sess-42',
+  })
+  assert.equal(done.payload.ok, true)
+  const disk = await readPlan()
+  const saved = flatNodes(disk.nodes).find((n) => n.id === id)
+  assert.equal(saved.evidence[0].kind, 'session')
+  assert.equal(saved.evidence[0].ref, 'sess-42')
+})
+
+test('HTTP /node-set 不带状态也能补证据（补交凭据不必再动状态）', async () => {
+  const shown = await post('/get', { sessionId: SESSION_ID })
+  const target = flatNodes(shown.payload.plan.nodes).find((n) => n.title === '没证据的完成')
+  assert.equal(target.unverified, true, '前提：它当前是无证据的完成项')
+
+  const fixed = await post('/node-set', {
+    sessionId: SESSION_ID, node: target.id, evidenceKind: 'file', evidenceRef: '交付物.md',
+  })
+  assert.equal(fixed.payload.ok, true)
+  assert.equal(fixed.payload.node.unverified, false, '补了证据就不再是待核验项')
+})
+
 // ------------------------------------------------------------ 版本留档
 
 test('每一次写入都留下了快照（面板与 agent 都不绕过归档）', async () => {

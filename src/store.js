@@ -36,14 +36,19 @@
  * 迁移是**无损**的——老 id（g1 / k1 / t1）原样保留，因为历史会话消息与
  * .versions/ 里的快照都还在引用它们。新节点统一用 `n` 前缀，与老 id 不冲突。
  *
- * 三个横切概念全部是**可选字段**（缺省行为与加之前完全一致）：
+ * 横切概念全部是**可选字段**（缺省行为与加之前完全一致）：
  *
  *   priority   重要程度 high | normal | low —— 决定这个节点要走多少流程
  *   delegate   委派 { to, at, expectAt, status } —— 带回执，不是一次性指派
  *   doneAt     完成时间戳 —— 所有「本周做了什么」类统计的上游
+ *   evidence[] 完成证据 { kind, ref, note?, at } —— 追加式，可核验的交付凭据
+ *   metric     { target, current, unit } —— 可计数的节点按它算进度
  *
- * 进度是**派生量、不落盘**（NFR-2）：只要磁盘上有一份数据，进度就只有一个
- * 算法能算出来，不会出现「面板显示的和服务端算的不一致」。
+ * 派生量**不落盘**（NFR-2）：只要磁盘上有一份数据，派生量就只有一个算法能
+ * 算出来，不会出现「面板显示的和服务端算的不一致」。
+ *   progress   递归算出的完成度
+ *   pace       配速（期望进度 vs 实际进度）与落后标记
+ *   unverified 已完成但没有证据 —— 「AI 说它干完了」能不能被审查
  */
 
 import { existsSync } from 'node:fs'
@@ -74,12 +79,31 @@ export const TODO_STATUS = ['todo', 'doing', 'done', 'dropped']
  */
 export const PRIORITY = ['high', 'normal', 'low']
 export const DEFAULT_PRIORITY = 'normal'
+/**
+ * 落后阈值：期望进度领先实际进度这么多（15 个百分点）才算「落后」。
+ *
+ * 为什么不取「任何落后都报」：刚开工时（时间过了 5%、进度 0%）是正常状态，
+ * 报出来人就会开始忽略这个标记——**被忽略的标记比没有标记更糟**，因为它
+ * 同时消耗了「有标记 = 要处理」这个信任。15% 的含义是「时间过了一大半、
+ * 进度还不到一半」这类真的需要调整的偏离。
+ */
+export const PACE_THRESHOLD = 0.15
+/**
+ * 完成证据的类型。**固定五种，不做「智能推断」**：
+ * 推断会猜错（一个路径既可能是文件也可能是命令），而猜错比不猜更糟——
+ * 上限是「记录」，下限是「记错」。agent 自己清楚产出的是文件还是命令，
+ * 这类区分跟「这算 goal 还是 kr」那种人为区分是两回事。
+ * 验证方式：只有 file 能机器判真假（查文件是否存在），其余四种只记录、
+ * 不假装能核验（见 evidenceWarnings）。
+ */
+export const EVIDENCE_KIND = ['file', 'session', 'command', 'link', 'note']
 /** 委派回执状态：pending=待接受, accepted=已接受, declined=已拒绝, returned=已交回。 */
 export const DELEGATE_STATUS = ['pending', 'accepted', 'declined', 'returned']
 /** 中文标签，只用于「给人看的文本」（PLAN.md、工具输出文案），不参与程序判断。 */
 export const PRIORITY_LABEL = { high: '高', normal: '中', low: '低' }
 export const DELEGATE_LABEL = { pending: '待接受', accepted: '已接受', declined: '已拒绝', returned: '已交回' }
 export const TYPE_LABEL = { plan: '计划', todo: '待办' }
+export const EVIDENCE_LABEL = { file: '文件', session: '会话', command: '命令', link: '链接', note: '说明' }
 
 /** 今天的日期（YYYY-MM-DD，本地时区）。逾期判定统一走它，便于测试注入。 */
 export function todayStr(now = new Date()) {
@@ -351,6 +375,82 @@ export function isDueWithin(node, days = 7, today = todayStr()) {
   return a >= today && a <= limit
 }
 
+// ------------------------------------------------------- 配速 / 落后预警
+
+/** 两个 YYYY-MM-DD 之间的天数（b − a）。任一侧不合法返回 undefined。 */
+function daysBetween(a, b) {
+  const ta = Date.parse(a + 'T00:00:00Z')
+  const tb = Date.parse(b + 'T00:00:00Z')
+  if (!Number.isFinite(ta) || !Number.isFinite(tb)) return undefined
+  return (tb - ta) / 86400000
+}
+
+/**
+ * 配速：拿「按周期现在应该到哪儿」和「实际到哪儿」比。
+ *
+ *   期望进度 = (今天 − start) / (end − start)
+ *   实际进度 = nodeProgress(node)
+ *   落后     = 期望 − 实际 ≥ PACE_THRESHOLD
+ *
+ * 只在「有完整周期 + 周期正在走」时才算，四种情况一律返回 null：
+ *
+ *   没填周期         没有基准，就没有「落后」——继续走逾期逻辑
+ *   start 还没到     「还没开始」不是「落后」
+ *   已经过了 end     这是**逾期**，不是落后。两种信号分开标，才能触发不同动作
+ *                     （逾期 = 去问为什么没交付；落后 = 现在就该调整节奏）
+ *   已完成 / 已放弃   已经结束的事没有节奏问题
+ *
+ * 待办没有 start/end，所以**待办不讲配速，待办的落后表现就是逾期**；
+ * 计划讲配速、待办讲截止，两条线各管一段。
+ *
+ * @param progress 可选：调用方已经算过的完成度（省一次递归重算）。
+ */
+export function paceOf(node, progress, today = todayStr()) {
+  if (node === null || node === undefined || typeof node !== 'object') return null
+  if (node.status === 'done' || node.status === 'dropped') return null
+  const start = opt(node.start)
+  const end = opt(node.end)
+  if (start === undefined || end === undefined) return null
+  if (end <= start) return null
+  if (today < start) return null
+  if (today > end) return null
+  const span = daysBetween(start, end)
+  const elapsed = daysBetween(start, today)
+  if (span === undefined || elapsed === undefined) return null
+  const expected = clamp01(elapsed / span)
+  const actual = clamp01(Number.isFinite(progress) ? progress : nodeProgress(node))
+  const gap = expected - actual
+  return { expected, actual, gap, behind: gap >= PACE_THRESHOLD }
+}
+
+/**
+ * 「落后了」清单：带完整周期、周期正在走、且期望进度领先实际进度
+ * 超过阈值的节点，差距大的排前面。
+ *
+ * 它是「兑现重要度高承诺」的那一半——`FR-M2` 承诺了落后预警，数据
+ * （start / end / 进度）本来就都在，缺的只是这一步比较。
+ */
+export function behindList(plan, today = todayStr()) {
+  const out = []
+  for (const item of collectNodes(plan, 'any')) {
+    const progress = nodeProgress(item.node)
+    const pace = paceOf(item.node, progress, today)
+    if (pace === null || !pace.behind) continue
+    out.push({
+      id: item.node.id,
+      type: item.type,
+      title: item.node.title ?? '',
+      parent: item.parent === null || item.parent === undefined ? null : item.parent.id,
+      path: item.path,
+      priority: priorityOf(item.node),
+      progress,
+      pace,
+    })
+  }
+  out.sort((a, b) => b.pace.gap - a.pace.gap)
+  return out
+}
+
 // ------------------------------------------------- 重要程度 / 时间戳 / 委派
 
 /** 读重要程度，缺失或脏值一律当 normal——老数据因此零迁移。 */
@@ -514,6 +614,10 @@ export function delegateState(node, today = todayStr()) {
  *
  * 「负责人」只对计划节点要求——待办默认就是自己负责，若硬要求填负责人，
  * 每一条高优先级待办都会报警告，警告随即失去意义。
+ *
+ * 「完成要证据」只对重要度为「高」的节点要求：这一档才承诺了完整流程。
+ * 其余档位缺证据不进这里，但仍会被 `isUnverified` 标出来（见该函数注释）——
+ * 两类信号分开，这个 ⚠ 才保得住「有它 = 有缺口要补」的信息量。
  */
 export function nodeWarnings(node, type) {
   const out = []
@@ -525,11 +629,124 @@ export function nodeWarnings(node, type) {
   if (p === 'high') {
     if (period === undefined) out.push(leaf ? '重要度为「高」，需要截止日期' : '重要度为「高」，需要周期（起止）')
     if (!leaf && owner === undefined) out.push('重要度为「高」，需要负责人')
+    if (node?.status === 'done' && evidenceOf(node).length === 0) {
+      out.push('重要度为「高」，完成但没有证据')
+    }
   } else if (p === 'normal' && period === undefined) {
     out.push(leaf ? '重要度为「中」，建议补一个截止日期' : '重要度为「中」，建议补一个结束日期')
   }
   const d = delegateState(node)
   if (d !== null && d.overdueReceipt) out.push('委派给 ' + d.to + ' 已逾期未回执')
+  return out
+}
+
+// ------------------------------------------------------------- 完成证据
+
+/** 读证据列表（永远返回数组，缺省为空）。 */
+export function evidenceOf(node) {
+  const list = node === null || node === undefined ? undefined : node.evidence
+  return Array.isArray(list) ? list : []
+}
+
+/**
+ * 追加一条完成证据。**追加而不是覆盖**：证据是「这件事是怎么完成的」的
+ * 连续记录，覆盖语义会让补第二条时把第一条抹掉。
+ *
+ * 同 `kind` + 同 `ref` 视为同一条，不重复追加——agent 重试、或人在面板上
+ * 又点了一次「附上这个文件」，都不应该产生两条一模一样的证据。
+ * （这不算破坏「追加」语义：重复的条目不含任何新信息，只会让审查变糊。）
+ *
+ * `kind` 缺省 `note`（只记录、不核验）。缺省而不是报错，是为了不让
+ * 「忘了一个枚举值」变成一次失败的写入；写错枚举值仍然报错。
+ */
+export function addEvidence(node, input = {}, now = new Date()) {
+  if (node === null || node === undefined || typeof node !== 'object') {
+    throw new Error('证据要挂在节点上')
+  }
+  const kind = opt(input.kind) ?? 'note'
+  if (!EVIDENCE_KIND.includes(kind)) {
+    throw new Error('证据类型必须是 ' + EVIDENCE_KIND.join(' / ') + ' 之一，收到：' + String(input.kind))
+  }
+  const ref = opt(input.ref)
+  if (ref === undefined) {
+    throw new Error('证据需要一个 ref：文件路径 / 会话 id / 命令 / 链接 / 一句话说明')
+  }
+  const iso = (now instanceof Date ? now : new Date(now)).toISOString()
+  if (!Array.isArray(node.evidence)) node.evidence = []
+  const dup = node.evidence.find((e) => e !== null && e !== undefined && e.kind === kind && e.ref === ref)
+  if (dup !== undefined) {
+    dup.at = iso
+    const patch = opt(input.note)
+    if (patch !== undefined) dup.note = patch
+    return dup
+  }
+  const item = { kind, ref, at: iso }
+  const note = opt(input.note)
+  if (note !== undefined) item.note = note
+  node.evidence.push(item)
+  return item
+}
+
+/**
+ * 已完成但没有证据。**这是本插件独有的议题**：人类工具不需要防自己，
+ * 但一个会自己把任务标完成的 agent 需要——否则「AI 帮我标完了」这句话
+ * 没有任何可验证性。
+ *
+ * 与 `nodeWarnings` 分开，是因为它们该触发不同动作：
+ *   warning     缺元信息 → 补填即可
+ *   unverified  缺凭据   → 需要人去核验（或让 agent 补交证据）
+ * 混在一个 ⚠ 里，两个信号都会变糊。
+ *
+ * 刻意**不再加一个「必须附证据才能标完成」的硬拦**：在打勾那一刻硬拦，
+ * 只会激励 agent 顺手编一条假证据——那比没有证据更糟，因为你会以为它是真的。
+ * 靠「可一次性审查的清单」而不是「写入时的门槛」来防，才防得住。
+ */
+export function isUnverified(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  return node.status === 'done' && evidenceOf(node).length === 0
+}
+
+/**
+ * 「已完成但无证据」清单，最近完成的排前面——审查刚打完的勾，
+ * 比翻一周前的旧账有用（旧的那些证据已经无从补起）。
+ */
+export function unverifiedList(plan) {
+  const out = []
+  for (const item of collectNodes(plan, 'any')) {
+    if (!isUnverified(item.node)) continue
+    out.push({
+      id: item.node.id,
+      type: item.type,
+      title: item.node.title ?? '',
+      parent: item.parent === null || item.parent === undefined ? null : item.parent.id,
+      path: item.path,
+      priority: priorityOf(item.node),
+      doneAt: opt(item.node.doneAt) ?? null,
+    })
+  }
+  out.sort((a, b) => String(b.doneAt ?? '').localeCompare(String(a.doneAt ?? '')))
+  return out
+}
+
+/**
+ * 证据里**能机器判真假的那一条**：`kind: 'file'` 会去查文件是否存在
+ * （相对路径按工作区根解析）。其余四种（会话 / 命令 / 链接 / 说明）只记录、
+ * 不核验——不假装能验。
+ *
+ * 文件产出恰好是最常见的形态，所以这唯一的核验点覆盖了多数实际场景；
+ * 而它也是唯一不会误报的核验点：「文件在不在」是客观事实，
+ * 「这条命令有没有真的跑过」不是。
+ */
+export function evidenceWarnings(node, root) {
+  const out = []
+  if (typeof root !== 'string' || root === '') return out
+  for (const e of evidenceOf(node)) {
+    if (e === null || e === undefined || e.kind !== 'file') continue
+    const ref = opt(e.ref)
+    if (ref === undefined) continue
+    const abs = ref.startsWith('/') ? ref : join(root, ref)
+    if (!existsSync(abs)) out.push('证据所指的文件不存在：' + ref)
+  }
   return out
 }
 
@@ -569,6 +786,9 @@ export function delegatedList(plan, today = todayStr()) {
  *   overdue    逾期未完成数
  *   week       7 天内到期数
  *   warnings   存在管控缺口的节点数
+ *   behind     落后于周期（配速）的节点数
+ *   unverified 已完成但没有证据的节点数
+ *   inbox      收件箱条数（含已完成的）
  *   inboxOpen  收件箱里还没归位的待办数
  */
 export function controlSummary(plan, today = todayStr()) {
@@ -581,6 +801,11 @@ export function controlSummary(plan, today = todayStr()) {
     overdue: open.filter((x) => isOverdue(x.node, today)).length,
     week: open.filter((x) => isDueWithin(x.node, 7, today)).length,
     warnings: nodes.filter((x) => nodeWarnings(x.node, x.type).length > 0).length,
+    behind: open.filter((x) => {
+      const pace = paceOf(x.node, nodeProgress(x.node), today)
+      return pace !== null && pace.behind
+    }).length,
+    unverified: nodes.filter((x) => isUnverified(x.node)).length,
     inbox: counts.inbox,
     inboxOpen: counts.inboxOpen,
   }
@@ -616,6 +841,11 @@ export function makeNode(plan, input = {}) {
 /**
  * 把一批可选字段写进节点（**不传就不动**）。「新增」与「修改」共用同一份
  * 字段清单——两边各写一份的话，迟早会出现「新增支持某字段、修改不支持」。
+ *
+ * `metric` 是**合并**而不是整体替换：只传 `current` 时不能把 `target` 抹掉。
+ * 「不传的字段保持不动」这条对每个字段都得成立，包括嵌在对象里的那几个——
+ * 否则「更新一下当前值」会静默地丢掉目标值，而进度随即从「3/12」变成
+ * 「没有指标、按状态算」，看起来只是数字变小了，根本想不到是丢了数据。
  */
 export function applyFields(node, input = {}) {
   const set = (key, value) => {
@@ -632,7 +862,12 @@ export function applyFields(node, input = {}) {
   set('due', input.due)
   if (opt(input.priority) !== undefined) setPriority(node, input.priority)
   const m = metricOf(input)
-  if (m !== undefined) node.metric = m
+  if (m !== undefined) {
+    const prev = node.metric !== null && node.metric !== undefined && typeof node.metric === 'object'
+      ? node.metric
+      : {}
+    node.metric = { ...prev, ...m }
+  }
   return node
 }
 
@@ -742,7 +977,7 @@ export function removeNode(plan, ref) {
  * 「共有的」是实情：老的三层里每层能带的字段不同，但迁移不该因此丢字段。
  */
 function copyCommon(src, dst) {
-  for (const key of ['owner', 'start', 'end', 'note', 'priority', 'delegate', 'doneAt', 'startedAt']) {
+  for (const key of ['owner', 'start', 'end', 'note', 'priority', 'delegate', 'doneAt', 'startedAt', 'evidence']) {
     if (src === null || src === undefined) continue
     if (src[key] !== undefined && src[key] !== null) dst[key] = src[key]
   }
@@ -883,7 +1118,7 @@ const pct = (n) => String(Math.round(n * 100)) + '%'
  * 里也是一眼能看出的层级；待办统一用任务列表语法，便于在 GitHub 上直接勾。
  */
 export function renderMarkdown(plan) {
-  /** 一个节点的附加标注（重要度 / 委派 / 完成时间）。 */
+  /** 一个节点的附加标注（重要度 / 委派 / 配速 / 证据 / 完成时间）。 */
   const extraOf = (node) => {
     const out = []
     const p = priorityOf(node)
@@ -893,6 +1128,18 @@ export function renderMarkdown(plan) {
       let s = '委派 ' + d.to + '（' + DELEGATE_LABEL[d.status] + (d.expectAt !== null ? '；期望 ' + d.expectAt : '') + '）'
       if (d.overdueReceipt) s += ' ⚠ 逾期未回执'
       out.push(s)
+    }
+    const pace = paceOf(node, nodeProgress(node))
+    if (pace !== null && pace.behind) {
+      out.push('⚠ 落后（应到 ' + pct(pace.expected) + '，实际 ' + pct(pace.actual) + '）')
+    }
+    const ev = evidenceOf(node)
+    if (ev.length > 0) {
+      out.push('证据 ' + ev.length + ' 条：' + ev
+        .map((e) => EVIDENCE_LABEL[e.kind] ?? e.kind ?? '证据')
+        .join('、'))
+    } else if (isUnverified(node)) {
+      out.push('⚠ 完成但无证据')
     }
     const done = dayOf(node.doneAt)
     if (done !== undefined) out.push('完成于 ' + done)
@@ -968,7 +1215,9 @@ export function renderMarkdown(plan) {
   const ctrl = controlSummary(plan)
   lines.push('- 管控：高重要度 ' + String(ctrl.high) + ' · 委派中 ' + String(ctrl.delegated)
     + ' · 逾期 ' + String(ctrl.overdue) + ' · 7 天内到期 ' + String(ctrl.week))
+  if (ctrl.behind > 0) lines.push('- 落后于周期：' + String(ctrl.behind) + ' 项（进度没跟上时间）')
   if (ctrl.warnings > 0) lines.push('- 管控缺口：' + String(ctrl.warnings) + ' 处待补（见各节点标注）')
+  if (ctrl.unverified > 0) lines.push('- 完成但无证据：' + String(ctrl.unverified) + ' 项待核验')
   lines.push('')
 
   for (const node of planNodes(plan)) {

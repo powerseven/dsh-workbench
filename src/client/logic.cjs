@@ -13,7 +13,8 @@
  * 数据形态与 host 半身的 store.js 一致（schema 2 递归树）：顶层 nodes[]，
  * 每个节点 type=plan | todo，plan 可挂 children。这里刻意**不做**类型判断的
  * 「智能」推断——服务端算好的标注（progress / warnings / delegateState /
- * overdue / dueSoon）优先，本地只在缺失时兜底，避免两边算出不同的答案。
+ * overdue / dueSoon / pace / behind / unverified）优先，本地只在缺失时兜底，
+ * 避免两边算出不同的答案。
  */
 
 /** 0..1 → 百分比整数文案。 */
@@ -246,6 +247,49 @@ function delegateText(node) {
   return out
 }
 
+// -------------------------------------------------------- 完成证据 / 落后
+
+/**
+ * 完成证据类型。必须与服务端 store.js 的 EVIDENCE_KIND 完全一致（顺序也一致）——
+ * 两个半身跨模块系统无法共享实现，靠 test/logic.test.mjs 的一条断言钉住。
+ */
+var EVIDENCE_KINDS = ['file', 'session', 'command', 'link', 'note']
+
+/** 证据类型 → 中文标签（悬停提示里用）。未知类型按「说明」兜底。 */
+function evidenceLabel(kind) {
+  if (kind === 'file') return '文件'
+  if (kind === 'session') return '会话'
+  if (kind === 'command') return '命令'
+  if (kind === 'link') return '链接'
+  return '说明'
+}
+
+/** 读证据列表（永远返回数组）。 */
+function evidenceList(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return []
+  return Array.isArray(node.evidence) ? node.evidence : []
+}
+
+/**
+ * 已完成但没有证据。优先读服务端标注；缺失时本地兜底——这条兜底不含任何
+ * 阈值或日期运算，与服务端 `isUnverified` 逐字等价，所以不存在
+ * 「两边算出不同答案」的风险（配速那种要算日期的就绝不在本地兜底）。
+ */
+function unverifiedOf(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  if (node.unverified === true) return true
+  return node.status === 'done' && evidenceList(node).length === 0
+}
+
+/** 一个节点的配速文案，如「应到 60% / 实际 35%」。服务端没给就不显示。 */
+function paceText(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return null
+  var p = node.pace
+  if (p === null || p === undefined || typeof p !== 'object') return null
+  if (typeof p.expected !== 'number' || typeof p.actual !== 'number') return null
+  return '应到 ' + pct(p.expected) + ' / 实际 ' + pct(p.actual)
+}
+
 /**
  * 把整棵树摊平成一维，带层级路径（如「n1 / n2」），供聚焦列表显示上下文。
  * 摊平是「筛选」视图的基础——筛选结果通常跨层级，树形结构反而不好读。
@@ -271,27 +315,42 @@ var FILTERS = [
   { id: 'high', label: '重要度高' },
   { id: 'delegated', label: '我委派出去的' },
   { id: 'week', label: '本周到期' },
-  { id: 'overdue', label: '逾期' }
+  { id: 'overdue', label: '逾期' },
+  { id: 'behind', label: '落后' },
+  { id: 'unverified', label: '无证据的完成项' }
 ]
 
 /**
- * 聚焦列表：按筛选器挑出未结束的节点，并排序（逾期 → 重要度高 → 快到期的在前）。
+ * 聚焦列表：按筛选器挑出节点，并排序（逾期 → 重要度高 → 快到期的在前）。
  * `all` 返回空数组——全部视图走树形渲染，不走扁平列表。
  */
 function focusList(plan, filterId, today) {
   if (typeof filterId !== 'string' || filterId === '' || filterId === 'all') return []
   var t = typeof today === 'string' && today !== '' ? today : todayStr()
+  // 「无证据的完成项」按定义就是**已完成**的节点，必须绕开「只看未结束」
+  // 这条默认规则——其余筛选器找的都是「待处理」，只有这个找的是「已处理但
+  // 没凭据」，它要审的恰恰是那些已经沉底的东西。
+  var includesClosed = filterId === 'unverified'
   var out = []
   var nodes = flattenNodes(plan)
   for (var i = 0; i < nodes.length; i++) {
     var x = nodes[i]
     var n = x.node
-    if (!isOpen(n)) continue
+    if (!includesClosed && !isOpen(n)) continue
     if (filterId === 'high' && n.priority !== 'high') continue
     if (filterId === 'delegated' && (n.delegateState === null || n.delegateState === undefined)) continue
     if (filterId === 'week' && n.dueSoon !== true) continue
     if (filterId === 'overdue' && !(n.overdue === true || (n.overdue === undefined && overdueFallback(n, t)))) continue
+    if (filterId === 'behind' && n.behind !== true) continue
+    if (filterId === 'unverified' && !unverifiedOf(n)) continue
     out.push(x)
+  }
+  if (filterId === 'unverified') {
+    // 最近完成的排前面——审查刚打完的勾，比翻一周前的旧账有用。
+    out.sort(function (a, b) {
+      return String(b.node.doneAt || '').localeCompare(String(a.node.doneAt || ''))
+    })
+    return out
   }
   var overdueOf = function (n) {
     return n.overdue === true || (n.overdue === undefined && overdueFallback(n, t))
@@ -385,6 +444,11 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     nextPriority: nextPriority,
     delegateLabel: delegateLabel,
     delegateText: delegateText,
+    EVIDENCE_KINDS: EVIDENCE_KINDS,
+    evidenceLabel: evidenceLabel,
+    evidenceList: evidenceList,
+    unverifiedOf: unverifiedOf,
+    paceText: paceText,
     flattenNodes: flattenNodes,
     FILTERS: FILTERS,
     focusList: focusList,

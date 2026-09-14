@@ -17,6 +17,7 @@ const {
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
   flattenNodes, FILTERS, focusList, filterCounts, moveTargets,
+  EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
 } = require('../src/client/logic.cjs')
 
 test('pct 四舍五入并夹取到 0..100', () => {
@@ -285,8 +286,11 @@ test('flattenNodes 对空计划与脏数据安全', () => {
   assert.equal(flattenNodes({ nodes: [{ children: 'nope' }] }).length, 1)
 })
 
-test('FILTERS 提供五个筛选项', () => {
-  assert.deepEqual(FILTERS.map((f) => f.id), ['all', 'high', 'delegated', 'week', 'overdue'])
+test('FILTERS 提供七个筛选项（顺序即界面上的顺序）', () => {
+  assert.deepEqual(
+    FILTERS.map((f) => f.id),
+    ['all', 'high', 'delegated', 'week', 'overdue', 'behind', 'unverified'],
+  )
 })
 
 test('focusList 的 all 返回空数组（全部视图走树形渲染）', () => {
@@ -339,11 +343,112 @@ test('focusList 在服务端没给 overdue 标注时本地兜底判定', () => {
 
 test('filterCounts 给出各筛选器的角标数（不含 all）', () => {
   const counts = filterCounts(annotatedPlan())
-  assert.deepEqual(Object.keys(counts).sort(), ['delegated', 'high', 'overdue', 'week'])
+  assert.deepEqual(Object.keys(counts).sort(), ['behind', 'delegated', 'high', 'overdue', 'unverified', 'week'])
   assert.equal(counts.high, 2)
   assert.equal(counts.delegated, 1)
   assert.equal(counts.overdue, 1)
   assert.equal(counts.week, 1)
+  assert.equal(counts.behind, 0, '没有 behind 标注的节点不计入')
+  assert.equal(counts.unverified, 1, 't3 是已完成且无证据的唯一一条')
+})
+
+// ------------------------------------------------- 完成证据 / 落后（新增筛选）
+
+/** 一个带「落后」与「有/无证据」标注的样例（服务端标注过的形态）。 */
+function annotatedPacePlan() {
+  return {
+    nodes: [
+      {
+        id: 'g1',
+        type: 'plan',
+        title: 'Q4 计划',
+        status: 'active',
+        priority: 'high',
+        start: '2026-09-01',
+        end: '2026-09-30',
+        behind: true,
+        pace: { expected: 0.5, actual: 0.2, gap: 0.3, behind: true },
+        children: [
+          { id: 'a', type: 'todo', title: '落后且在做的', status: 'doing', priority: 'normal', behind: true, pace: { expected: 0.5, actual: 0.2, gap: 0.3, behind: true } },
+          { id: 'b', type: 'todo', title: '正常', status: 'todo', priority: 'normal', behind: false, pace: { expected: 0.5, actual: 0.8, gap: -0.3, behind: false } },
+          // 有证据的完成项：不该出现在「无证据」清单里
+          { id: 'c', type: 'todo', title: '有证据的完成项', status: 'done', priority: 'normal', doneAt: '2026-09-10T02:00:00.000Z', evidence: [{ kind: 'file', ref: 'out/a.md', at: '2026-09-10T02:00:00.000Z' }] },
+          // 无证据的完成项：出现在「无证据」清单里
+          { id: 'd', type: 'todo', title: '无证据的完成项', status: 'done', priority: 'normal', doneAt: '2026-09-12T02:00:00.000Z' },
+        ],
+      },
+    ],
+  }
+}
+
+test('EVIDENCE_KINDS 与 host 的 EVIDENCE_KIND 完全一致（跨半身约定）', async () => {
+  const host = await import('../src/store.js')
+  assert.deepEqual(EVIDENCE_KINDS, host.EVIDENCE_KIND)
+})
+
+test('evidenceLabel 覆盖五种证据类型，未知值按「说明」兜底', () => {
+  assert.equal(evidenceLabel('file'), '文件')
+  assert.equal(evidenceLabel('session'), '会话')
+  assert.equal(evidenceLabel('command'), '命令')
+  assert.equal(evidenceLabel('link'), '链接')
+  assert.equal(evidenceLabel('note'), '说明')
+  assert.equal(evidenceLabel('乱写'), '说明')
+  assert.equal(evidenceLabel(undefined), '说明')
+})
+
+test('evidenceList 永远返回数组，对脏数据安全', () => {
+  assert.deepEqual(evidenceList({ evidence: [{ kind: 'note', ref: 'x' }] }).length, 1)
+  assert.deepEqual(evidenceList({ evidence: 'nope' }), [])
+  assert.deepEqual(evidenceList({}), [])
+  assert.deepEqual(evidenceList(null), [])
+})
+
+test('unverifiedOf 优先读服务端标注，缺失时按「done 且无证据」兜底', () => {
+  assert.equal(unverifiedOf({ status: 'done' }), true)
+  assert.equal(unverifiedOf({ status: 'done', evidence: [] }), true)
+  assert.equal(unverifiedOf({ status: 'done', evidence: [{ kind: 'note', ref: 'x' }] }), false)
+  assert.equal(unverifiedOf({ status: 'todo' }), false)
+  assert.equal(unverifiedOf({ status: 'dropped' }), false)
+  // 服务端已经判过时以其为准（标注是权威，本地不覆盖它）
+  assert.equal(unverifiedOf({ status: 'done', evidence: [{ kind: 'note', ref: 'x' }], unverified: true }), true)
+  assert.equal(unverifiedOf(null), false)
+})
+
+test('paceText 由服务端 pace 生成，缺标注时不显示', () => {
+  assert.equal(paceText({ pace: { expected: 0.5, actual: 0.2, gap: 0.3, behind: true } }), '应到 50% / 实际 20%')
+  assert.equal(paceText({ pace: null }), null)
+  assert.equal(paceText({}), null)
+  assert.equal(paceText(null), null)
+})
+
+test('focusList 的「落后」筛选只看未结束且标注落后的节点', () => {
+  const ids = focusList(annotatedPacePlan(), 'behind').map((x) => x.node.id)
+  assert.deepEqual(ids, ['g1', 'a'], 'g1 与 a 落后；b 没落后，c/d 已结束')
+})
+
+test('focusList 的「无证据的完成项」筛出已完成的节点（其余筛选器都只看未结束）', () => {
+  const items = focusList(annotatedPacePlan(), 'unverified')
+  assert.deepEqual(items.map((x) => x.node.id), ['d'], 'c 附了证据，不在里面')
+  assert.equal(items[0].path, 'g1 / d')
+  // 反向确认：别的筛选器不会把已完成的捞出来
+  assert.deepEqual(focusList(annotatedPacePlan(), 'behind').map((x) => x.node.id).includes('c'), false)
+})
+
+test('focusList 的「无证据的完成项」按完成时间倒序（最近的先审）', () => {
+  const plan = {
+    nodes: [
+      { id: 'old', type: 'todo', title: '上周完成的', status: 'done', doneAt: '2026-09-01T00:00:00.000Z' },
+      { id: 'new', type: 'todo', title: '刚完成的', status: 'done', doneAt: '2026-09-13T00:00:00.000Z' },
+      { id: 'none', type: 'todo', title: '没有时间戳的', status: 'done' },
+    ],
+  }
+  assert.deepEqual(focusList(plan, 'unverified').map((x) => x.node.id), ['new', 'old', 'none'])
+})
+
+test('filterCounts 把新增的两个筛选器也算进去', () => {
+  const counts = filterCounts(annotatedPacePlan())
+  assert.equal(counts.behind, 2)
+  assert.equal(counts.unverified, 1)
 })
 
 test('summarize 带上筛选角标', () => {

@@ -16,29 +16,41 @@
  * 作用在任意节点上；`type` 决定它是计划还是待办。原来的 goal/kr/task
  * 六件套是固定三层的产物——三套 API 做同一件事，agent 每次都得先想
  * 「这东西算 goal 还是 kr」，而这些区分对人本来就没有意义。
+ *
+ * 两个横切能力刻意**没有新工具**：落后预警是 `annotate` 算出来的派生量
+ * （有 start + end 才有配速），完成证据是 `plan_node_set` / `plan_todo_set`
+ * 上的一个可选参数。工具面按节点组织这条线要守住——每冒出一个概念就长一套
+ * API，agent 花在「该用哪个」上的注意力迟早超过事情本身。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DELEGATE_STATUS,
+  EVIDENCE_KIND,
   NODE_TYPE,
   PRIORITY,
   PlanStore,
   TODO_STATUS,
   TYPE_LABEL,
+  addEvidence,
   appendChild,
   applyFields,
+  behindList,
   childrenOf,
   controlSummary,
   delegateState,
   delegatedList,
   emptyPlan,
+  evidenceOf,
+  evidenceWarnings,
   isDueWithin,
   isOverdue,
+  isUnverified,
   makeNode,
   moveNode,
   nodeProgress,
   nodeWarnings,
+  paceOf,
   planNodes,
   planProgress,
   priorityOf,
@@ -52,6 +64,7 @@ import {
   todoCounts,
   todayStr,
   typeOf,
+  unverifiedList,
 } from './store.js'
 
 export const name = 'dsh-workbench'
@@ -101,33 +114,43 @@ function makeTool(name, description, parameters, execute) {
 /**
  * 给一个节点补上派生字段。这些字段**从不落盘**（NFR-2：派生量不落盘，
  * 免得两个真相源漂移）：
- *   type          节点类型（缺省按待办兜底，前端不必自己判断）
- *   progress      递归算出的完成度
- *   priority      缺省补成 normal
- *   warnings      按重要程度给出的管控缺口提示
- *   delegateState 委派的可判断形态（含两种逾期标记）
- *   overdue       是否逾期（含委派逾期）
- *   dueSoon       7 天内到期
+ *   type             节点类型（缺省按待办兜底，前端不必自己判断）
+ *   progress         递归算出的完成度
+ *   priority         缺省补成 normal
+ *   warnings         按重要程度给出的管控缺口提示
+ *   delegateState    委派的可判断形态（含两种逾期标记）
+ *   overdue          是否逾期（含委派逾期）
+ *   dueSoon          7 天内到期
+ *   pace / behind    配速与落后（只有完整周期才非空）
+ *   unverified       已完成但没有证据
+ *   evidenceWarnings 证据里能机器核验的那部分（文件是否存在）
+ *
+ * @param root 工作区根目录——核验 file 类证据要用它解析相对路径。
  */
-function annotate(node, today) {
+function annotate(node, today, root) {
   const type = typeOf(node)
+  const progress = nodeProgress(node)
   const out = {
     ...node,
     type,
-    progress: nodeProgress(node),
+    progress,
     priority: priorityOf(node),
     warnings: nodeWarnings(node, type),
     delegateState: delegateState(node, today),
     overdue: isOverdue(node, today),
     dueSoon: isDueWithin(node, 7, today),
+    pace: paceOf(node, progress, today),
+    unverified: isUnverified(node),
+    evidenceWarnings: evidenceWarnings(node, root),
   }
+  out.behind = out.pace !== null && out.pace.behind === true
   // 子节点递归标注，覆盖掉 `...node` 带上来的原始 children。
-  if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today))
+  if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today, root))
   return out
 }
 
-/** 给计划补上派生字段（进度、管控汇总、委派清单），返回给模型/前端时用。 */
-function withProgress(plan) {
+/** 给计划补上派生字段（进度、管控汇总、落后与无证据清单），返回给模型/前端时用。 */
+function withProgress(plan, root) {
   const today = todayStr()
   return {
     ...plan,
@@ -135,12 +158,43 @@ function withProgress(plan) {
     counts: todoCounts(plan),
     control: controlSummary(plan, today),
     delegated: delegatedList(plan, today),
-    nodes: planNodes(plan).map((node) => annotate(node, today)),
+    behind: behindList(plan, today),
+    unverified: unverifiedList(plan),
+    nodes: planNodes(plan).map((node) => annotate(node, today, root)),
   }
 }
 
 const str = (v) => (typeof v === 'string' ? v.trim() : '')
 const optStr = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined)
+
+/**
+ * 完成证据的参数组（`plan_node_set` / `plan_todo_set` 共用）。
+ *
+ * 为什么是三个平铺参数而不是一个对象数组：工具的 JSON Schema 只声明标量
+ * 最稳（provider 侧的校验会拒掉意外的形状），而「一次附一条、要附多条就
+ * 调多次」正好契合证据的**追加**语义——顺便还省掉了「传数组会不会覆盖」
+ * 这个要解释的问题。
+ */
+const EVIDENCE_PARAMS = {
+  evidenceKind: {
+    type: 'string',
+    description: '可选：证据类型 ' + EVIDENCE_KIND.join(' / ')
+      + '（file=文件路径、session=会话 id、command=命令、link=链接、note=说明），不传按 note 记录',
+  },
+  evidenceRef: {
+    type: 'string',
+    description: '可选：证据本体（文件路径 / 会话 id / 命令 / 链接 / 一句话说明）。'
+      + '给了就在这次调用里追加一条证据；文件路径相对工作区解析，且会被核验是否存在',
+  },
+  evidenceNote: { type: 'string', description: '可选：这条证据的说明' },
+}
+
+/** 从入参里抽一条证据；没给 evidenceRef 就返回 undefined（完全不动现有证据）。 */
+function evidenceInputOf(args) {
+  const ref = optStr(args?.evidenceRef)
+  if (ref === undefined) return undefined
+  return { kind: args?.evidenceKind, ref, note: args?.evidenceNote }
+}
 
 /**
  * 定位一个「待办」。agent 勾选进度的入口用它：限定类型可以拦住「把整条
@@ -157,12 +211,14 @@ export function apply(ctx) {
     'plan_show',
     '查看当前工作区的工作计划。是一棵**递归树**：计划下可以挂子计划（深度不限），叶子是待办；'
       + '不挂在任何计划下的顶层待办就是收件箱。每个节点都带自动算好的完成度与管控提示。'
+      + '返回里另外有三份清单值得先看：delegated（我委派出去的，含逾期未回执）、'
+      + 'behind（进度没跟上周期的，按差距排序）、unverified（已完成但没有证据、等你核验的）。'
       + '计划文件位于 <工作区>/plan/plan.json。',
     {},
     async (_args, exec) => {
       const store = storeFor(cwdOf(exec))
       const plan = await store.load()
-      return { ok: true, dir: store.dir, plan: withProgress(plan) }
+      return { ok: true, dir: store.dir, plan: withProgress(plan, store.root) }
     },
   ))
 
@@ -207,17 +263,19 @@ export function apply(ctx) {
         ok: true,
         node: { id: node.id, type: typeOf(node), title: node.title },
         warnings: nodeWarnings(node, typeOf(node)),
-        plan: withProgress(plan),
+        plan: withProgress(plan, store.root),
       }
     },
   ))
 
   ctx.tools.register(makeTool(
     'plan_node_set',
-    '更新任意节点的字段：标题、类型、负责人、周期、截止、重要程度、状态、量化进度、备注。'
+    '更新任意节点的字段：标题、类型、负责人、周期、截止、重要程度、状态、量化进度、备注、完成证据。'
       + '不传的字段保持不动。计划的状态是 active / done / dropped，待办是 todo / doing / done / dropped。'
       + '改 type 可以把待办提升为计划（继续往下拆），或把空计划降回待办——'
-      + '有子节点的计划不能降级为待办，要先移走或删掉子节点。',
+      + '有子节点的计划不能降级为待办，要先移走或删掉子节点。'
+      + '把状态改成 done 时，用 evidenceRef 附上产出（文件路径 / 会话 id / 命令），'
+      + '否则它会被列进「已完成但无证据」——那是给人核验「AI 真的干完了」用的清单。',
     {
       node: { type: 'string', required: true, description: '节点 id（如 n1 / g1）或标题' },
       type: { type: 'string', description: '可选：改为 ' + NODE_TYPE.join(' / ') + '（plan=计划, todo=待办）' },
@@ -232,6 +290,7 @@ export function apply(ctx) {
       current: { type: 'number', description: '可选：当前值' },
       unit: { type: 'string', description: '可选：量化单位' },
       note: { type: 'string', description: '可选：备注' },
+      ...EVIDENCE_PARAMS,
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
@@ -241,9 +300,19 @@ export function apply(ctx) {
       if (optStr(args?.type) !== undefined) setNodeType(node, args.type)
       applyFields(node, args)
       if (optStr(args?.status) !== undefined) setStatus(node, args.status)
+      // 证据在状态之后追加：先落成 done 再挂凭据，两者是同一次改变的原子结果。
+      const evidence = evidenceInputOf(args)
+      if (evidence !== undefined) addEvidence(node, evidence)
       const type = typeOf(node)
-      await store.save(plan, { reason: type + '-set' })
-      return { ok: true, node, warnings: nodeWarnings(node, type), plan: withProgress(plan) }
+      await store.save(plan, { reason: evidence === undefined ? type + '-set' : type + '-set+evidence' })
+      return {
+        ok: true,
+        node,
+        warnings: nodeWarnings(node, type),
+        evidenceWarnings: evidenceWarnings(node, store.root),
+        unverified: isUnverified(node),
+        plan: withProgress(plan, store.root),
+      }
     },
   ))
 
@@ -266,7 +335,7 @@ export function apply(ctx) {
         node: { id: r.node.id, title: r.node.title },
         from: r.from,
         to: r.to,
-        plan: withProgress(plan),
+        plan: withProgress(plan, store.root),
       }
     },
   ))
@@ -285,7 +354,7 @@ export function apply(ctx) {
       return {
         ok: true,
         removed: { id: r.node.id, type: typeOf(r.node), title: r.node.title, parent: r.parent, stats: r.removed },
-        plan: withProgress(plan),
+        plan: withProgress(plan, store.root),
       }
     },
   ))
@@ -293,11 +362,14 @@ export function apply(ctx) {
   ctx.tools.register(makeTool(
     'plan_todo_set',
     '更新一个待办的状态。这是 agent 回写进度的主要入口：干完一件事就把它标成 done，'
-      + '完成时会自动记下完成时间（doneAt），计划的完成度会自动重算。',
+      + '完成时会自动记下完成时间（doneAt），计划的完成度会自动重算。'
+      + '标完成时请用 evidenceRef 附上产出（文件路径 / 会话 id / 命令 / 链接）——'
+      + '「AI 说它干完了」需要可核验的凭据，没有凭据的完成项会被列进「已完成但无证据」等人核验。',
     {
       todo: { type: 'string', required: true, description: '待办的 id（如 n3 / t1）或标题' },
       status: { type: 'string', required: true, description: '新状态：' + TODO_STATUS.join(' / ') + '（todo=待办, doing=进行中, done=已完成, dropped=已放弃）' },
       note: { type: 'string', description: '可选：追加备注（留痕为什么放弃/怎么完成的）' },
+      ...EVIDENCE_PARAMS,
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
@@ -306,8 +378,17 @@ export function apply(ctx) {
       setStatus(found.node, args?.status)
       const note = optStr(args?.note)
       if (note !== undefined) found.node.note = note
-      await store.save(plan, { reason: 'todo-' + found.node.status })
-      return { ok: true, todo: found.node, warnings: nodeWarnings(found.node, 'todo'), plan: withProgress(plan) }
+      const evidence = evidenceInputOf(args)
+      if (evidence !== undefined) addEvidence(found.node, evidence)
+      await store.save(plan, { reason: 'todo-' + found.node.status + (evidence === undefined ? '' : '+evidence') })
+      return {
+        ok: true,
+        todo: found.node,
+        warnings: nodeWarnings(found.node, 'todo'),
+        evidenceWarnings: evidenceWarnings(found.node, store.root),
+        unverified: isUnverified(found.node),
+        plan: withProgress(plan, store.root),
+      }
     },
   ))
 
@@ -316,7 +397,8 @@ export function apply(ctx) {
   ctx.tools.register(makeTool(
     'plan_priority_set',
     '设置任意节点（计划或待办）的重要程度。它不是标签而是管控强度开关：'
-      + 'high 要求周期与负责人、落后要预警；normal 要求有截止；low 只记录不催。返回 warnings 指出还缺什么。',
+      + 'high 要求周期与负责人、落后要预警、完成要证据；normal 要求有截止；low 只记录不催。'
+      + '返回 warnings 指出还缺什么。给计划填了 start + end 之后，进度落后于周期会被自动标出来。',
     {
       node: { type: 'string', required: true, description: '节点 id（如 n1 / g1）或标题' },
       priority: { type: 'string', required: true, description: PRIORITY.join(' / ') + '（high=高, normal=中, low=低）' },
@@ -331,7 +413,7 @@ export function apply(ctx) {
         ok: true,
         node: { id: found.node.id, type: typeOf(found.node), title: found.node.title, priority: priorityOf(found.node) },
         warnings: nodeWarnings(found.node, typeOf(found.node)),
-        plan: withProgress(plan),
+        plan: withProgress(plan, store.root),
       }
     },
   ))
@@ -356,7 +438,7 @@ export function apply(ctx) {
         ok: true,
         node: { id: found.node.id, type: typeOf(found.node), title: found.node.title },
         delegate: delegateState(found.node),
-        plan: withProgress(plan),
+        plan: withProgress(plan, store.root),
       }
     },
   ))
@@ -381,7 +463,7 @@ export function apply(ctx) {
         ok: true,
         node: { id: found.node.id, type: typeOf(found.node), title: found.node.title },
         delegate: delegateState(found.node),
-        plan: withProgress(plan),
+        plan: withProgress(plan, store.root),
       }
     },
   ))
@@ -443,7 +525,7 @@ export function apply(ctx) {
       const file = str(args?.file)
       if (file === '') throw new Error('需要版本文件名')
       const plan = await store.restore(file)
-      return { ok: true, restoredFrom: file, plan: withProgress(plan) }
+      return { ok: true, restoredFrom: file, plan: withProgress(plan, store.root) }
     },
   ))
 
@@ -514,10 +596,14 @@ export function apply(ctx) {
       const cwd = resolveCwd(body.sessionId)
       const store = storeFor(cwd)
       const plan = await store.load()
-      json(res, { ok: true, cwd, dir: store.dir, plan: withProgress(plan) })
+      json(res, { ok: true, cwd, dir: store.dir, plan: withProgress(plan, store.root) })
     })
 
-    /** 勾选待办。与工具走同一条写入路径（含版本归档）。 */
+    /**
+     * 勾选待办。与工具走同一条写入路径（含版本归档）。
+     * body 里可以带 evidenceKind / evidenceRef / evidenceNote 追加一条完成证据——
+     * 面板目前不发，但两个写入入口的语义保持一致，工具能做的事数据面也能做。
+     */
     route('/todo-set', async (req, res) => {
       const body = await readBody(req)
       const store = storeFor(resolveCwd(body.sessionId))
@@ -525,8 +611,10 @@ export function apply(ctx) {
       // 限定类型找待办：面板上的待办可能挂在任意深度的计划下，也可能在收件箱里。
       const found = resolveTodo(plan, body.todo)
       setStatus(found.node, body.status)
-      await store.save(plan, { reason: 'todo-' + found.node.status })
-      json(res, { ok: true, plan: withProgress(plan) })
+      const evidence = evidenceInputOf(body)
+      if (evidence !== undefined) addEvidence(found.node, evidence)
+      await store.save(plan, { reason: 'todo-' + found.node.status + (evidence === undefined ? '' : '+evidence') })
+      json(res, { ok: true, plan: withProgress(plan, store.root) })
     })
 
     /** 新增节点（收件箱快速记一条，或计划下加子项）。 */
@@ -543,12 +631,12 @@ export function apply(ctx) {
       })
       appendChild(plan, node, body.parent)
       await store.save(plan, { reason: typeOf(node) + '-add' })
-      json(res, { ok: true, node: { id: node.id, type: typeOf(node) }, plan: withProgress(plan) })
+      json(res, { ok: true, node: { id: node.id, type: typeOf(node) }, plan: withProgress(plan, store.root) })
     })
 
     /**
-     * 改节点属性（类型 / 重要程度 / 委派回执 / 状态 / 标题）。面板上的「高/中/低」
-     * 徽章点击循环、⇧/⇩ 换型、回执按钮都走这里——不再为每种属性各开一条路由。
+     * 改节点属性（类型 / 重要程度 / 委派回执 / 状态 / 标题 / 完成证据）。面板上的
+     * 「高/中/低」徽章点击循环、⇧/⇩ 换型、回执按钮都走这里——不再为每种属性各开一条路由。
      */
     route('/node-set', async (req, res) => {
       const body = await readBody(req)
@@ -581,9 +669,21 @@ export function apply(ctx) {
         setDelegate(found.node, { to: body.to, expectAt: body.expectAt, note: body.note })
         reasons.push('delegate-set')
       }
-      if (reasons.length === 0) throw new Error('没有要改的属性：可传 type / priority / status / title / receipt / to')
+      const evidence = evidenceInputOf(body)
+      if (evidence !== undefined) {
+        addEvidence(found.node, evidence)
+        reasons.push('evidence')
+      }
+      if (reasons.length === 0) {
+        throw new Error('没有要改的属性：可传 type / priority / status / title / receipt / to / evidenceRef')
+      }
       await store.save(plan, { reason: reasons.join('+') })
-      json(res, { ok: true, node: { id: found.node.id, type: typeOf(found.node) }, plan: withProgress(plan) })
+      json(res, {
+        ok: true,
+        node: { id: found.node.id, type: typeOf(found.node), unverified: isUnverified(found.node) },
+        evidenceWarnings: evidenceWarnings(found.node, store.root),
+        plan: withProgress(plan, store.root),
+      })
     })
 
     /** 移动节点（收件箱归位 / 调整顺序）。 */
@@ -593,7 +693,7 @@ export function apply(ctx) {
       const plan = await store.load()
       const r = moveNode(plan, body.node, body.parent, body.index)
       await store.save(plan, { reason: 'node-move' })
-      json(res, { ok: true, node: { id: r.node.id }, from: r.from, to: r.to, plan: withProgress(plan) })
+      json(res, { ok: true, node: { id: r.node.id }, from: r.from, to: r.to, plan: withProgress(plan, store.root) })
     })
 
     /** 删除节点（连带子树）。 */
@@ -603,7 +703,7 @@ export function apply(ctx) {
       const plan = await store.load()
       const r = removeNode(plan, body.node)
       await store.save(plan, { reason: 'node-remove' })
-      json(res, { ok: true, removed: { id: r.node.id, stats: r.removed }, plan: withProgress(plan) })
+      json(res, { ok: true, removed: { id: r.node.id, stats: r.removed }, plan: withProgress(plan, store.root) })
     })
 
     route('/init', async (req, res) => {
@@ -614,7 +714,7 @@ export function apply(ctx) {
       // 保留节点，只重置标题等元信息。
       const next = { ...emptyPlan(title), nodes: plan.nodes, version: plan.version }
       await store.save(next, { reason: 'init' })
-      json(res, { ok: true, plan: withProgress(next) })
+      json(res, { ok: true, plan: withProgress(next, store.root) })
     })
 
     route('/snapshot', async (req, res) => {

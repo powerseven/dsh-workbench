@@ -10,7 +10,9 @@
  *   · 换型：待办 ⇧ 提升为计划继续拆，空计划 ⇩ 降回待办
  *   · 重要程度徽章（点击在高/中/低之间循环）
  *   · 委派标记（对象 · 回执状态 · 期望时间，逾期标红）
- *   · 筛选条（重要度高 / 我委派出去的 / 本周到期 / 逾期）
+ *   · 落后标记（进度没跟上周期的节点，徽章显示差多少个百分点）
+ *   · 完成证据标记（📎n 已附证据 / ⊘ 已完成但无证据，等人核验）
+ *   · 筛选条（重要度高 / 我委派出去的 / 本周到期 / 逾期 / 落后 / 无证据的完成项）
  *
  * 勾选、徽章、归位、删除都直接回写 plan.json，所以面板与 agent 改的是同一份
  * 数据；写入统一走 /api/workbench/*，落到 host 半身的同一套 store 逻辑
@@ -75,6 +77,12 @@ const CSS = [
   '.dsh-wb-deleg.late{background:rgba(209,36,47,.14);color:#d1242f;font-weight:600;}',
   // 管控缺口
   '.dsh-wb-warn{flex:none;font-size:10px;color:#9a6700;cursor:help;}',
+  // 落后于周期（进度没跟上时间）
+  '.dsh-wb-behind{flex:none;font-size:10px;line-height:1.6;padding:0 5px;border-radius:8px;background:rgba(154,103,0,.15);color:#9a6700;font-weight:600;cursor:help;white-space:nowrap;}',
+  // 完成证据：📎n = 有证据；⊘ = 已完成但无证据（待核验）
+  '.dsh-wb-evid{flex:none;font-size:10px;color:#2da44e;cursor:help;}',
+  '.dsh-wb-evid.bad{color:#d1242f;font-weight:600;}',
+  '.dsh-wb-unverif{flex:none;font-size:10px;color:#9a6700;cursor:help;font-weight:600;}',
   // 收件箱
   '.dsh-wb-inbox{margin-bottom:14px;padding-bottom:10px;border-bottom:1px dashed rgba(127,127,127,.3);}',
   '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:6px;margin:2px 0 6px;}',
@@ -98,7 +106,7 @@ const CSS = [
   '.dsh-wb-err{margin:8px 10px;padding:8px 10px;border-radius:8px;background:rgba(209,36,47,.1);color:#d1242f;font-size:12px;line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:5px 10px;border-top:1px solid rgba(127,127,127,.18);font-size:10px;color:rgba(127,127,127,.7);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:4px 10px;font-size:11px;color:#2da44e;flex:none;}',
-  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-planbar > div{background:#2f7be0;}.dsh-wb-planq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}}',
+  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-planbar > div{background:#2f7be0;}.dsh-wb-planq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}.dsh-wb-behind{color:#e3b341;}.dsh-wb-unverif{color:#e3b341;}.dsh-wb-evid{color:#57ab5a;}}',
 ].join('')
 
 function injectStyles(css) {
@@ -255,6 +263,51 @@ function apply(ctx) {
       return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, '⚠')
     }
 
+    /**
+     * 落后于周期：进度没跟上时间。只在服务端算过配速（有完整周期、周期正在走）
+     * 且判定落后时出现——这里不重算，阈值语义只有一处实现。
+     */
+    const behindChip = (node) => {
+      if (node.behind !== true) return null
+      const p = node.pace || {}
+      const gap = typeof p.gap === 'number' ? Math.round(p.gap * 100) : null
+      const lines = ['进度落后于周期']
+      const text = paceText(node)
+      if (text !== null) lines.push(text)
+      if (typeof node.start === 'string' || typeof node.end === 'string') {
+        lines.push('周期 ' + (node.start || '?') + ' ~ ' + (node.end || '?'))
+      }
+      return h('span', {
+        className: 'dsh-wb-behind',
+        title: lines.join('\n'),
+      }, gap === null ? '落后' : '落后 ' + gap + '%')
+    }
+
+    /**
+     * 完成证据。两种形态，回答的是同一个问题——「这条完成，凭什么信」：
+     *   📎n  附了 n 条证据，悬停列出来；文件类证据若服务端核验不存在，标红
+     *   ⊘    已完成但没有证据 → 会进「无证据的完成项」筛选，等人核验
+     * 这里没有「补证据」的输入框：证据的自然生产者是 agent（它才知道自己
+     * 产出了哪个文件、跑过什么命令），手填一份的代价高于让 agent 补。
+     */
+    const evidChip = (node) => {
+      const list = evidenceList(node)
+      const bad = Array.isArray(node.evidenceWarnings) ? node.evidenceWarnings : []
+      if (list.length === 0) {
+        if (unverifiedOf(node) !== true) return null
+        return h('span', {
+          className: 'dsh-wb-unverif',
+          title: '已完成，但没有证据\n（AI 标的完成需要能核验的凭据；用「无证据的完成项」筛选可一次看全）',
+        }, '⊘')
+      }
+      const lines = list.map((e) => evidenceLabel(e.kind) + '：' + String(e.ref) + (e.note ? '\n  ' + e.note : ''))
+      return h('span', {
+        className: 'dsh-wb-evid' + (bad.length > 0 ? ' bad' : ''),
+        title: '证据 ' + list.length + ' 条\n' + lines.join('\n')
+          + (bad.length > 0 ? '\n⚠ ' + bad.join('\n⚠ ') : ''),
+      }, (bad.length > 0 ? '⚠' : '📎') + list.length)
+    }
+
     const dueSpan = (node) => {
       if (typeof node.due !== 'string' || node.due === '') return null
       return h('span', { className: 'dsh-wb-taskdue' + (node.overdue === true ? ' overdue' : '') }, node.due)
@@ -309,6 +362,8 @@ function apply(ctx) {
         }, node.title),
         delegChip(node),
         warnBadge(node),
+        behindChip(node),
+        evidChip(node),
         priBadge(node),
         dueSpan(node),
         h('button', {
@@ -349,6 +404,8 @@ function apply(ctx) {
         h('span', { className: 'dsh-wb-plantitle' }, node.title),
         delegChip(node),
         warnBadge(node),
+        behindChip(node),
+        evidChip(node),
         priBadge(node),
         q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
         h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
@@ -475,6 +532,8 @@ function apply(ctx) {
           h('span', { className: 'dsh-wb-path' }, (isLeaf ? '' : typeLabel(item.type) + ' ') + item.path),
           delegChip(node),
           warnBadge(node),
+          behindChip(node),
+          evidChip(node),
           priBadge(node),
           isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' }, node.end) : null),
         ))

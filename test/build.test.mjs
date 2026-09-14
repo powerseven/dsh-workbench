@@ -51,6 +51,8 @@ test('client bundle 内联了纯逻辑函数（UI 直接引用闭包里的名字
     'function flattenNodes(', 'function focusList(', 'function filterCounts(',
     'function nodeType(', 'function progressOf(', 'function moveTargets(',
     'function inboxOf(', 'function planNodes(', 'function childrenOf(',
+    'function evidenceLabel(', 'function evidenceList(', 'function unverifiedOf(',
+    'function paceText(',
   ]) {
     assert.ok(client.includes(fn), 'bundle 缺少内联函数 ' + fn)
   }
