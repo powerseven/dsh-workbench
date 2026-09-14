@@ -32,102 +32,166 @@ const React = require('react')
 const h = React.createElement
 
 const CSS = [
-  '.dsh-wb-wrap{display:flex;flex-direction:column;height:100%;min-height:0;font-size:13px;}',
-  '.dsh-wb-header{display:flex;align-items:center;gap:8px;padding:8px 10px;border-bottom:1px solid rgba(127,127,127,.2);flex:none;}',
-  '.dsh-wb-title{font-weight:600;font-size:13px;}',
-  '.dsh-wb-headright{margin-left:auto;display:flex;align-items:center;gap:4px;}',
-  '.dsh-wb-pct{font-size:12px;font-weight:600;color:#0969da;}',
-  '.dsh-wb-icon{border:1px solid transparent;background:transparent;border-radius:7px;padding:2px 6px;font-size:12px;cursor:pointer;color:inherit;line-height:1.5;}',
-  '.dsh-wb-icon:hover{background:rgba(127,127,127,.14);}',
+  // ── 别名层 ──────────────────────────────────────────────────────────────
+  // 只做一件事：把宿主的设计 token 映射成面板自用的短名。面板**不自己定义任何
+  // 颜色**——宿主的明暗两态是靠重映射 --dsw-alias-* 完成的
+  // （body[data-ds-dark-theme]{…}），所以这里映射一次，面板就自动跟随
+  // 「用户在设置里选的主题」。此前用 @media (prefers-color-scheme: dark) 打补丁
+  // 是错的：那跟的是系统偏好，在「系统深色 + 用户选浅色」时会渲染出深色块。
+  //
+  // 声明在 .dsh-wb-wrap 而不是 :root：var() 是在「声明它的那个元素」上就完成
+  // 替换的，写在 :root(html) 会按 html 的浅色算死，body 换成暗色也传不下来——
+  // 那正是「换了主题面板不跟着变」的成因。落在自己的根上才随上下文一起翻转，
+  // 顺带不污染全局命名空间。
+  '.dsh-wb-wrap{'
+  + '--wb-fg:var(--dsw-alias-label-primary);'
+  + '--wb-fg-2:var(--dsw-alias-label-secondary);'
+  // 只用两级文字。面板字号全在 11–13px，宿主更浅的两级灰（tertiary 3.7:1、
+  // caption 2.5:1）在这个尺寸下达不到 AA 的 4.5:1，所以层级改由字重、描边和
+  // 留白表达——「不要只靠颜色拉开层级」。
+  + '--wb-line:var(--dsw-alias-border-l3);'
+  + '--wb-line-2:var(--dsw-alias-border-l4);'
+  + '--wb-hover:var(--dsw-alias-interactive-bg-hover);'
+  + '--wb-active:var(--dsw-alias-interactive-bg-active);'
+  // 强调色只有一个来源：宿主的链接色。进度、选中、焦点环、复选框全用它，
+  // 于是「蓝」在面板里恒等于「可交互 / 正在进行」，不再有第二、第三种含义。
+  + '--wb-accent:var(--dsw-alias-link);'
+  + '--wb-accent-soft:var(--dsw-alias-state-business-tertiary);'
+  // 语义色里只有 danger 在白底够 4.5:1，可以直接上文字；warn 只有 2.8:1、
+  // success 只有 2.3:1，所以它俩只做软底，文字一律走中性。
+  + '--wb-danger:var(--dsw-alias-state-error-primary);'
+  + '--wb-danger-soft:var(--dsw-alias-interactive-bg-hover-danger);'
+  + '--wb-warn-soft:var(--dsw-alias-state-warn-tertiary);'
+  // 间距与圆角取宿主侧栏组件的既有标尺（间距 2/4/6/8/12，圆角 4/6/8/999）。
+  // 命名出来是为了让「不许写随手值」这条能被一眼检查。
+  + '--wb-sp-1:2px;--wb-sp-2:4px;--wb-sp-3:6px;--wb-sp-4:8px;--wb-sp-5:12px;'
+  + '--wb-r-1:4px;--wb-r-2:6px;--wb-r-3:8px;--wb-pill:999px;'
+  + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
+  + 'display:flex;flex-direction:column;height:100%;min-height:0;'
+  + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
+  // 焦点环。此前全表没有一条 :focus-visible，键盘用户完全看不出停在哪。
+  // outline 不参与布局，所以出现时行不会跳。
+  '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
+  // 宿主对 * 施加了 corner-shape:superellipse(1.5)（方角更耐看），但把胶囊压得
+  // 走形，所以整圆形状要按宿主约定显式配回 round。
+  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-planbar,.dsh-wb-rootdrop{corner-shape:round;}',
+  // ── 表头 ────────────────────────────────────────────────────────────────
+  '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
+  '.dsh-wb-title{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-headright{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-1);}',
+  // 总进度是最重要的一个数，所以给它最高层级（近黑 + 等宽数字）。以前是蓝色
+  // 小字：既压不过标题，又在白底只有 4.2:1。把强调色让给「可交互」之后，
+  // 数字回到中性反而更醒目。
+  '.dsh-wb-pct{font:var(--dsw-font-xs-strong-13);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
+  '.dsh-wb-icon{border:1px solid transparent;background:transparent;border-radius:var(--wb-r-2);padding:var(--wb-sp-1) var(--wb-sp-3);font:inherit;color:var(--wb-fg-2);cursor:pointer;line-height:1.5;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-icon:hover{background:var(--wb-hover);color:var(--wb-fg);}',
+  '.dsh-wb-icon:active{background:var(--wb-active);}',
   '.dsh-wb-icon:disabled{opacity:.45;cursor:default;}',
-  '.dsh-wb-bar{height:4px;background:rgba(127,127,127,.18);flex:none;}',
-  '.dsh-wb-bar-fill{height:100%;background:#2da44e;transition:width .25s ease;}',
-  // 筛选条
-  '.dsh-wb-filters{display:flex;gap:4px;padding:6px 8px;flex-wrap:wrap;flex:none;border-bottom:1px solid rgba(127,127,127,.14);}',
-  '.dsh-wb-chip{border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:11px;padding:2px 8px;font-size:11px;cursor:pointer;line-height:1.6;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;}',
-  '.dsh-wb-chip:hover{background:rgba(127,127,127,.12);}',
-  '.dsh-wb-chip.on{background:rgba(9,105,218,.12);border-color:rgba(9,105,218,.5);color:#0969da;font-weight:600;}',
-  '.dsh-wb-body{flex:1;overflow-y:auto;padding:8px 10px 14px;}',
-  // 计划节点（递归，深度用 margin-left 表达）
-  '.dsh-wb-plan{margin-bottom:8px;}',
-  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:6px;margin:2px 0 3px;}',
-  '.dsh-wb-planid{font-size:10px;color:rgba(127,127,127,.7);flex:none;font-family:ui-monospace,monospace;}',
-  '.dsh-wb-plantitle{font-weight:600;line-height:1.45;word-break:break-word;flex:1;}',
-  '.dsh-wb-planpct{font-size:11px;color:rgba(127,127,127,.9);flex:none;}',
-  '.dsh-wb-planq{font-size:11px;color:#0969da;flex:none;}',
-  '.dsh-wb-planmeta{display:flex;gap:6px;flex-wrap:wrap;font-size:11px;color:rgba(127,127,127,.85);margin:0 0 4px;}',
-  '.dsh-wb-planbar{height:3px;background:rgba(127,127,127,.15);border-radius:2px;margin-bottom:6px;overflow:hidden;}',
-  '.dsh-wb-planbar > div{height:100%;background:#0969da;}',
-  // 待办行
-  '.dsh-wb-task{display:flex;align-items:flex-start;gap:6px;padding:3px 4px;border-radius:6px;margin:1px 0;}',
-  '.dsh-wb-task:hover{background:rgba(127,127,127,.1);}',
-  '.dsh-wb-task input{margin:2px 0 0;flex:none;cursor:pointer;}',
-  '.dsh-wb-tasktitle{flex:1;line-height:1.45;word-break:break-word;cursor:pointer;}',
-  '.dsh-wb-tasktitle.done{text-decoration:line-through;opacity:.5;}',
-  '.dsh-wb-tasktitle.dropped{text-decoration:line-through;opacity:.4;}',
-  '.dsh-wb-taskdue{font-size:10px;color:rgba(127,127,127,.8);flex:none;white-space:nowrap;}',
-  '.dsh-wb-taskdue.overdue{color:#d1242f;font-weight:600;}',
-  // 行内动作按钮（归位 / 加子项 / 删除）——默认隐藏，悬停才现身，避免噪声
-  '.dsh-wb-act{flex:none;border:none;background:transparent;color:rgba(127,127,127,.75);cursor:pointer;font-size:11px;padding:0 3px;border-radius:5px;line-height:1.6;opacity:0;}',
-  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act{opacity:1;}',
-  '.dsh-wb-act:hover{background:rgba(127,127,127,.2);color:inherit;}',
-  // 重要程度徽章
-  '.dsh-wb-pri{flex:none;font-size:10px;line-height:1.6;padding:0 5px;border-radius:8px;cursor:pointer;border:1px solid transparent;user-select:none;}',
-  '.dsh-wb-pri.normal{color:rgba(127,127,127,.85);border-color:rgba(127,127,127,.3);}',
-  '.dsh-wb-pri.high{color:#fff;background:#d1242f;font-weight:600;}',
-  '.dsh-wb-pri.low{color:rgba(127,127,127,.6);}',
-  '.dsh-wb-pri:hover{filter:brightness(.94);}',
-  // 委派标记
-  '.dsh-wb-deleg{flex:none;font-size:10px;padding:0 5px;border-radius:8px;background:rgba(130,80,223,.12);color:#8250df;white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;}',
-  '.dsh-wb-deleg.late{background:rgba(209,36,47,.14);color:#d1242f;font-weight:600;}',
-  // 管控缺口
-  '.dsh-wb-warn{flex:none;font-size:10px;color:#9a6700;cursor:help;}',
-  // 落后于周期（进度没跟上时间）
-  '.dsh-wb-behind{flex:none;font-size:10px;line-height:1.6;padding:0 5px;border-radius:8px;background:rgba(154,103,0,.15);color:#9a6700;font-weight:600;cursor:help;white-space:nowrap;}',
-  // 完成证据：📎n = 有证据；⊘ = 已完成但无证据（待核验）
-  '.dsh-wb-evid{flex:none;font-size:10px;color:#2da44e;cursor:help;}',
-  '.dsh-wb-evid.bad{color:#d1242f;font-weight:600;}',
-  '.dsh-wb-unverif{flex:none;font-size:10px;color:#9a6700;cursor:help;font-weight:600;}',
-  // 收件箱
-  '.dsh-wb-inbox{margin-bottom:14px;padding-bottom:10px;border-bottom:1px dashed rgba(127,127,127,.3);}',
-  '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:6px;margin:2px 0 6px;}',
-  '.dsh-wb-inboxtitle{font-weight:600;}',
-  '.dsh-wb-count{font-size:10px;color:rgba(127,127,127,.85);}',
-  '.dsh-wb-add{display:flex;gap:4px;margin:0 0 4px;}',
-  '.dsh-wb-add input{flex:1;min-width:0;font:inherit;font-size:12px;padding:3px 7px;border-radius:6px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit;}',
-  '.dsh-wb-add input:focus{outline:none;border-color:rgba(9,105,218,.6);}',
-  '.dsh-wb-add button{border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:6px;cursor:pointer;font-size:12px;padding:2px 8px;white-space:nowrap;}',
+  '.dsh-wb-bar{height:3px;background:var(--wb-line);flex:none;}',
+  '.dsh-wb-bar-fill{height:100%;background:var(--wb-accent);transition:width var(--wb-dur) var(--wb-ease);}',
+  // ── 筛选条 ──────────────────────────────────────────────────────────────
+  '.dsh-wb-filters{display:flex;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);flex-wrap:wrap;flex:none;border-bottom:1px solid var(--wb-line);}',
+  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:0 var(--wb-sp-4);font:var(--dsw-font-xxxs-11);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
+  // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
+  '.dsh-wb-chip.on{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);font-weight:600;}',
+  // ── 主体 ────────────────────────────────────────────────────────────────
+  '.dsh-wb-body{flex:1;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);}',
+  // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
+  '.dsh-wb-plan{margin-bottom:var(--wb-sp-4);}',
+  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-2);}',
+  '.dsh-wb-planid{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
+  '.dsh-wb-plantitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
+  '.dsh-wb-planpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-planq{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
+  '.dsh-wb-planbar{height:2px;background:var(--wb-line);border-radius:var(--wb-pill);margin-bottom:var(--wb-sp-3);overflow:hidden;}',
+  '.dsh-wb-planbar > div{height:100%;background:var(--wb-accent);}',
+  // ── 待办行 ──────────────────────────────────────────────────────────────
+  '.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-2);border-radius:var(--wb-r-2);margin:var(--wb-sp-1) 0;transition:background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-task:hover{background:var(--wb-hover);}',
+  '.dsh-wb-task input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
+  '.dsh-wb-tasktitle{flex:1;line-height:1.5;word-break:break-word;cursor:pointer;}',
+  // 完成态用「变灰」而不是 opacity：叠透明度会把对比度一起压下去。
+  '.dsh-wb-tasktitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
+  '.dsh-wb-tasktitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
+  '.dsh-wb-taskdue{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);white-space:nowrap;}',
+  // 逾期可以直接上色：宿主的 error 语义色在白底有 4.5:1，是少数能当文字用的语义色。
+  '.dsh-wb-taskdue.overdue{color:var(--wb-danger);font-weight:600;}',
+  // 行内动作按钮：以前 opacity:0 只在 hover 现身，键盘与触屏完全够不到。
+  // 现在键盘用 :focus-within 揭示，触屏用 @media (hover:none) 常驻。
+  '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act{opacity:1;}',
+  '.dsh-wb-act:hover{background:var(--wb-hover);color:var(--wb-fg);}',
+  // ── 重要程度徽章 ────────────────────────────────────────────────────────
+  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);cursor:pointer;border:1px solid transparent;user-select:none;}',
+  // 「中/低」都不换更浅的灰（那会掉到 AA 以下），改用描边与留白区分。
+  '.dsh-wb-pri.normal{color:var(--wb-fg-2);border-color:var(--wb-line-2);}',
+  '.dsh-wb-pri.low{color:var(--wb-fg-2);}',
+  // 「高」用软底而不是实心红：实心红在暗色下配白字只有 2.6:1。
+  '.dsh-wb-pri.high{color:var(--wb-danger);background:var(--wb-danger-soft);border-color:var(--wb-danger);font-weight:600;}',
+  '.dsh-wb-pri:hover{filter:brightness(.95);}',
+  // ── 委派标记 ────────────────────────────────────────────────────────────
+  // 以前用紫色（#8250df）——宿主的语义色里没有紫，所以它一眼就不像宿主的一部分。
+  // 委派是「进行中」，归到强调色的软底；逾期才转 danger。
+  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);background:var(--wb-accent-soft);color:var(--wb-fg);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;}',
+  '.dsh-wb-deleg.late{background:var(--wb-danger-soft);color:var(--wb-danger);font-weight:600;}',
+  // ── 管控缺口 ────────────────────────────────────────────────────────────
+  '.dsh-wb-warn{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
+  // ── 落后于周期 ──────────────────────────────────────────────────────────
+  // 琥珀在白底只有 2.8:1，所以颜色只上软底，文字走中性。
+  '.dsh-wb-behind{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);background:var(--wb-warn-soft);color:var(--wb-fg);cursor:help;white-space:nowrap;}',
+  // ── 完成证据：📎n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
+  // 两者都自带符号，颜色是冗余信息，所以文字统一走中性——顺带绕开
+  // 「绿 2.3:1 / 琥珀 2.8:1 在浅色下达不到 AA」这个坑。
+  '.dsh-wb-evid{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
+  '.dsh-wb-evid.bad{color:var(--wb-danger);font-weight:600;}',
+  '.dsh-wb-unverif{flex:none;font:var(--dsw-font-xxxs-strong-11);border-radius:var(--wb-r-1);padding:0 var(--wb-sp-1);background:var(--wb-warn-soft);color:var(--wb-fg);cursor:help;}',
+  // ── 收件箱 ──────────────────────────────────────────────────────────────
+  '.dsh-wb-inbox{margin-bottom:var(--wb-sp-5);padding-bottom:var(--wb-sp-4);border-bottom:1px dashed var(--wb-line-2);}',
+  '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-3);}',
+  '.dsh-wb-inboxtitle{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-count{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-add{display:flex;gap:var(--wb-sp-2);margin:0 0 var(--wb-sp-2);}',
+  '.dsh-wb-add input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-add input::placeholder{color:var(--wb-fg-2);}',
+  '.dsh-wb-add input:focus{border-color:var(--wb-accent);}',
+  '.dsh-wb-add button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-add button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-add button:disabled{opacity:.4;cursor:default;}',
-  // 归位选择器
-  '.dsh-wb-movepick{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin:2px 0 6px;padding:5px 7px;border-radius:8px;background:rgba(130,80,223,.07);border:1px dashed rgba(130,80,223,.35);}',
-  '.dsh-wb-movepicklabel{font-size:11px;color:rgba(127,127,127,.9);}',
-  // 折叠控点。没有子节点时占位但不可点，让同层的标题左边缘对齐。
-  '.dsh-wb-caret{flex:none;width:11px;text-align:center;cursor:pointer;color:rgba(127,127,127,.85);user-select:none;font-size:10px;}',
-  '.dsh-wb-caret:hover{color:inherit;}',
+  // ── 归位选择器 ──（同样收进强调色，不再另开一个紫色）
+  '.dsh-wb-movepick{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-1) 0 var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px dashed var(--wb-accent);}',
+  '.dsh-wb-movepicklabel{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  // ── 折叠控点（无子节点时占位不可点，让同层标题左边缘对齐）──────────────
+  '.dsh-wb-caret{flex:none;width:12px;text-align:center;cursor:pointer;color:var(--wb-fg-2);user-select:none;font:var(--dsw-font-xxxs-11);border-radius:var(--wb-r-1);}',
+  '.dsh-wb-caret:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-caret.none{visibility:hidden;cursor:default;}',
-  // 就地改名：输入框沿用标题的字号与粗细，换进去时行高不跳
-  '.dsh-wb-rename{flex:1;min-width:0;font:inherit;font-weight:inherit;padding:1px 5px;border-radius:5px;border:1px solid rgba(9,105,218,.6);background:transparent;color:inherit;}',
+  // ── 就地改名（输入框沿用标题的字号与字重，换进去时行高不跳）────────────
+  '.dsh-wb-rename{flex:1;min-width:0;font:inherit;font-weight:600;padding:0 var(--wb-sp-2);border-radius:var(--wb-r-1);border:1px solid var(--wb-accent);background:transparent;color:var(--wb-fg);}',
   '.dsh-wb-rename:focus{outline:none;}',
-  // 拖拽：落点用 inset 阴影画线，不参与布局，所以指示线出现时行不会抖
-  '.dsh-wb-drop-before{box-shadow:inset 0 2px 0 0 #0969da;}',
-  '.dsh-wb-drop-after{box-shadow:inset 0 -2px 0 0 #0969da;}',
-  '.dsh-wb-drop-inside{background:rgba(9,105,218,.1);outline:1px dashed rgba(9,105,218,.5);outline-offset:-1px;}',
+  // ── 拖拽：落点用 inset 阴影画线，不参与布局，出现时行不会抖 ──────────────
+  '.dsh-wb-drop-before{box-shadow:inset 0 2px 0 0 var(--wb-accent);}',
+  '.dsh-wb-drop-after{box-shadow:inset 0 -2px 0 0 var(--wb-accent);}',
+  '.dsh-wb-drop-inside{background:var(--wb-accent-soft);outline:1px dashed var(--wb-accent);outline-offset:-1px;}',
   '.dsh-wb-dragging{opacity:.4;}',
-  '.dsh-wb-rootdrop{height:2px;border-radius:2px;background:rgba(9,105,218,.6);margin:6px 2px;}',
-  // 新建顶层计划：空工作区时它是唯一的建计划入口
-  '.dsh-wb-rootadd{display:block;width:100%;margin-top:10px;border:1px dashed rgba(127,127,127,.4);background:transparent;color:rgba(127,127,127,.9);border-radius:7px;padding:4px 8px;font:inherit;font-size:12px;cursor:pointer;}',
-  '.dsh-wb-rootadd:hover{background:rgba(127,127,127,.1);color:inherit;}',
-  // 聚焦列表
-  '.dsh-wb-focus{display:flex;align-items:flex-start;gap:6px;padding:5px 6px;border-radius:6px;margin-bottom:2px;}',
-  '.dsh-wb-focus:hover{background:rgba(127,127,127,.1);}',
-  '.dsh-wb-focus input{margin:2px 0 0;flex:none;cursor:pointer;}',
+  '.dsh-wb-rootdrop{height:2px;border-radius:var(--wb-pill);background:var(--wb-accent);margin:var(--wb-sp-3) var(--wb-sp-1);}',
+  // ── 新建顶层计划（空工作区时它是唯一的建计划入口）──────────────────────
+  '.dsh-wb-rootadd{display:block;width:100%;margin-top:var(--wb-sp-5);border:1px dashed var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-3) var(--wb-sp-4);font:inherit;cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-rootadd:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-accent);}',
+  // ── 聚焦列表 ────────────────────────────────────────────────────────────
+  '.dsh-wb-focus{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);margin-bottom:var(--wb-sp-1);transition:background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-focus:hover{background:var(--wb-hover);}',
+  '.dsh-wb-focus input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
-  '.dsh-wb-path{font-size:10px;color:rgba(127,127,127,.75);font-family:ui-monospace,monospace;flex:none;}',
-  '.dsh-wb-empty{padding:24px 10px;text-align:center;color:rgba(127,127,127,.75);font-size:12px;line-height:1.8;}',
-  '.dsh-wb-err{margin:8px 10px;padding:8px 10px;border-radius:8px;background:rgba(209,36,47,.1);color:#d1242f;font-size:12px;line-height:1.6;word-break:break-word;}',
-  '.dsh-wb-footer{padding:5px 10px;border-top:1px solid rgba(127,127,127,.18);font-size:10px;color:rgba(127,127,127,.7);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.dsh-wb-flash{padding:4px 10px;font-size:11px;color:#2da44e;flex:none;}',
-  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-planbar > div{background:#2f7be0;}.dsh-wb-planq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}.dsh-wb-behind{color:#e3b341;}.dsh-wb-unverif{color:#e3b341;}.dsh-wb-evid{color:#57ab5a;}.dsh-wb-drop-before{box-shadow:inset 0 2px 0 0 #6cb0f5;}.dsh-wb-drop-after{box-shadow:inset 0 -2px 0 0 #6cb0f5;}.dsh-wb-drop-inside{background:rgba(108,176,245,.14);outline-color:rgba(108,176,245,.55);}.dsh-wb-rootdrop{background:rgba(108,176,245,.7);}}',
+  '.dsh-wb-path{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
+  '.dsh-wb-empty{padding:var(--wb-sp-5);text-align:center;color:var(--wb-fg-2);line-height:1.8;}',
+  '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
+  '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
+  // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到。
+  '@media (hover:none){.dsh-wb-act{opacity:1;}}',
+  // 尊重系统的「减少动态效果」。
+  '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
 ].join('')
 
 /**
