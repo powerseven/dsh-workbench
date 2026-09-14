@@ -99,10 +99,26 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 - 注释和面向用户的文案用中文，标识符用英文。
 - 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言。
 
+## 协作与版本控制
+
+本项目是**共享开发仓库**：多位开发者 + agent 在此同步开发。
+
+- **根说明/指令文件是 `AGENTS.md`**（不是 `README.md`）。任何 agent 或开发者打开本仓库，应先读本文件；`README.md` 仅作面向使用者的介绍。
+- **远程**：`origin` = `git@github.com:powerseven/dsh-workbench.git`（SSH 形式）；`main` 跟踪 `origin/main`。
+- **工作流**：开工前 `git pull --ff-only`；改动走 **feature 分支 + PR，勿直推 main**；收工 `git push` 后用 `gh pr create` 开 PR（`gh` 已登录 powerseven，带 `repo` 权限）。
+- **本机开发环境是 WorkBuddy**：其本机数据目录 `.workbuddy/`（agent 记忆 / 笔记 / 状态）与 `plan/`（个人计划）均为**本地私有数据，严禁提交到 GitHub**，已在 `.gitignore` 忽略。改动 `.gitignore` 时不得移除这两行；也不要用 `git add -f` 强行加它们。
+
 ## 相关生态（可借鉴，勿重复造轮子）
 
 - `dsh-better-sidebar`（本机 `~/.dsh/profiles/web/node_modules/`）——宿主，
   `ctx.betterSidebar.registerTab` / `registerFileViewer`，本插件挂它下面。
+- `AKS1st/dock`——**另一个可选宿主：VSCode 风格工作台基座**，暴露 `ctx.workbench`
+  开放注册表（`registerPanel` / `registerEditorView` / `registerStatusBarItem` /
+  `registerCommand` / `registerSetting` / `registerActivityBarItem`），比 better-sidebar
+  的单一 tab 更适合承载「个人工作台」多面板形态。要求 DSH ≥ `0.1.3-alpha.2`
+  （本机 `0.1.5-rc.1` 满足）。**注意：整套很新（base ⭐7、无 release，2026-09 才建），
+  API 可能变动**——目前仍以 better-sidebar 为宿主，dock 作为可选第二宿主 / 参照。
+  系列兄弟：`dock-files` / `dock-editor` / `dock-images` / `dock-markdown` / `dock-git`。
 - `sueqet/dsh-todo-board`——跨会话 TODO 板，三档执行模式（提醒／续跑／新开会话）。
 - `lihang-lh/dsh-task-panel`——七列任务看板，子 agent 串行执行 + 复核 + 验收。
 - `lsdt45/dsh-plan-plus`——计划版本回看/对比/编辑/留档，本项目「版本留档」的参照。
