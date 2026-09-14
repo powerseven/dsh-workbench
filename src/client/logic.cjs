@@ -9,6 +9,11 @@
  *
  * 底部条件导出只在 Node（测试）环境生效：bundle 里存在 window，
  * 导出被跳过，不影响工厂返回值。
+ *
+ * 数据形态与 host 半身的 store.js 一致（schema 2 递归树）：顶层 nodes[]，
+ * 每个节点 type=plan | todo，plan 可挂 children。这里刻意**不做**类型判断的
+ * 「智能」推断——服务端算好的标注（progress / warnings / delegateState /
+ * overdue / dueSoon）优先，本地只在缺失时兜底，避免两边算出不同的答案。
  */
 
 /** 0..1 → 百分比整数文案。 */
@@ -29,20 +34,77 @@ function barWidth(n) {
   return v + '%'
 }
 
-/** 任务状态 → 中文标签。未知状态按待办处理，不让脏数据把面板弄崩。 */
-function statusLabel(status) {
-  if (status === 'doing') return '进行中'
-  if (status === 'done') return '已完成'
-  if (status === 'dropped') return '已放弃'
-  return '待办'
+// ------------------------------------------------------------ 树的读取
+
+/**
+ * 节点类型。缺省按「待办」兜底——与服务端 typeOf 同语义。
+ * 跨模块系统无法共享实现，靠 test/logic.test.mjs 的断言钉住一致性。
+ */
+function nodeType(node) {
+  return node !== null && node !== undefined && node.type === 'plan' ? 'plan' : 'todo'
+}
+
+/** 子节点数组（保证存在，便于无条件遍历）。 */
+function childrenOf(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return []
+  return Array.isArray(node.children) ? node.children : []
+}
+
+/** 顶层节点数组（保证存在）。 */
+function planNodes(plan) {
+  if (plan === null || plan === undefined || typeof plan !== 'object') return []
+  return Array.isArray(plan.nodes) ? plan.nodes : []
+}
+
+/** 收件箱：还没归位到任何计划下的顶层待办。 */
+function inboxOf(plan) {
+  var out = []
+  var roots = planNodes(plan)
+  for (var i = 0; i < roots.length; i++) {
+    if (nodeType(roots[i]) === 'todo') out.push(roots[i])
+  }
+  return out
+}
+
+/** 顶层计划（进度只看它们，收件箱不参与）。 */
+function topPlans(plan) {
+  var out = []
+  var roots = planNodes(plan)
+  for (var i = 0; i < roots.length; i++) {
+    if (nodeType(roots[i]) === 'plan') out.push(roots[i])
+  }
+  return out
+}
+
+/** 类型 → 中文标签。 */
+function typeLabel(type) {
+  return type === 'plan' ? '计划' : '待办'
 }
 
 /**
- * 把一个任务列表按「未完成在前、已完成/放弃沉底」排序，同组内保持原顺序。
- * 返回新数组，不改动入参。
+ * 节点完成度的兜底算法（递归）。正常路径读服务端算好的 `progress`——
+ * 完成度语义只有一处实现（src/store.js 的 nodeProgress），这里只是为了
+ * 面板拿到未标注数据（如老缓存）时不至于显示空白。
  */
-function sortTasks(tasks) {
-  var list = Array.isArray(tasks) ? tasks.slice() : []
+function progressOf(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return 0
+  if (typeof node.progress === 'number' && isFinite(node.progress)) return node.progress
+  var m = node.metric
+  if (m !== null && m !== undefined && typeof m === 'object'
+    && typeof m.target === 'number' && m.target > 0) {
+    var v = (Number(m.current) || 0) / m.target
+    return v < 0 ? 0 : (v > 1 ? 1 : v)
+  }
+  var kids = childrenOf(node)
+  if (kids.length === 0) return node.status === 'done' ? 1 : 0
+  var sum = 0
+  for (var i = 0; i < kids.length; i++) sum += progressOf(kids[i])
+  return sum / kids.length
+}
+
+/** 把一个节点列表按「未完成在前、已完成/放弃沉底」排序，同组内保持原顺序。 */
+function sortNodes(nodes) {
+  var list = Array.isArray(nodes) ? nodes.slice() : []
   var open = []
   var closed = []
   for (var i = 0; i < list.length; i++) {
@@ -53,56 +115,86 @@ function sortTasks(tasks) {
   return open.concat(closed)
 }
 
+/** 节点状态 → 中文标签。未知状态按待办处理，不让脏数据把面板弄崩。 */
+function statusLabel(status) {
+  if (status === 'doing') return '进行中'
+  if (status === 'done') return '已完成'
+  if (status === 'dropped') return '已放弃'
+  if (status === 'active') return '进行中'
+  return '待办'
+}
+
+/** 下一个待办状态：点击复选框时在 待办 ↔ 已完成 之间切换。 */
+function toggleStatus(status) {
+  return status === 'done' ? 'todo' : 'done'
+}
+
+/** 节点是否还没结束（未完成、未放弃）。 */
+function isOpen(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  return node.status !== 'done' && node.status !== 'dropped'
+}
+
+/** 本地日期字符串，用于兜底判定与「本周」窗口。 */
+function todayStr() {
+  var d = new Date()
+  var m = String(d.getMonth() + 1).padStart(2, '0')
+  var day = String(d.getDate()).padStart(2, '0')
+  return d.getFullYear() + '-' + m + '-' + day
+}
+
+/** 兜底逾期判定：只在服务端没给 `overdue` 标注时用。 */
+function overdueFallback(node, today) {
+  var anchor = null
+  if (typeof node.due === 'string' && node.due !== '') anchor = node.due
+  else if (typeof node.end === 'string' && node.end !== '') anchor = node.end
+  else if (typeof node.start === 'string' && node.start !== '') anchor = node.start
+  return anchor !== null && anchor < today
+}
+
 /**
- * 计划概览统计。用于面板头部、tab 角标与筛选条。
- * 进度优先采用服务端算好的 `progress`；缺失时退回按任务完成比例估算。
+ * 计划概览统计（递归）。用于面板头部、tab 角标与筛选条。
  *
- * 收件箱里的游离待办计入 tasks/open/done——它们也是「待办」，
- * 不显示出来就等于记了没人看（这正是「收不进来」的另一种形态）。
+ * 收件箱里的游离待办计入 todos/open——它们也是待办，不显示出来就等于
+ * 记了没人看（这正是「收不进来」的另一种形态）。
  */
 function summarize(plan) {
   var out = {
-    goals: 0, krs: 0, tasks: 0, done: 0, open: 0, progress: 0, hasPlan: false,
-    inbox: 0, inboxOpen: 0, warnings: 0, filters: {}
+    plans: 0, todos: 0, done: 0, open: 0, progress: 0, hasPlan: false,
+    inbox: 0, inboxOpen: 0, warnings: 0, depth: 0, filters: {}
   }
   if (plan === null || plan === undefined || typeof plan !== 'object') return out
-  var inbox = Array.isArray(plan.inbox) ? plan.inbox : []
-  out.inbox = inbox.length
-  for (var n = 0; n < inbox.length; n++) {
-    if (Array.isArray(inbox[n].warnings) && inbox[n].warnings.length > 0) out.warnings++
-    if (inbox[n].status === 'done') out.done++
-    else if (inbox[n].status !== 'dropped') { out.open++; out.inboxOpen++ }
-  }
-  var goals = Array.isArray(plan.goals) ? plan.goals : []
-  out.goals = goals.length
-  out.hasPlan = goals.length > 0 || inbox.length > 0
-  for (var i = 0; i < goals.length; i++) {
-    if (Array.isArray(goals[i].warnings) && goals[i].warnings.length > 0) out.warnings++
-    var krs = Array.isArray(goals[i].krs) ? goals[i].krs : []
-    out.krs += krs.length
-    for (var j = 0; j < krs.length; j++) {
-      if (Array.isArray(krs[j].warnings) && krs[j].warnings.length > 0) out.warnings++
-      var tasks = Array.isArray(krs[j].tasks) ? krs[j].tasks : []
-      out.tasks += tasks.length
-      for (var k = 0; k < tasks.length; k++) {
-        if (Array.isArray(tasks[k].warnings) && tasks[k].warnings.length > 0) out.warnings++
-        if (tasks[k].status === 'done') out.done++
-        else if (tasks[k].status !== 'dropped') out.open++
-      }
+
+  var count = function (node, depth) {
+    if (nodeType(node) === 'plan') out.plans++
+    else {
+      out.todos++
+      if (node.status === 'done') out.done++
+      else if (node.status !== 'dropped') out.open++
     }
+    if (Array.isArray(node.warnings) && node.warnings.length > 0) out.warnings++
+    if (depth > out.depth) out.depth = depth
+    var kids = childrenOf(node)
+    for (var i = 0; i < kids.length; i++) count(kids[i], depth + 1)
   }
+
+  var roots = planNodes(plan)
+  out.hasPlan = roots.length > 0
+  for (var i = 0; i < roots.length; i++) count(roots[i], 1)
+
+  var inbox = inboxOf(plan)
+  out.inbox = inbox.length
+  for (var j = 0; j < inbox.length; j++) {
+    if (isOpen(inbox[j])) out.inboxOpen++
+  }
+
   if (typeof plan.progress === 'number' && isFinite(plan.progress)) {
     out.progress = plan.progress
-  } else if (out.tasks > 0) {
-    out.progress = out.done / out.tasks
+  } else if (out.todos > 0) {
+    out.progress = out.done / out.todos
   }
   out.filters = filterCounts(plan)
   return out
-}
-
-/** 下一个任务状态：点击复选框时在 待办 ↔ 已完成 之间切换。 */
-function toggleStatus(status) {
-  return status === 'done' ? 'todo' : 'done'
 }
 
 // ------------------------------------------------- 重要程度 / 委派 / 筛选
@@ -154,57 +246,22 @@ function delegateText(node) {
   return out
 }
 
-/** 节点是否还没结束（未完成、未放弃）。 */
-function isOpen(node) {
-  if (node === null || node === undefined || typeof node !== 'object') return false
-  return node.status !== 'done' && node.status !== 'dropped'
-}
-
 /**
- * 兜底逾期判定：只在服务端没给 `overdue` 标注时用。
- * 正常路径读服务端标注——逾期语义的唯一实现是 src/store.js 的 isOverdue。
- */
-function overdueFallback(node, today) {
-  var anchor = null
-  if (typeof node.due === 'string' && node.due !== '') anchor = node.due
-  else if (typeof node.end === 'string' && node.end !== '') anchor = node.end
-  else if (typeof node.start === 'string' && node.start !== '') anchor = node.start
-  return anchor !== null && anchor < today
-}
-
-/** 本地日期字符串，用于兜底判定与「本周」窗口。 */
-function todayStr() {
-  var d = new Date()
-  var m = String(d.getMonth() + 1).padStart(2, '0')
-  var day = String(d.getDate()).padStart(2, '0')
-  return d.getFullYear() + '-' + m + '-' + day
-}
-
-/**
- * 把整棵树摊平成一维，带层级路径（如「g1 / k1」），供聚焦列表显示上下文。
+ * 把整棵树摊平成一维，带层级路径（如「n1 / n2」），供聚焦列表显示上下文。
  * 摊平是「筛选」视图的基础——筛选结果通常跨层级，树形结构反而不好读。
  */
 function flattenNodes(plan) {
   var out = []
-  if (plan === null || plan === undefined || typeof plan !== 'object') return out
-  var inbox = Array.isArray(plan.inbox) ? plan.inbox : []
-  for (var i = 0; i < inbox.length; i++) {
-    out.push({ kind: 'inbox', node: inbox[i], path: '收件箱' })
+  var visit = function (node, depth, parentPath) {
+    if (node === null || node === undefined) return
+    var id = node.id === undefined || node.id === null ? '' : String(node.id)
+    var path = parentPath === '' ? id : parentPath + ' / ' + id
+    out.push({ type: nodeType(node), node: node, depth: depth, path: path })
+    var kids = childrenOf(node)
+    for (var i = 0; i < kids.length; i++) visit(kids[i], depth + 1, path)
   }
-  var goals = Array.isArray(plan.goals) ? plan.goals : []
-  for (var g = 0; g < goals.length; g++) {
-    var goal = goals[g]
-    out.push({ kind: 'goal', node: goal, path: goal.id })
-    var krs = Array.isArray(goal.krs) ? goal.krs : []
-    for (var k = 0; k < krs.length; k++) {
-      var kr = krs[k]
-      out.push({ kind: 'kr', node: kr, path: goal.id + ' / ' + kr.id })
-      var tasks = Array.isArray(kr.tasks) ? kr.tasks : []
-      for (var t = 0; t < tasks.length; t++) {
-        out.push({ kind: 'task', node: tasks[t], path: goal.id + ' / ' + kr.id })
-      }
-    }
-  }
+  var roots = planNodes(plan)
+  for (var i = 0; i < roots.length; i++) visit(roots[i], 0, '')
   return out
 }
 
@@ -264,24 +321,74 @@ function filterCounts(plan, today) {
   return out
 }
 
+// -------------------------------------------------------------- 归位候选
+
+/**
+ * 「这个待办能移到哪儿去」——面板的归位选择器用它。
+ * 候选是所有计划节点（深度不限），带缩进路径便于区分同名计划；
+ * 当前所在位置被排除掉（移到原地没有意义）。
+ */
+function moveTargets(plan, node) {
+  var currentParent = null
+  if (node !== null && node !== undefined) {
+    var flat = flattenNodes(plan)
+    for (var i = 0; i < flat.length; i++) {
+      if (flat[i].node === node) {
+        // 摊平表里节点自身的 path 是「父 / 自己」，去掉最后一段就是父路径。
+        var parts = flat[i].path.split(' / ')
+        parts.pop()
+        currentParent = parts.length > 0 ? parts[parts.length - 1] : null
+        break
+      }
+    }
+  }
+  var out = []
+  var walk = function (n, depth) {
+    var kids = childrenOf(n)
+    for (var i = 0; i < kids.length; i++) {
+      var kid = kids[i]
+      if (nodeType(kid) === 'plan' && kid !== node && (currentParent === null || kid.id !== currentParent)) {
+        out.push({ id: kid.id, title: kid.title, depth: depth, path: kid.id })
+      }
+      walk(kid, depth + 1)
+    }
+  }
+  var roots = planNodes(plan)
+  for (var i = 0; i < roots.length; i++) {
+    if (nodeType(roots[i]) === 'plan' && roots[i] !== node) {
+      out.push({ id: roots[i].id, title: roots[i].title, depth: 0, path: roots[i].id })
+    }
+    walk(roots[i], 1)
+  }
+  return out
+}
+
 if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exports) {
   module.exports = {
     pct: pct,
     barWidth: barWidth,
+    nodeType: nodeType,
+    childrenOf: childrenOf,
+    planNodes: planNodes,
+    inboxOf: inboxOf,
+    topPlans: topPlans,
+    typeLabel: typeLabel,
+    progressOf: progressOf,
+    sortNodes: sortNodes,
     statusLabel: statusLabel,
-    sortTasks: sortTasks,
-    summarize: summarize,
     toggleStatus: toggleStatus,
+    isOpen: isOpen,
+    todayStr: todayStr,
+    summarize: summarize,
     priorityLabel: priorityLabel,
     priorityRank: priorityRank,
     nextPriority: nextPriority,
     delegateLabel: delegateLabel,
     delegateText: delegateText,
-    isOpen: isOpen,
-    todayStr: todayStr,
     flattenNodes: flattenNodes,
     FILTERS: FILTERS,
     focusList: focusList,
     filterCounts: filterCounts,
+    moveTargets: moveTargets,
   }
 }

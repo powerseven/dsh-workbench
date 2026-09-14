@@ -5,41 +5,53 @@
  *
  *   1. 模型工具（plan_*）—— 让 agent 直接读计划和回写进度。
  *      这是本插件相对普通待办应用的关键差异：AI 干完活可以自己把
- *      对应任务标记完成，进度不需要人来同步。
+ *      对应待办标记完成，进度不需要人来同步。
  *   2. /api/workbench/* HTTP 数据面 —— 浏览器侧边面板用。
  *
  * 工作区定位：每条工具调用都带着 agent，agent 的会话 header 里有 cwd，
  * plan/ 就建在那个目录下 —— 计划与产出同仓，可 git diff、可回溯。
+ *
+ * 工具面按「节点」而不是按「层级」组织（见 docs/SCOPE.md 第二步）：
+ * 只有 node_add / node_set / node_move / node_remove 四个结构操作，
+ * 作用在任意节点上；`type` 决定它是计划还是待办。原来的 goal/kr/task
+ * 六件套是固定三层的产物——三套 API 做同一件事，agent 每次都得先想
+ * 「这东西算 goal 还是 kr」，而这些区分对人本来就没有意义。
  */
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DELEGATE_STATUS,
-  KIND_LABEL,
-  PlanStore,
-  NODE_STATUS,
+  NODE_TYPE,
   PRIORITY,
-  TASK_STATUS,
-  applyStatus,
+  PlanStore,
+  TODO_STATUS,
+  TYPE_LABEL,
+  appendChild,
+  applyFields,
+  childrenOf,
   controlSummary,
   delegateState,
   delegatedList,
   emptyPlan,
-  goalProgress,
   isDueWithin,
   isOverdue,
-  krProgress,
-  nextId,
+  makeNode,
+  moveNode,
+  nodeProgress,
+  nodeWarnings,
+  planNodes,
   planProgress,
   priorityOf,
-  resolveAny,
-  resolveRef,
-  nodeWarnings,
+  removeNode,
+  resolveNode,
   setDelegate,
+  setNodeType,
   setPriority,
   setReceipt,
-  taskCounts,
+  setStatus,
+  todoCounts,
   todayStr,
+  typeOf,
 } from './store.js'
 
 export const name = 'dsh-workbench'
@@ -89,21 +101,29 @@ function makeTool(name, description, parameters, execute) {
 /**
  * 给一个节点补上派生字段。这些字段**从不落盘**（NFR-2：派生量不落盘，
  * 免得两个真相源漂移）：
- *   priority      缺省补成 normal，前端不必自己兜底
+ *   type          节点类型（缺省按待办兜底，前端不必自己判断）
+ *   progress      递归算出的完成度
+ *   priority      缺省补成 normal
  *   warnings      按重要程度给出的管控缺口提示
  *   delegateState 委派的可判断形态（含两种逾期标记）
  *   overdue       是否逾期（含委派逾期）
  *   dueSoon       7 天内到期
  */
-function annotate(node, kind, today) {
-  return {
+function annotate(node, today) {
+  const type = typeOf(node)
+  const out = {
     ...node,
+    type,
+    progress: nodeProgress(node),
     priority: priorityOf(node),
-    warnings: nodeWarnings(node, kind),
+    warnings: nodeWarnings(node, type),
     delegateState: delegateState(node, today),
     overdue: isOverdue(node, today),
     dueSoon: isDueWithin(node, 7, today),
   }
+  // 子节点递归标注，覆盖掉 `...node` 带上来的原始 children。
+  if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today))
+  return out
 }
 
 /** 给计划补上派生字段（进度、管控汇总、委派清单），返回给模型/前端时用。 */
@@ -112,19 +132,10 @@ function withProgress(plan) {
   return {
     ...plan,
     progress: planProgress(plan),
-    counts: taskCounts(plan),
+    counts: todoCounts(plan),
     control: controlSummary(plan, today),
     delegated: delegatedList(plan, today),
-    inbox: (plan.inbox ?? []).map((node) => annotate(node, 'inbox', today)),
-    goals: (plan.goals ?? []).map((goal) => ({
-      ...annotate(goal, 'goal', today),
-      progress: goalProgress(goal),
-      krs: (goal.krs ?? []).map((kr) => ({
-        ...annotate(kr, 'kr', today),
-        progress: krProgress(kr),
-        tasks: (kr.tasks ?? []).map((task) => annotate(task, 'task', today)),
-      })),
-    })),
+    nodes: planNodes(plan).map((node) => annotate(node, today)),
   }
 }
 
@@ -132,19 +143,11 @@ const str = (v) => (typeof v === 'string' ? v.trim() : '')
 const optStr = (v) => (typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined)
 
 /**
- * 定位一个「待办」：子计划下的任务，或收件箱里的游离待办。
- *
- * 不能只按 kind='task' 找——收件箱待办的 kind 是 `inbox`，限定种类会漏掉它们，
- * 于是「收件箱里勾一条完成」直接报「找不到 task」。这一类错误只有把工具真跑
- * 一遍才会暴露（见 test/host.test.mjs）。
+ * 定位一个「待办」。agent 勾选进度的入口用它：限定类型可以拦住「把整条
+ * 计划标成已完成」这类误操作，并给出可读的替代方向。
  */
 function resolveTodo(plan, ref) {
-  const found = resolveAny(plan, ref)
-  if (found.kind !== 'task' && found.kind !== 'inbox') {
-    throw new Error('「' + String(ref) + '」是' + (KIND_LABEL[found.kind] ?? found.kind)
-      + '，不是待办——改计划/子计划的状态请用 plan_goal_set / plan_kr_set')
-  }
-  return found
+  return resolveNode(plan, ref, 'todo')
 }
 
 export function apply(ctx) {
@@ -152,7 +155,9 @@ export function apply(ctx) {
 
   ctx.tools.register(makeTool(
     'plan_show',
-    '查看当前工作区的工作计划（目标 → 关键结果 → 任务 三级树，含自动计算的完成度）。计划文件位于 <工作区>/plan/plan.json。',
+    '查看当前工作区的工作计划。是一棵**递归树**：计划下可以挂子计划（深度不限），叶子是待办；'
+      + '不挂在任何计划下的顶层待办就是收件箱。每个节点都带自动算好的完成度与管控提示。'
+      + '计划文件位于 <工作区>/plan/plan.json。',
     {},
     async (_args, exec) => {
       const store = storeFor(cwdOf(exec))
@@ -162,244 +167,242 @@ export function apply(ctx) {
   ))
 
   ctx.tools.register(makeTool(
-    'plan_goal_add',
-    '新增一个计划（计划树的顶层）。计划下可以用 plan_kr_add 挂子计划，子计划下再用 plan_task_add 挂待办。'
+    'plan_node_add',
+    '新增一个节点：type=plan 是计划（可以再挂子项），type=todo 是待办（叶子，实际动手做的事）。'
+      + 'parent 不传就放在顶层——顶层待办即收件箱，适合「先记下来、之后再归位」。'
       + '重要程度决定这个节点要走多少流程：高 = 必须周期与负责人；中 = 要有结束日期；低 = 只记录。',
     {
-      title: { type: 'string', required: true, description: '计划标题，一句话说清要达成什么' },
-      owner: { type: 'string', description: '可选：负责人' },
-      start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD' },
-      end: { type: 'string', description: '可选：周期结束 YYYY-MM-DD' },
+      title: { type: 'string', required: true, description: '节点标题，一句话说清要达成什么或要做什么' },
+      type: { type: 'string', description: '节点类型：' + NODE_TYPE.join(' / ') + '（plan=计划, todo=待办），默认 todo' },
+      parent: { type: 'string', description: '可选：父计划的 id 或标题。不传则放到顶层' },
+      owner: { type: 'string', description: '可选：负责人（计划用）' },
+      start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD（计划用）' },
+      end: { type: 'string', description: '可选：周期结束 YYYY-MM-DD（计划用）' },
+      due: { type: 'string', description: '可选：截止日期 YYYY-MM-DD（待办用）' },
       priority: { type: 'string', description: '可选：重要程度 ' + PRIORITY.join(' / ') + '，默认 normal（中）' },
-      note: { type: 'string', description: '可选：备注' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const title = str(args?.title)
-      if (title === '') throw new Error('计划标题不能为空')
-      const plan = await store.load()
-      const goal = {
-        id: nextId(plan, 'g'),
-        title,
-        status: 'active',
-        krs: [],
-      }
-      const owner = optStr(args?.owner)
-      if (owner !== undefined) goal.owner = owner
-      const start = optStr(args?.start)
-      if (start !== undefined) goal.start = start
-      const end = optStr(args?.end)
-      if (end !== undefined) goal.end = end
-      const note = optStr(args?.note)
-      if (note !== undefined) goal.note = note
-      if (optStr(args?.priority) !== undefined) setPriority(goal, args.priority)
-      plan.goals.push(goal)
-      await store.save(plan, { reason: 'goal-add' })
-      return { ok: true, goal, warnings: nodeWarnings(goal, 'goal'), plan: withProgress(plan) }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_kr_add',
-    '在某个计划下新增子计划（KR）。已声明计划 id 或标题均可定位。子计划可以声明 target/current 做量化跟踪，也可以只挂待办清单。',
-    {
-      goal: { type: 'string', required: true, description: '计划 id（如 g1）或标题' },
-      title: { type: 'string', required: true, description: '子计划标题' },
-      owner: { type: 'string', description: '可选：负责人' },
-      start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD' },
-      end: { type: 'string', description: '可选：周期结束 YYYY-MM-DD' },
-      target: { type: 'number', description: '可选：量化目标值（与 current 配套）' },
+      target: { type: 'number', description: '可选：量化目标值（与 current 配套，适合可计数的计划）' },
       current: { type: 'number', description: '可选：当前值' },
       unit: { type: 'string', description: '可选：量化单位（个 / 万元 / % 等）' },
-      priority: { type: 'string', description: '可选：重要程度 ' + PRIORITY.join(' / ') + '，默认 normal（中）' },
       note: { type: 'string', description: '可选：备注' },
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
-      const title = str(args?.title)
-      if (title === '') throw new Error('子计划标题不能为空')
       const plan = await store.load()
-      const { node: goal } = resolveRef(plan, args?.goal, 'goal')
-      const kr = { id: nextId(plan, 'k'), title, status: 'active', tasks: [] }
-      const owner = optStr(args?.owner)
-      if (owner !== undefined) kr.owner = owner
-      const start = optStr(args?.start)
-      if (start !== undefined) kr.start = start
-      const end = optStr(args?.end)
-      if (end !== undefined) kr.end = end
-      if (Number.isFinite(args?.target)) kr.target = Number(args.target)
-      if (Number.isFinite(args?.current)) kr.current = Number(args.current)
-      const unit = optStr(args?.unit)
-      if (unit !== undefined) kr.unit = unit
-      const note = optStr(args?.note)
-      if (note !== undefined) kr.note = note
-      if (optStr(args?.priority) !== undefined) setPriority(kr, args.priority)
-      if (goal.krs === undefined) goal.krs = []
-      goal.krs.push(kr)
-      await store.save(plan, { reason: 'kr-add' })
-      return { ok: true, kr, goal: goal.id, warnings: nodeWarnings(kr, 'kr'), plan: withProgress(plan) }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_task_add',
-    '在某个子计划下新增待办（实际动手做的事）。还不知道该挂在哪儿时，先用 plan_todo_add 丢进收件箱。',
-    {
-      kr: { type: 'string', required: true, description: '子计划的 id（如 k1）或标题' },
-      title: { type: 'string', required: true, description: '待办标题' },
-      due: { type: 'string', description: '可选：截止日期 YYYY-MM-DD' },
-      priority: { type: 'string', description: '可选：重要程度 ' + PRIORITY.join(' / ') + '，默认 normal（中）' },
-      note: { type: 'string', description: '可选：备注' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const title = str(args?.title)
-      if (title === '') throw new Error('待办标题不能为空')
-      const plan = await store.load()
-      const { node: kr } = resolveRef(plan, args?.kr, 'kr')
-      const task = { id: nextId(plan, 't'), title, status: 'todo' }
-      const due = optStr(args?.due)
-      if (due !== undefined) task.due = due
-      const note = optStr(args?.note)
-      if (note !== undefined) task.note = note
-      if (optStr(args?.priority) !== undefined) setPriority(task, args.priority)
-      if (kr.tasks === undefined) kr.tasks = []
-      kr.tasks.push(task)
-      await store.save(plan, { reason: 'task-add' })
-      return { ok: true, task, kr: kr.id, warnings: nodeWarnings(task, 'task'), plan: withProgress(plan) }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_todo_add',
-    '记一条待办，放进收件箱（不挂任何计划）。这是「记下来」成本最低的入口：'
-      + '开会、聊天里冒出来的事先记上，之后再归位到子计划下。已经知道该挂哪儿就用 plan_task_add。',
-    {
-      title: { type: 'string', required: true, description: '待办标题' },
-      due: { type: 'string', description: '可选：截止日期 YYYY-MM-DD' },
-      priority: { type: 'string', description: '可选：重要程度 ' + PRIORITY.join(' / ') + '，默认 normal（中）' },
-      note: { type: 'string', description: '可选：备注' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const title = str(args?.title)
-      if (title === '') throw new Error('待办标题不能为空')
-      const plan = await store.load()
-      const todo = { id: nextId(plan, 't'), title, status: 'todo' }
-      const due = optStr(args?.due)
-      if (due !== undefined) todo.due = due
-      const note = optStr(args?.note)
-      if (note !== undefined) todo.note = note
-      if (optStr(args?.priority) !== undefined) setPriority(todo, args.priority)
-      plan.inbox.push(todo)
-      await store.save(plan, { reason: 'todo-add' })
-      return { ok: true, todo, warnings: nodeWarnings(todo, 'inbox'), plan: withProgress(plan) }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_task_set',
-    '更新一个待办的状态。这是 agent 回写进度的主要入口：干完一件事就把它标成 done，'
-      + '完成时会自动记下完成时间（doneAt），计划的完成度会自动重算。',
-    {
-      task: { type: 'string', required: true, description: '待办 id（如 t1）或标题' },
-      status: { type: 'string', required: true, description: '新状态：todo(待办) / doing(进行中) / done(已完成) / dropped(已放弃)' },
-      note: { type: 'string', description: '可选：追加备注（留痕为什么放弃/怎么完成的）' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const status = str(args?.status)
-      if (!TASK_STATUS.includes(status)) {
-        throw new Error('status 必须是 ' + TASK_STATUS.join(' / ') + ' 之一，收到：' + status)
+      const node = makeNode(plan, {
+        type: args?.type,
+        title: args?.title,
+        owner: args?.owner,
+        start: args?.start,
+        end: args?.end,
+        due: args?.due,
+        priority: args?.priority,
+        target: args?.target,
+        current: args?.current,
+        unit: args?.unit,
+        note: args?.note,
+      })
+      appendChild(plan, node, args?.parent)
+      await store.save(plan, { reason: typeOf(node) + '-add' })
+      return {
+        ok: true,
+        node: { id: node.id, type: typeOf(node), title: node.title },
+        warnings: nodeWarnings(node, typeOf(node)),
+        plan: withProgress(plan),
       }
-      const plan = await store.load()
-      const found = resolveTodo(plan, args?.task)
-      applyStatus(found.node, status)
-      const note = optStr(args?.note)
-      if (note !== undefined) found.node.note = note
-      await store.save(plan, { reason: 'task-' + status })
-      return { ok: true, task: found.node, warnings: nodeWarnings(found.node, found.kind), plan: withProgress(plan) }
     },
   ))
 
   ctx.tools.register(makeTool(
-    'plan_kr_set',
-    '更新子计划的量化进度、周期、负责人、重要程度或状态。挂待办清单的子计划不需要调这个，改待办状态即可。',
+    'plan_node_set',
+    '更新任意节点的字段：标题、类型、负责人、周期、截止、重要程度、状态、量化进度、备注。'
+      + '不传的字段保持不动。计划的状态是 active / done / dropped，待办是 todo / doing / done / dropped。'
+      + '改 type 可以把待办提升为计划（继续往下拆），或把空计划降回待办——'
+      + '有子节点的计划不能降级为待办，要先移走或删掉子节点。',
     {
-      kr: { type: 'string', required: true, description: '子计划的 id 或标题' },
-      current: { type: 'number', description: '可选：当前值' },
-      target: { type: 'number', description: '可选：目标值' },
-      owner: { type: 'string', description: '可选：负责人' },
-      start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD' },
-      end: { type: 'string', description: '可选：周期结束 YYYY-MM-DD' },
-      priority: { type: 'string', description: '可选：重要程度 ' + PRIORITY.join(' / ') },
-      status: { type: 'string', description: '可选：active / done / dropped' },
-      note: { type: 'string', description: '可选：备注' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const plan = await store.load()
-      const { node: kr } = resolveRef(plan, args?.kr, 'kr')
-      if (Number.isFinite(args?.current)) kr.current = Number(args.current)
-      if (Number.isFinite(args?.target)) kr.target = Number(args.target)
-      const owner = optStr(args?.owner)
-      if (owner !== undefined) kr.owner = owner
-      const start = optStr(args?.start)
-      if (start !== undefined) kr.start = start
-      const end = optStr(args?.end)
-      if (end !== undefined) kr.end = end
-      if (optStr(args?.priority) !== undefined) setPriority(kr, args.priority)
-      if (typeof args?.status === 'string' && args.status.trim() !== '') {
-        const status = args.status.trim()
-        if (!NODE_STATUS.includes(status)) {
-          throw new Error('status 必须是 ' + NODE_STATUS.join(' / ') + ' 之一，收到：' + status)
-        }
-        applyStatus(kr, status)
-      }
-      const note = optStr(args?.note)
-      if (note !== undefined) kr.note = note
-      await store.save(plan, { reason: 'kr-set' })
-      return { ok: true, kr, warnings: nodeWarnings(kr, 'kr'), plan: withProgress(plan) }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_goal_set',
-    '更新计划的标题、负责人、周期、重要程度或备注。',
-    {
-      goal: { type: 'string', required: true, description: '计划 id 或标题' },
+      node: { type: 'string', required: true, description: '节点 id（如 n1 / g1）或标题' },
+      type: { type: 'string', description: '可选：改为 ' + NODE_TYPE.join(' / ') + '（plan=计划, todo=待办）' },
       title: { type: 'string', description: '可选：新标题' },
       owner: { type: 'string', description: '可选：负责人' },
       start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD' },
       end: { type: 'string', description: '可选：周期结束 YYYY-MM-DD' },
+      due: { type: 'string', description: '可选：截止日期 YYYY-MM-DD' },
       priority: { type: 'string', description: '可选：重要程度 ' + PRIORITY.join(' / ') },
-      status: { type: 'string', description: '可选：active / done / dropped' },
+      status: { type: 'string', description: '可选：计划 active/done/dropped；待办 todo/doing/done/dropped' },
+      target: { type: 'number', description: '可选：量化目标值' },
+      current: { type: 'number', description: '可选：当前值' },
+      unit: { type: 'string', description: '可选：量化单位' },
       note: { type: 'string', description: '可选：备注' },
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
       const plan = await store.load()
-      const { node: goal } = resolveRef(plan, args?.goal, 'goal')
-      const title = optStr(args?.title)
-      if (title !== undefined) goal.title = title
-      const owner = optStr(args?.owner)
-      if (owner !== undefined) goal.owner = owner
-      const start = optStr(args?.start)
-      if (start !== undefined) goal.start = start
-      const end = optStr(args?.end)
-      if (end !== undefined) goal.end = end
-      const note = optStr(args?.note)
-      if (note !== undefined) goal.note = note
-      if (optStr(args?.priority) !== undefined) setPriority(goal, args.priority)
-      if (typeof args?.status === 'string' && args.status.trim() !== '') {
-        const status = args.status.trim()
-        if (!NODE_STATUS.includes(status)) {
-          throw new Error('status 必须是 ' + NODE_STATUS.join(' / ') + ' 之一，收到：' + status)
-        }
-        applyStatus(goal, status)
+      const { node } = resolveNode(plan, args?.node, 'any')
+      // 先换型再写字段：状态校验依赖类型，顺序反了会用旧类型校验新状态。
+      if (optStr(args?.type) !== undefined) setNodeType(node, args.type)
+      applyFields(node, args)
+      if (optStr(args?.status) !== undefined) setStatus(node, args.status)
+      const type = typeOf(node)
+      await store.save(plan, { reason: type + '-set' })
+      return { ok: true, node, warnings: nodeWarnings(node, type), plan: withProgress(plan) }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_node_move',
+    '把一个节点移到另一个计划下（收件箱归位），或调整它在同一层里的顺序。'
+      + 'parent 不传就移到顶层。不能移到自己的子孙下面——那会形成环。',
+    {
+      node: { type: 'string', required: true, description: '要移动的节点 id 或标题' },
+      parent: { type: 'string', description: '可选：目标父计划的 id 或标题。**不传就移到顶层**（收件箱）——工具参数不接受 null，要移回顶层请省略这个参数' },
+      index: { type: 'number', description: '可选：落在第几个位置（从 0 起），不传则追加到末尾' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const r = moveNode(plan, args?.node, args?.parent, args?.index)
+      await store.save(plan, { reason: 'node-move' })
+      return {
+        ok: true,
+        node: { id: r.node.id, title: r.node.title },
+        from: r.from,
+        to: r.to,
+        plan: withProgress(plan),
       }
-      await store.save(plan, { reason: 'goal-set' })
-      return { ok: true, goal, warnings: nodeWarnings(goal, 'goal'), plan: withProgress(plan) }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_node_remove',
+    '删除一个节点。删计划会**连带删掉它的整棵子树**——返回值里的 removed 会告诉你删了多少东西。',
+    {
+      node: { type: 'string', required: true, description: '节点 id 或标题' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const r = removeNode(plan, args?.node)
+      await store.save(plan, { reason: 'node-remove' })
+      return {
+        ok: true,
+        removed: { id: r.node.id, type: typeOf(r.node), title: r.node.title, parent: r.parent, stats: r.removed },
+        plan: withProgress(plan),
+      }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_todo_set',
+    '更新一个待办的状态。这是 agent 回写进度的主要入口：干完一件事就把它标成 done，'
+      + '完成时会自动记下完成时间（doneAt），计划的完成度会自动重算。',
+    {
+      todo: { type: 'string', required: true, description: '待办的 id（如 n3 / t1）或标题' },
+      status: { type: 'string', required: true, description: '新状态：' + TODO_STATUS.join(' / ') + '（todo=待办, doing=进行中, done=已完成, dropped=已放弃）' },
+      note: { type: 'string', description: '可选：追加备注（留痕为什么放弃/怎么完成的）' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const found = resolveTodo(plan, args?.todo)
+      setStatus(found.node, args?.status)
+      const note = optStr(args?.note)
+      if (note !== undefined) found.node.note = note
+      await store.save(plan, { reason: 'todo-' + found.node.status })
+      return { ok: true, todo: found.node, warnings: nodeWarnings(found.node, 'todo'), plan: withProgress(plan) }
+    },
+  ))
+
+  // ------------------------------------------------- 重要程度 / 委派（任意节点）
+
+  ctx.tools.register(makeTool(
+    'plan_priority_set',
+    '设置任意节点（计划或待办）的重要程度。它不是标签而是管控强度开关：'
+      + 'high 要求周期与负责人、落后要预警；normal 要求有截止；low 只记录不催。返回 warnings 指出还缺什么。',
+    {
+      node: { type: 'string', required: true, description: '节点 id（如 n1 / g1）或标题' },
+      priority: { type: 'string', required: true, description: PRIORITY.join(' / ') + '（high=高, normal=中, low=低）' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const found = resolveNode(plan, args?.node, 'any')
+      setPriority(found.node, args?.priority)
+      await store.save(plan, { reason: 'priority-' + priorityOf(found.node) })
+      return {
+        ok: true,
+        node: { id: found.node.id, type: typeOf(found.node), title: found.node.title, priority: priorityOf(found.node) },
+        warnings: nodeWarnings(found.node, typeOf(found.node)),
+        plan: withProgress(plan),
+      }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_delegate_set',
+    '把一件事委派给某人。记录委派对象、委派时间与期望完成时间，回执状态初始为 pending（待接受）。'
+      + '重新委派（换人）会把回执重置为待接受并刷新委派时间——上一轮的回执作废。',
+    {
+      node: { type: 'string', required: true, description: '节点 id 或标题（计划 / 待办均可）' },
+      to: { type: 'string', required: true, description: '委派给谁（人名）' },
+      expectAt: { type: 'string', description: '可选：期望完成日期 YYYY-MM-DD，逾期未回执会被标出来' },
+      note: { type: 'string', description: '可选：交代的话 / 期望产出' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const found = resolveNode(plan, args?.node, 'any')
+      setDelegate(found.node, { to: args?.to, expectAt: args?.expectAt, note: args?.note })
+      await store.save(plan, { reason: 'delegate-set' })
+      return {
+        ok: true,
+        node: { id: found.node.id, type: typeOf(found.node), title: found.node.title },
+        delegate: delegateState(found.node),
+        plan: withProgress(plan),
+      }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_delegate_receipt',
+    '登记一次委派回执：对方接受了 / 拒绝了 / 把事交回来了。'
+      + '委派如果没有回执，就等于交代完石沉大海——所以回执要显式记下来。',
+    {
+      node: { type: 'string', required: true, description: '节点 id 或标题' },
+      status: { type: 'string', required: true, description: '回执状态：' + DELEGATE_STATUS.join(' / ') + '（pending=待接受, accepted=已接受, declined=已拒绝, returned=已交回）' },
+      expectAt: { type: 'string', description: '可选：改期望完成日期 YYYY-MM-DD' },
+      note: { type: 'string', description: '可选：回执备注' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const found = resolveNode(plan, args?.node, 'any')
+      setReceipt(found.node, args?.status, { expectAt: args?.expectAt, note: args?.note })
+      await store.save(plan, { reason: 'delegate-' + found.node.delegate.status })
+      return {
+        ok: true,
+        node: { id: found.node.id, type: typeOf(found.node), title: found.node.title },
+        delegate: delegateState(found.node),
+        plan: withProgress(plan),
+      }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_delegated',
+    '列出所有委派出去的事项（我委派出去的）：对象、期望完成时间、回执状态，逾期未回执的排在前面。',
+    {
+      open: { type: 'boolean', description: '可选：只看未完成（默认 true）' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const all = delegatedList(plan)
+      const openOnly = args?.open !== false
+      const items = openOnly ? all.filter((x) => x.status !== 'done' && x.status !== 'dropped') : all
+      return {
+        ok: true,
+        total: all.length,
+        items: items.map((x) => ({ ...x, typeLabel: TYPE_LABEL[x.type] ?? x.type })),
+      }
     },
   ))
 
@@ -441,101 +444,6 @@ export function apply(ctx) {
       if (file === '') throw new Error('需要版本文件名')
       const plan = await store.restore(file)
       return { ok: true, restoredFrom: file, plan: withProgress(plan) }
-    },
-  ))
-
-  // ------------------------------------------------- 重要程度 / 委派（任意节点）
-
-  ctx.tools.register(makeTool(
-    'plan_priority_set',
-    '设置任意节点（计划 / 子计划 / 待办，含收件箱）的重要程度。它不是标签而是管控强度开关：'
-      + 'high 要求周期与负责人、落后要预警；normal 要求有截止；low 只记录不催。返回 warnings 指出还缺什么。',
-    {
-      node: { type: 'string', required: true, description: '节点 id（如 g1 / k1 / t1）或标题' },
-      priority: { type: 'string', required: true, description: PRIORITY.join(' / ') + '（high=高, normal=中, low=低）' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const plan = await store.load()
-      const found = resolveAny(plan, args?.node)
-      setPriority(found.node, args?.priority)
-      await store.save(plan, { reason: 'priority-' + priorityOf(found.node) })
-      return {
-        ok: true,
-        node: { id: found.node.id, kind: found.kind, title: found.node.title, priority: priorityOf(found.node) },
-        warnings: nodeWarnings(found.node, found.kind),
-        plan: withProgress(plan),
-      }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_delegate_set',
-    '把一件事委派给某人。记录委派对象、委派时间与期望完成时间，回执状态初始为 pending（待接受）。'
-      + '重新委派（换人）会把回执重置为待接受并刷新委派时间——上一轮的回执作废。',
-    {
-      node: { type: 'string', required: true, description: '节点 id 或标题（计划 / 子计划 / 待办均可）' },
-      to: { type: 'string', required: true, description: '委派给谁（人名）' },
-      expectAt: { type: 'string', description: '可选：期望完成日期 YYYY-MM-DD，逾期未回执会被标出来' },
-      note: { type: 'string', description: '可选：交代的话 / 期望产出' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const plan = await store.load()
-      const found = resolveAny(plan, args?.node)
-      setDelegate(found.node, { to: args?.to, expectAt: args?.expectAt, note: args?.note })
-      await store.save(plan, { reason: 'delegate-set' })
-      return {
-        ok: true,
-        node: { id: found.node.id, kind: found.kind, title: found.node.title },
-        delegate: delegateState(found.node),
-        plan: withProgress(plan),
-      }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_delegate_receipt',
-    '登记一次委派回执：对方接受了 / 拒绝了 / 把事交回来了。'
-      + '委派如果没有回执，就等于交代完石沉大海——所以回执要显式记下来。',
-    {
-      node: { type: 'string', required: true, description: '节点 id 或标题' },
-      status: { type: 'string', required: true, description: '回执状态：' + DELEGATE_STATUS.join(' / ') + '（pending=待接受, accepted=已接受, declined=已拒绝, returned=已交回）' },
-      expectAt: { type: 'string', description: '可选：改期望完成日期 YYYY-MM-DD' },
-      note: { type: 'string', description: '可选：回执备注' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const plan = await store.load()
-      const found = resolveAny(plan, args?.node)
-      setReceipt(found.node, args?.status, { expectAt: args?.expectAt, note: args?.note })
-      await store.save(plan, { reason: 'delegate-' + found.node.delegate.status })
-      return {
-        ok: true,
-        node: { id: found.node.id, kind: found.kind, title: found.node.title },
-        delegate: delegateState(found.node),
-        plan: withProgress(plan),
-      }
-    },
-  ))
-
-  ctx.tools.register(makeTool(
-    'plan_delegated',
-    '列出所有委派出去的事项（我委派出去的）：对象、期望完成时间、回执状态，逾期未回执的排在前面。',
-    {
-      open: { type: 'boolean', description: '可选：只看未完成（默认 true）' },
-    },
-    async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
-      const plan = await store.load()
-      const all = delegatedList(plan)
-      const openOnly = args?.open !== false
-      const items = openOnly ? all.filter((x) => x.status !== 'done' && x.status !== 'dropped') : all
-      return {
-        ok: true,
-        total: all.length,
-        items: items.map((x) => ({ ...x, kindLabel: KIND_LABEL[x.kind] ?? x.kind })),
-      }
     },
   ))
 
@@ -609,35 +517,61 @@ export function apply(ctx) {
       json(res, { ok: true, cwd, dir: store.dir, plan: withProgress(plan) })
     })
 
-    route('/task-set', async (req, res) => {
+    /** 勾选待办。与工具走同一条写入路径（含版本归档）。 */
+    route('/todo-set', async (req, res) => {
       const body = await readBody(req)
       const store = storeFor(resolveCwd(body.sessionId))
-      const status = str(body.status)
-      if (!TASK_STATUS.includes(status)) {
-        throw new Error('status 必须是 ' + TASK_STATUS.join(' / ') + ' 之一')
-      }
       const plan = await store.load()
-      // 用 resolveTodo 而不是 resolveRef(...,'task')：面板上的待办可能是收件箱里的
-      // 游离待办（不挂在任何子计划下），限定种类会找不到它。
-      const found = resolveTodo(plan, body.task)
-      applyStatus(found.node, status)
-      await store.save(plan, { reason: 'task-' + status })
+      // 限定类型找待办：面板上的待办可能挂在任意深度的计划下，也可能在收件箱里。
+      const found = resolveTodo(plan, body.todo)
+      setStatus(found.node, body.status)
+      await store.save(plan, { reason: 'todo-' + found.node.status })
       json(res, { ok: true, plan: withProgress(plan) })
     })
 
+    /** 新增节点（收件箱快速记一条，或计划下加子项）。 */
+    route('/node-add', async (req, res) => {
+      const body = await readBody(req)
+      const store = storeFor(resolveCwd(body.sessionId))
+      const plan = await store.load()
+      const node = makeNode(plan, {
+        type: body.type,
+        title: body.title,
+        due: body.due,
+        priority: body.priority,
+        note: body.note,
+      })
+      appendChild(plan, node, body.parent)
+      await store.save(plan, { reason: typeOf(node) + '-add' })
+      json(res, { ok: true, node: { id: node.id, type: typeOf(node) }, plan: withProgress(plan) })
+    })
+
     /**
-     * 改节点属性（重要程度 / 委派回执）。面板上的「高/中/低」徽章点击循环、
-     * 以及将来的回执按钮都走这里——不再为每种属性各开一条路由。
+     * 改节点属性（类型 / 重要程度 / 委派回执 / 状态 / 标题）。面板上的「高/中/低」
+     * 徽章点击循环、⇧/⇩ 换型、回执按钮都走这里——不再为每种属性各开一条路由。
      */
     route('/node-set', async (req, res) => {
       const body = await readBody(req)
       const store = storeFor(resolveCwd(body.sessionId))
       const plan = await store.load()
-      const found = resolveAny(plan, body.node)
+      const found = resolveNode(plan, body.node, 'any')
       const reasons = []
+      // 换型排在最前：状态是按类型校验的，顺序反了会用旧类型校验新状态。
+      if (optStr(body.type) !== undefined) {
+        setNodeType(found.node, body.type)
+        reasons.push(typeOf(found.node) + '-retype')
+      }
+      if (optStr(body.title) !== undefined || optStr(body.note) !== undefined) {
+        applyFields(found.node, { title: body.title, note: body.note })
+        reasons.push('node-edit')
+      }
       if (optStr(body.priority) !== undefined) {
         setPriority(found.node, body.priority)
         reasons.push('priority-' + priorityOf(found.node))
+      }
+      if (optStr(body.status) !== undefined) {
+        setStatus(found.node, body.status)
+        reasons.push(typeOf(found.node) + '-' + found.node.status)
       }
       if (optStr(body.receipt) !== undefined) {
         setReceipt(found.node, body.receipt, { expectAt: body.expectAt, note: body.note })
@@ -647,25 +581,29 @@ export function apply(ctx) {
         setDelegate(found.node, { to: body.to, expectAt: body.expectAt, note: body.note })
         reasons.push('delegate-set')
       }
-      if (reasons.length === 0) throw new Error('没有要改的属性：可传 priority / receipt / to')
+      if (reasons.length === 0) throw new Error('没有要改的属性：可传 type / priority / status / title / receipt / to')
       await store.save(plan, { reason: reasons.join('+') })
-      json(res, { ok: true, node: { id: found.node.id, kind: found.kind }, plan: withProgress(plan) })
+      json(res, { ok: true, node: { id: found.node.id, type: typeOf(found.node) }, plan: withProgress(plan) })
     })
 
-    /** 收件箱快速记一条（面板顶部的输入框）。先记下来，之后再归位。 */
-    route('/todo-add', async (req, res) => {
+    /** 移动节点（收件箱归位 / 调整顺序）。 */
+    route('/node-move', async (req, res) => {
       const body = await readBody(req)
       const store = storeFor(resolveCwd(body.sessionId))
-      const title = str(body.title)
-      if (title === '') throw new Error('待办标题不能为空')
       const plan = await store.load()
-      const todo = { id: nextId(plan, 't'), title, status: 'todo' }
-      const due = optStr(body.due)
-      if (due !== undefined) todo.due = due
-      if (optStr(body.priority) !== undefined) setPriority(todo, body.priority)
-      plan.inbox.push(todo)
-      await store.save(plan, { reason: 'todo-add' })
-      json(res, { ok: true, todo: { id: todo.id }, plan: withProgress(plan) })
+      const r = moveNode(plan, body.node, body.parent, body.index)
+      await store.save(plan, { reason: 'node-move' })
+      json(res, { ok: true, node: { id: r.node.id }, from: r.from, to: r.to, plan: withProgress(plan) })
+    })
+
+    /** 删除节点（连带子树）。 */
+    route('/node-remove', async (req, res) => {
+      const body = await readBody(req)
+      const store = storeFor(resolveCwd(body.sessionId))
+      const plan = await store.load()
+      const r = removeNode(plan, body.node)
+      await store.save(plan, { reason: 'node-remove' })
+      json(res, { ok: true, removed: { id: r.node.id, stats: r.removed }, plan: withProgress(plan) })
     })
 
     route('/init', async (req, res) => {
@@ -673,8 +611,8 @@ export function apply(ctx) {
       const store = storeFor(resolveCwd(body.sessionId))
       const plan = await store.load()
       const title = optStr(body.title) ?? plan.title
-      // 保留 goals 与 inbox，只重置标题等元信息。
-      const next = { ...emptyPlan(title), goals: plan.goals, inbox: plan.inbox, version: plan.version }
+      // 保留节点，只重置标题等元信息。
+      const next = { ...emptyPlan(title), nodes: plan.nodes, version: plan.version }
       await store.save(next, { reason: 'init' })
       json(res, { ok: true, plan: withProgress(next) })
     })
