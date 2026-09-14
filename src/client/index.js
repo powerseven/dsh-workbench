@@ -2,15 +2,19 @@
  * dsh-workbench —— 浏览器半身（CommonJS 形式，由 scripts/build.mjs 包装为
  * DSH client-modules C6 bundle；纯逻辑辅助在 logic.cjs 中先行内联）。
  *
- * 表面：dsh-better-sidebar 的侧边卡片 tab「工作计划」——计划 → 子计划 →
- * 待办三级树，带自动进度条与待办勾选，外加：
- *   · 收件箱（不挂计划的游离待办）+ 顶部快速记一条
+ * 表面：dsh-better-sidebar 的侧边卡片 tab「工作计划」——一棵**递归计划树**
+ * （计划 → 子计划 → … 深度不限，叶子是待办），带自动进度条与待办勾选，外加：
+ *   · 收件箱（不挂在任何计划下的顶层待办）+ 顶部快速记一条
+ *   · 归位：把收件箱里的待办移进任意计划下（↳ 按钮）
+ *   · 计划下直接加子项（待办或子计划），节点可删除
+ *   · 换型：待办 ⇧ 提升为计划继续拆，空计划 ⇩ 降回待办
  *   · 重要程度徽章（点击在高/中/低之间循环）
  *   · 委派标记（对象 · 回执状态 · 期望时间，逾期标红）
  *   · 筛选条（重要度高 / 我委派出去的 / 本周到期 / 逾期）
  *
- * 勾选与徽章点击都直接回写 plan.json，所以面板与 agent 改的是同一份数据；
- * 写入统一走 /api/workbench/*，落到 host 半身的同一套 store 逻辑（含版本归档）。
+ * 勾选、徽章、归位、删除都直接回写 plan.json，所以面板与 agent 改的是同一份
+ * 数据；写入统一走 /api/workbench/*，落到 host 半身的同一套 store 逻辑
+ * （含版本归档）——面板不自己算完成度，也不自己写盘。
  *
  * betterSidebar 是硬依赖（inject 中声明），Cordis 会等服务出现后再 apply，
  * 因此不做降级形态。数据面：/api/workbench/*。
@@ -33,32 +37,33 @@ const CSS = [
   '.dsh-wb-bar-fill{height:100%;background:#2da44e;transition:width .25s ease;}',
   // 筛选条
   '.dsh-wb-filters{display:flex;gap:4px;padding:6px 8px;flex-wrap:wrap;flex:none;border-bottom:1px solid rgba(127,127,127,.14);}',
-  '.dsh-wb-chip{border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:11px;padding:2px 8px;font-size:11px;cursor:pointer;line-height:1.6;white-space:nowrap;}',
+  '.dsh-wb-chip{border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:11px;padding:2px 8px;font-size:11px;cursor:pointer;line-height:1.6;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;}',
   '.dsh-wb-chip:hover{background:rgba(127,127,127,.12);}',
   '.dsh-wb-chip.on{background:rgba(9,105,218,.12);border-color:rgba(9,105,218,.5);color:#0969da;font-weight:600;}',
   '.dsh-wb-body{flex:1;overflow-y:auto;padding:8px 10px 14px;}',
-  '.dsh-wb-goal{margin-bottom:14px;}',
-  '.dsh-wb-goalhead{display:flex;align-items:baseline;gap:6px;margin:2px 0 4px;}',
-  '.dsh-wb-goalid{font-size:10px;color:rgba(127,127,127,.75);flex:none;font-family:ui-monospace,monospace;}',
-  '.dsh-wb-goaltitle{font-weight:600;line-height:1.45;word-break:break-word;flex:1;}',
-  '.dsh-wb-goalpct{font-size:11px;color:rgba(127,127,127,.9);flex:none;}',
-  '.dsh-wb-goalmeta{display:flex;gap:6px;flex-wrap:wrap;font-size:11px;color:rgba(127,127,127,.85);margin:0 0 6px;}',
-  '.dsh-wb-goalbar{height:3px;background:rgba(127,127,127,.15);border-radius:2px;margin-bottom:8px;overflow:hidden;}',
-  '.dsh-wb-goalbar > div{height:100%;background:#0969da;}',
-  '.dsh-wb-kr{margin:0 0 4px 10px;padding:5px 0 3px;border-left:2px solid rgba(127,127,127,.2);padding-left:9px;}',
-  '.dsh-wb-krhead{display:flex;align-items:baseline;gap:6px;}',
-  '.dsh-wb-krid{font-size:10px;color:rgba(127,127,127,.7);flex:none;font-family:ui-monospace,monospace;}',
-  '.dsh-wb-krtitle{flex:1;line-height:1.45;word-break:break-word;}',
-  '.dsh-wb-krpct{font-size:11px;color:rgba(127,127,127,.9);flex:none;}',
-  '.dsh-wb-krq{font-size:11px;color:#0969da;flex:none;}',
-  '.dsh-wb-task{display:flex;align-items:flex-start;gap:6px;padding:3px 4px;border-radius:6px;cursor:pointer;margin:1px 0 1px 10px;}',
+  // 计划节点（递归，深度用 margin-left 表达）
+  '.dsh-wb-plan{margin-bottom:8px;}',
+  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:6px;margin:2px 0 3px;}',
+  '.dsh-wb-planid{font-size:10px;color:rgba(127,127,127,.7);flex:none;font-family:ui-monospace,monospace;}',
+  '.dsh-wb-plantitle{font-weight:600;line-height:1.45;word-break:break-word;flex:1;}',
+  '.dsh-wb-planpct{font-size:11px;color:rgba(127,127,127,.9);flex:none;}',
+  '.dsh-wb-planq{font-size:11px;color:#0969da;flex:none;}',
+  '.dsh-wb-planmeta{display:flex;gap:6px;flex-wrap:wrap;font-size:11px;color:rgba(127,127,127,.85);margin:0 0 4px;}',
+  '.dsh-wb-planbar{height:3px;background:rgba(127,127,127,.15);border-radius:2px;margin-bottom:6px;overflow:hidden;}',
+  '.dsh-wb-planbar > div{height:100%;background:#0969da;}',
+  // 待办行
+  '.dsh-wb-task{display:flex;align-items:flex-start;gap:6px;padding:3px 4px;border-radius:6px;margin:1px 0;}',
   '.dsh-wb-task:hover{background:rgba(127,127,127,.1);}',
   '.dsh-wb-task input{margin:2px 0 0;flex:none;cursor:pointer;}',
-  '.dsh-wb-tasktitle{flex:1;line-height:1.45;word-break:break-word;}',
+  '.dsh-wb-tasktitle{flex:1;line-height:1.45;word-break:break-word;cursor:pointer;}',
   '.dsh-wb-tasktitle.done{text-decoration:line-through;opacity:.5;}',
   '.dsh-wb-tasktitle.dropped{text-decoration:line-through;opacity:.4;}',
   '.dsh-wb-taskdue{font-size:10px;color:rgba(127,127,127,.8);flex:none;white-space:nowrap;}',
   '.dsh-wb-taskdue.overdue{color:#d1242f;font-weight:600;}',
+  // 行内动作按钮（归位 / 加子项 / 删除）——默认隐藏，悬停才现身，避免噪声
+  '.dsh-wb-act{flex:none;border:none;background:transparent;color:rgba(127,127,127,.75);cursor:pointer;font-size:11px;padding:0 3px;border-radius:5px;line-height:1.6;opacity:0;}',
+  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act{opacity:1;}',
+  '.dsh-wb-act:hover{background:rgba(127,127,127,.2);color:inherit;}',
   // 重要程度徽章
   '.dsh-wb-pri{flex:none;font-size:10px;line-height:1.6;padding:0 5px;border-radius:8px;cursor:pointer;border:1px solid transparent;user-select:none;}',
   '.dsh-wb-pri.normal{color:rgba(127,127,127,.85);border-color:rgba(127,127,127,.3);}',
@@ -75,11 +80,14 @@ const CSS = [
   '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:6px;margin:2px 0 6px;}',
   '.dsh-wb-inboxtitle{font-weight:600;}',
   '.dsh-wb-count{font-size:10px;color:rgba(127,127,127,.85);}',
-  '.dsh-wb-add{display:flex;gap:4px;margin:0 0 4px 10px;}',
+  '.dsh-wb-add{display:flex;gap:4px;margin:0 0 4px;}',
   '.dsh-wb-add input{flex:1;min-width:0;font:inherit;font-size:12px;padding:3px 7px;border-radius:6px;border:1px solid rgba(127,127,127,.35);background:transparent;color:inherit;}',
   '.dsh-wb-add input:focus{outline:none;border-color:rgba(9,105,218,.6);}',
-  '.dsh-wb-add button{border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:6px;cursor:pointer;font-size:12px;padding:2px 8px;}',
+  '.dsh-wb-add button{border:1px solid rgba(127,127,127,.3);background:transparent;color:inherit;border-radius:6px;cursor:pointer;font-size:12px;padding:2px 8px;white-space:nowrap;}',
   '.dsh-wb-add button:disabled{opacity:.4;cursor:default;}',
+  // 归位选择器
+  '.dsh-wb-movepick{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin:2px 0 6px;padding:5px 7px;border-radius:8px;background:rgba(130,80,223,.07);border:1px dashed rgba(130,80,223,.35);}',
+  '.dsh-wb-movepicklabel{font-size:11px;color:rgba(127,127,127,.9);}',
   // 聚焦列表
   '.dsh-wb-focus{display:flex;align-items:flex-start;gap:6px;padding:5px 6px;border-radius:6px;margin-bottom:2px;}',
   '.dsh-wb-focus:hover{background:rgba(127,127,127,.1);}',
@@ -87,11 +95,10 @@ const CSS = [
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
   '.dsh-wb-path{font-size:10px;color:rgba(127,127,127,.75);font-family:ui-monospace,monospace;flex:none;}',
   '.dsh-wb-empty{padding:24px 10px;text-align:center;color:rgba(127,127,127,.75);font-size:12px;line-height:1.8;}',
-  '.dsh-wb-hint{padding:6px 10px 2px;color:rgba(127,127,127,.75);font-size:11px;line-height:1.7;}',
   '.dsh-wb-err{margin:8px 10px;padding:8px 10px;border-radius:8px;background:rgba(209,36,47,.1);color:#d1242f;font-size:12px;line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:5px 10px;border-top:1px solid rgba(127,127,127,.18);font-size:10px;color:rgba(127,127,127,.7);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:4px 10px;font-size:11px;color:#2da44e;flex:none;}',
-  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-goalbar > div{background:#2f7be0;}.dsh-wb-krq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}}',
+  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-planbar > div{background:#2f7be0;}.dsh-wb-planq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}}',
 ].join('')
 
 function injectStyles(css) {
@@ -104,7 +111,12 @@ function injectStyles(css) {
 /** 极简可订阅 store：只在 set 时替换整个 state 对象，getSnapshot 引用稳定。 */
 function createStore() {
   let listeners = []
-  let state = { plan: null, cwd: '', dir: '', loading: false, error: null, flash: '', filter: 'all' }
+  let state = {
+    plan: null, cwd: '', dir: '', loading: false, error: null, flash: '',
+    filter: 'all',
+    // 交互态：一次只展开一个。moving = 正在归位的待办 id，adding = 正在加子项的父节点 id。
+    moving: null, adding: null,
+  }
   const get = () => state
   const set = (patch) => {
     state = Object.assign({}, state, patch)
@@ -158,7 +170,9 @@ function apply(ctx) {
     const state = useSnapshot()
     const sessionId = props.sessionId
     // 输入框用组件本地状态：不放进 store，否则每敲一个字都要重渲整棵计划树。
+    // 一个常驻（收件箱）+ 一个按需（节点下加子项），一次只会有后者一个。
     const [draft, setDraft] = React.useState('')
+    const [nodeDraft, setNodeDraft] = React.useState('')
 
     const refresh = React.useCallback(() => {
       if (sessionId === undefined || sessionId === null || sessionId === '') {
@@ -171,30 +185,34 @@ function apply(ctx) {
         .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e), loading: false }))
     }, [sessionId])
 
-    // 首次挂载与切换会话时拉取；可见性恢复时也刷新一次（agent 可能刚改过计划）。
     React.useEffect(() => { refresh() }, [refresh])
 
-    /** 勾选待办：面板与 agent 走同一条写入路径。 */
-    const setTask = React.useCallback((task, status) => {
-      api('task-set', { sessionId, task, status })
-        .then((r) => store.set({ plan: r.plan, error: null }))
+    /** 所有写入都收敛到这一个函数：统一拿回新计划、统一清错。 */
+    const write = React.useCallback((method, args, onOk) => {
+      api(method, Object.assign({ sessionId }, args))
+        .then((r) => {
+          store.set({ plan: r.plan, error: null, moving: null, adding: null })
+          if (typeof onOk === 'function') onOk(r)
+        })
         .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
     }, [sessionId])
 
-    /** 点徽章切换重要程度。 */
-    const setPriority = React.useCallback((node, priority) => {
-      api('node-set', { sessionId, node, priority })
-        .then((r) => store.set({ plan: r.plan, error: null }))
-        .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
-    }, [sessionId])
-
-    /** 收件箱快速记一条。 */
-    const addTodo = React.useCallback((title) => {
-      api('todo-add', { sessionId, title })
-        .then((r) => { store.set({ plan: r.plan, error: null }); setDraft(''); flash('已记入收件箱') })
-        .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
-    }, [sessionId])
-
+    const setTodo = React.useCallback((id, status) => write('todo-set', { todo: id, status }), [write])
+    const setPriority = React.useCallback((id, priority) => write('node-set', { node: id, priority }), [write])
+    // 换型：待办 ↔ 计划。原地换型而不是「新建一个再搬」——用户想说的是
+    // 「这就是同一件事，只是现在要往下拆」，换个容器会多出一层没有意义的嵌套。
+    const setNodeKind = React.useCallback((id, type) => write(
+      'node-set',
+      { node: id, type },
+      () => flash(type === 'plan' ? '已提升为计划' : '已降回待办'),
+    ), [write])
+    const addNode = React.useCallback((input, onOk) => write('node-add', input, onOk), [write])
+    const doMove = React.useCallback((id, parent) => write('node-move', { node: id, parent }), [write])
+    const doRemove = React.useCallback((node) => {
+      const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
+      if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
+      write('node-remove', { node: node.id }, () => flash('已删除'))
+    }, [write])
     const snapshot = React.useCallback(() => {
       api('snapshot', { sessionId, reason: 'panel' })
         .then(() => flash('已留档一个版本'))
@@ -203,8 +221,9 @@ function apply(ctx) {
 
     const plan = state.plan
     const sum = summarize(plan)
-    const goals = plan !== null && plan !== undefined && Array.isArray(plan.goals) ? plan.goals : []
-    const inbox = plan !== null && plan !== undefined && Array.isArray(plan.inbox) ? plan.inbox : []
+    const inbox = inboxOf(plan)
+    const roots = planNodes(plan)
+    const isTopLevel = (id) => roots.some((n) => n.id === id)
 
     /** 重要程度徽章：点击在高 → 中 → 低之间循环。 */
     const priBadge = (node) => {
@@ -241,25 +260,154 @@ function apply(ctx) {
       return h('span', { className: 'dsh-wb-taskdue' + (node.overdue === true ? ' overdue' : '') }, node.due)
     }
 
-    /** 一条待办（收件箱项或子计划下的任务）。 */
-    const todoRow = (node, key) => {
+    /** 归位选择器：把这条待办移进哪个计划。 */
+    const movePick = (node) => {
+      const targets = moveTargets(plan, node)
+      const chips = []
+      if (!isTopLevel(node.id)) {
+        chips.push(h('button', {
+          key: '__top__',
+          className: 'dsh-wb-chip',
+          onClick: () => doMove(node.id, null),
+        }, '顶层（收件箱）'))
+      }
+      for (const t of targets) {
+        chips.push(h('button', {
+          key: t.id,
+          className: 'dsh-wb-chip',
+          title: '移到 ' + t.path,
+          onClick: () => doMove(node.id, t.id),
+        }, '↳ ' + t.title))
+      }
+      if (chips.length === 0) chips.push(h('span', { key: '__none__', className: 'dsh-wb-movepicklabel' }, '还没有可归位的计划'))
+      chips.push(h('button', {
+        key: '__cancel__',
+        className: 'dsh-wb-chip',
+        onClick: () => store.set({ moving: null }),
+      }, '取消'))
+      return h('div', { className: 'dsh-wb-movepick', key: 'pick' },
+        h('span', { className: 'dsh-wb-movepicklabel' }, '移到：'), chips)
+    }
+
+    /** 一条待办。 */
+    const renderTodo = (node, depth) => {
       const done = node.status === 'done'
-      return h('label', {
+      const rows = [h('div', {
         className: 'dsh-wb-task',
-        key,
+        key: 'row',
+        style: { marginLeft: (10 + depth * 12) + 'px' },
         title: statusLabel(node.status) + (node.note ? '\n' + node.note : ''),
       },
         h('input', {
           type: 'checkbox',
           checked: done,
-          onChange: () => setTask(node.id, toggleStatus(node.status)),
+          onChange: () => setTodo(node.id, toggleStatus(node.status)),
         }),
-        h('span', { className: 'dsh-wb-tasktitle' + (done ? ' done' : node.status === 'dropped' ? ' dropped' : '') }, node.title),
+        h('span', {
+          className: 'dsh-wb-tasktitle' + (done ? ' done' : node.status === 'dropped' ? ' dropped' : ''),
+          onClick: () => setTodo(node.id, toggleStatus(node.status)),
+        }, node.title),
         delegChip(node),
         warnBadge(node),
         priBadge(node),
         dueSpan(node),
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '归位到某个计划下',
+          onClick: (e) => { e.stopPropagation(); store.set({ moving: state.moving === node.id ? null : node.id }) },
+        }, '↳'),
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '提升为计划（之后可以继续往下拆）',
+          onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'plan') },
+        }, '⇧'),
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '删除',
+          onClick: (e) => { e.stopPropagation(); doRemove(node) },
+        }, '×'),
+      )]
+      if (state.moving === node.id) rows.push(movePick(node))
+      return h('div', { className: 'dsh-wb-todowrap', key: node.id }, rows)
+    }
+
+    /** 一个计划节点（递归）。 */
+    const renderPlan = (node, depth) => {
+      const kids = sortNodes(childrenOf(node))
+      const meta = []
+      if (node.owner) meta.push('负责人 ' + node.owner)
+      if (node.start || node.end) meta.push((node.start || '?') + ' ~ ' + (node.end || '?'))
+      if (node.status === 'done' || node.status === 'dropped') meta.push(statusLabel(node.status))
+      const m = node.metric
+      const q = m !== null && m !== undefined && typeof m === 'object' && typeof m.target === 'number' && m.target > 0
+        ? (m.current || 0) + '/' + m.target + (m.unit ? ' ' + m.unit : '')
+        : null
+      const progress = progressOf(node)
+
+      const head = h('div', { className: 'dsh-wb-planhead', key: 'head', style: { marginLeft: (depth * 12) + 'px' } },
+        h('span', { className: 'dsh-wb-planid' }, node.id),
+        h('span', { className: 'dsh-wb-plantitle' }, node.title),
+        delegChip(node),
+        warnBadge(node),
+        priBadge(node),
+        q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
+        h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '在这个计划下加一项',
+          onClick: (e) => { e.stopPropagation(); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
+        }, '＋'),
+        // 降回待办只在空计划上出现：有子节点的计划降级会让孩子们变成孤儿，
+        // host 会拒绝。与其让用户点了再看到报错，不如不给这个按钮。
+        childrenOf(node).length === 0 ? h('button', {
+          className: 'dsh-wb-act',
+          title: '降回待办（这是一个空计划）',
+          onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'todo') },
+        }, '⇩') : null,
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '删除这个计划（连同子项）',
+          onClick: (e) => { e.stopPropagation(); doRemove(node) },
+        }, '×'),
       )
+
+      const body = [
+        head,
+        meta.length > 0 ? h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 12) + 'px' } },
+          meta.map((x, i) => h('span', { key: i }, x))) : null,
+        h('div', { className: 'dsh-wb-planbar', key: 'bar', style: { marginLeft: (depth * 12) + 'px' } },
+          h('div', { style: { width: barWidth(progress) } })),
+      ]
+
+      // 加子项：两个提交按钮区分「待办」与「子计划」，不让用户猜默认值。
+      if (state.adding === node.id) {
+        const submit = (type) => {
+          const title = nodeDraft.trim()
+          if (title === '') return
+          addNode({ title, type, parent: node.id }, () => {
+            setNodeDraft('')
+            flash(type === 'plan' ? '已加子计划' : '已加待办')
+          })
+        }
+        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+          h('input', {
+            type: 'text',
+            autoFocus: true,
+            placeholder: '加到「' + node.title + '」下…',
+            value: nodeDraft,
+            onChange: (e) => setNodeDraft(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit('todo') } },
+          }),
+          h('button', { onClick: () => submit('todo'), disabled: nodeDraft.trim() === '' }, '记作待办'),
+          h('button', { onClick: () => submit('plan'), disabled: nodeDraft.trim() === '' }, '记作子计划'),
+        ))
+      }
+
+      for (const kid of kids) {
+        body.push(nodeType(kid) === 'plan' ? renderPlan(kid, depth + 1) : renderTodo(kid, depth + 1))
+      }
+
+      return h('div', { className: 'dsh-wb-plan', key: node.id }, body)
     }
 
     const rows = []
@@ -311,17 +459,20 @@ function apply(ctx) {
       }
       for (const item of items) {
         const node = item.node
-        const isLeaf = item.kind === 'task' || item.kind === 'inbox'
-        body.push(h('div', { className: 'dsh-wb-focus', key: item.kind + ':' + node.id },
+        const isLeaf = item.type === 'todo'
+        body.push(h('div', { className: 'dsh-wb-focus', key: item.path },
           isLeaf
             ? h('input', {
               type: 'checkbox',
               checked: node.status === 'done',
-              onChange: () => setTask(node.id, toggleStatus(node.status)),
+              onChange: () => setTodo(node.id, toggleStatus(node.status)),
             })
             : null,
-          h('span', { className: 'dsh-wb-tasktitle' }, node.title),
-          h('span', { className: 'dsh-wb-path' }, item.path),
+          h('span', {
+            className: 'dsh-wb-tasktitle',
+            onClick: isLeaf ? () => setTodo(node.id, toggleStatus(node.status)) : null,
+          }, node.title),
+          h('span', { className: 'dsh-wb-path' }, (isLeaf ? '' : typeLabel(item.type) + ' ') + item.path),
           delegChip(node),
           warnBadge(node),
           priBadge(node),
@@ -333,10 +484,10 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    // 收件箱：先记下来，之后再归位。没有它，「收不进来」这条就一直成立。
+    // 收件箱：先记下来，之后再归位（↳）。没有它，「收不进来」这条就一直成立。
     const inboxRows = []
     inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-      h('span', { className: 'dsh-wb-goalid' }, '📥'),
+      h('span', { className: 'dsh-wb-planid' }, '📥'),
       h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
       h('span', { className: 'dsh-wb-count' }, inbox.length > 0
         ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
@@ -349,16 +500,23 @@ function apply(ctx) {
         value: draft,
         onChange: (e) => setDraft(e.target.value),
         onKeyDown: (e) => {
-          if (e.key === 'Enter') { e.preventDefault(); if (draft.trim() !== '') addTodo(draft.trim()) }
+          if (e.key === 'Enter') {
+            e.preventDefault()
+            const title = draft.trim()
+            if (title !== '') addNode({ title, type: 'todo' }, () => { setDraft(''); flash('已记入收件箱') })
+          }
         },
       }),
       h('button', {
-        onClick: () => { if (draft.trim() !== '') addTodo(draft.trim()) },
+        onClick: () => {
+          const title = draft.trim()
+          if (title !== '') addNode({ title, type: 'todo' }, () => { setDraft(''); flash('已记入收件箱') })
+        },
         disabled: draft.trim() === '',
         title: '记入收件箱',
       }, '记下'),
     ))
-    for (const todo of sortTasks(inbox)) inboxRows.push(todoRow(todo, 'inbox:' + todo.id))
+    for (const todo of sortNodes(inbox)) inboxRows.push(renderTodo(todo, 0))
     body.push(h('div', { className: 'dsh-wb-inbox', key: 'inbox' }, inboxRows))
 
     if (!sum.hasPlan) {
@@ -371,46 +529,8 @@ function apply(ctx) {
       ))
     }
 
-    for (const goal of goals) {
-      const krs = Array.isArray(goal.krs) ? goal.krs : []
-      const meta = []
-      if (goal.owner) meta.push('负责人 ' + goal.owner)
-      if (goal.start || goal.end) meta.push((goal.start || '?') + ' ~ ' + (goal.end || '?'))
-      if (goal.status && goal.status !== 'active') meta.push(goal.status)
-
-      const krNodes = []
-      for (const kr of krs) {
-        const tasks = sortTasks(kr.tasks)
-        const q = typeof kr.target === 'number' && kr.target > 0
-          ? (kr.current || 0) + '/' + kr.target + (kr.unit ? ' ' + kr.unit : '')
-          : null
-        krNodes.push(h('div', { className: 'dsh-wb-kr', key: kr.id },
-          h('div', { className: 'dsh-wb-krhead' },
-            h('span', { className: 'dsh-wb-krid' }, kr.id),
-            h('span', { className: 'dsh-wb-krtitle' }, kr.title),
-            delegChip(kr),
-            warnBadge(kr),
-            priBadge(kr),
-            q !== null ? h('span', { className: 'dsh-wb-krq' }, q) : null,
-            h('span', { className: 'dsh-wb-krpct' }, pct(kr.progress)),
-          ),
-          tasks.map((task) => todoRow(task, task.id)),
-        ))
-      }
-
-      body.push(h('div', { className: 'dsh-wb-goal', key: goal.id },
-        h('div', { className: 'dsh-wb-goalhead' },
-          h('span', { className: 'dsh-wb-goalid' }, goal.id),
-          h('span', { className: 'dsh-wb-goaltitle' }, goal.title),
-          delegChip(goal),
-          warnBadge(goal),
-          priBadge(goal),
-          h('span', { className: 'dsh-wb-goalpct' }, pct(goal.progress)),
-        ),
-        meta.length > 0 ? h('div', { className: 'dsh-wb-goalmeta' }, meta.map((m, i) => h('span', { key: i }, m))) : null,
-        h('div', { className: 'dsh-wb-goalbar' }, h('div', { style: { width: barWidth(goal.progress) } })),
-        krNodes.length > 0 ? krNodes : null,
-      ))
+    for (const node of roots) {
+      if (nodeType(node) === 'plan') body.push(renderPlan(node, 0))
     }
 
     rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
