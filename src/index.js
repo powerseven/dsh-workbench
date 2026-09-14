@@ -43,6 +43,7 @@ import {
   emptyPlan,
   evidenceOf,
   evidenceWarnings,
+  inboxOf,
   isDueWithin,
   isOverdue,
   isUnverified,
@@ -61,6 +62,7 @@ import {
   setPriority,
   setReceipt,
   setStatus,
+  suggestParent,
   todoCounts,
   todayStr,
   typeOf,
@@ -124,10 +126,13 @@ function makeTool(name, description, parameters, execute) {
  *   pace / behind    配速与落后（只有完整周期才非空）
  *   unverified       已完成但没有证据
  *   evidenceWarnings 证据里能机器核验的那部分（文件是否存在）
+ *   parentSuggestions 该归到哪个计划下的建议（只有顶层待办非空）
  *
  * @param root 工作区根目录——核验 file 类证据要用它解析相对路径。
+ * @param parentSuggestions 本节点的归位建议，由 withProgress 统一算好传进来
+ *   （打分要看到整棵树，单个节点算不了）。
  */
-function annotate(node, today, root) {
+function annotate(node, today, root, parentSuggestions = []) {
   const type = typeOf(node)
   const progress = nodeProgress(node)
   const out = {
@@ -142,9 +147,11 @@ function annotate(node, today, root) {
     pace: paceOf(node, progress, today),
     unverified: isUnverified(node),
     evidenceWarnings: evidenceWarnings(node, root),
+    parentSuggestions,
   }
   out.behind = out.pace !== null && out.pace.behind === true
   // 子节点递归标注，覆盖掉 `...node` 带上来的原始 children。
+  // 建议只给顶层待办算，所以递归时不再往下传。
   if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today, root))
   return out
 }
@@ -152,6 +159,13 @@ function annotate(node, today, root) {
 /** 给计划补上派生字段（进度、管控汇总、落后与无证据清单），返回给模型/前端时用。 */
 function withProgress(plan, root) {
   const today = todayStr()
+  // 归位建议统一在这里算：打分要看整棵树，而面板与 agent 读的都是这份 payload，
+  // 于是**两边看到的是同一个建议**——agent 想让某条改判归属时不必再开一条通路。
+  const suggestions = new Map()
+  for (const node of inboxOf(plan)) {
+    const list = suggestParent(plan, node, today)
+    if (list.length > 0) suggestions.set(String(node.id ?? ''), list)
+  }
   return {
     ...plan,
     progress: planProgress(plan),
@@ -160,7 +174,9 @@ function withProgress(plan, root) {
     delegated: delegatedList(plan, today),
     behind: behindList(plan, today),
     unverified: unverifiedList(plan),
-    nodes: planNodes(plan).map((node) => annotate(node, today, root)),
+    nodes: planNodes(plan).map((node) => annotate(
+      node, today, root, suggestions.get(String(node.id ?? '')) ?? [],
+    )),
   }
 }
 

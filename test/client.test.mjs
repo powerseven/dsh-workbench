@@ -146,12 +146,19 @@ const wbModule = globalThis.__wbDef.factory((name) => {
 let requests = []
 let planPayload = null
 let planDir = ''
+/**
+ * 用例可以让 node-add 的响应带回一个「刚建的节点」。
+ * 真实的 node-add 回的是 `{ node: { id, type, title }, plan }`，面板靠这个 id 展开
+ * 归位建议；这里由用例显式指定要回哪一个，免得替身自己编造一个对不上的 id。
+ */
+let nodeEcho = null
 
 globalThis.fetch = async (path, init) => {
   const body = init !== undefined && init.body !== undefined ? JSON.parse(init.body) : {}
   requests.push({ path, body })
   // 所有写入接口都回同一份计划：面板拿到后整体替换，重渲时树保持一致。
   const payload = { ok: true, cwd: planDir, dir: join(planDir, 'plan'), plan: planPayload }
+  if (String(path).endsWith('/node-add') && nodeEcho !== null) payload.node = nodeEcho
   return { ok: true, status: 200, json: async () => payload }
 }
 
@@ -164,16 +171,7 @@ let dir = ''
 
 /** 用**真 host 半身**建一份计划，并调 plan_show 拿真 payload。 */
 async function buildRealPlan(root) {
-  const tools = new Map()
-  const serverCtx = { webServer: { register: () => () => {} }, get: () => undefined }
-  hostApply({
-    tools: { register: (t) => { tools.set(t.name, t); return () => {} } },
-    inject: (deps, fn) => { if (deps.includes('webServer')) fn(serverCtx) },
-    effect: (fn) => { fn() },
-  })
-  const call = (name, args) => tools.get(name).execute(args ?? {}, {
-    agent: { session: { header: { cwd: root } } },
-  })
+  const call = hostCall(root)
   await call('plan_node_add', { title: '工作主线', type: 'plan' })
   await call('plan_node_add', { title: '子计划', type: 'plan', parent: '工作主线' })
   await call('plan_node_add', { title: '深层待办', type: 'todo', parent: '子计划' })
@@ -181,6 +179,25 @@ async function buildRealPlan(root) {
   await call('plan_node_add', { title: '收件箱一条', type: 'todo' })
   const shown = await call('plan_show')
   return shown.plan
+}
+
+/**
+ * 真 host 的工具上下文：工具定义、参数校验、落盘全是真的，只是没有 webServer。
+ * 抽出来是为了让需要自带 fixture 的用例能建**自己的**工作区，而不是往共享的
+ * planPayload 上加字段——共享 fixture 一改，别的用例就跟着变，表现是「毫不相干的
+ * 用例挂了」。
+ */
+function hostCall(root) {
+  const tools = new Map()
+  const serverCtx = { webServer: { register: () => () => {} }, get: () => undefined }
+  hostApply({
+    tools: { register: (t) => { tools.set(t.name, t); return () => {} } },
+    inject: (deps, fn) => { if (deps.includes('webServer')) fn(serverCtx) },
+    effect: (fn) => { fn() },
+  })
+  return (name, args) => tools.get(name).execute(args ?? {}, {
+    agent: { session: { header: { cwd: root } } },
+  })
 }
 
 before(async () => {
@@ -198,6 +215,9 @@ after(async () => {
 beforeEach(() => {
   storage.clear()
   requests = []
+  nodeEcho = null
+  delete globalThis.window.SpeechRecognition
+  delete globalThis.window.webkitSpeechRecognition
 })
 
 /**
@@ -548,4 +568,172 @@ test('只单击（不双击）仍然会切换完成状态', async () => {
   assert.equal(requests.length, 1)
   assert.equal(requests[0].path, '/api/workbench/todo-set')
   assert.equal(requests[0].body.todo, idOf('表层待办'))
+})
+
+// ============================================================ 语音输入
+
+/**
+ * 一个可控的 SpeechRecognition 替身，只实现面板真正用到的那几个成员。
+ * 挂到 window 上——面板是**渲染时**读取的，所以用例可以在挂载前注入。
+ */
+function fakeSpeech() {
+  const state = { inst: null, started: 0, stopped: 0 }
+  function Rec() {
+    state.inst = this
+    this.onresult = null
+    this.onerror = null
+    this.onend = null
+    this.continuous = false
+    this.interimResults = false
+    this.lang = ''
+    this.start = () => { state.started++ }
+    this.stop = () => { state.stopped++; if (typeof this.onend === 'function') this.onend() }
+  }
+  globalThis.window.SpeechRecognition = Rec
+  return state
+}
+
+/** 收件箱那一行：输入框 + 语音按钮 + 记下（与「建计划」那一行靠按钮文案区分）。 */
+const inboxRow = (root) => byClass(root, 'dsh-wb-add')
+  .find((d) => d.children.some((c) => c.type === 'button' && textOf(c) === '记下'))
+const micOf = (row) => row.children.find((c) => classesOf(c).includes('dsh-wb-mic')) ?? null
+
+test('浏览器不支持语音时不渲染麦克风（不给一个永远点不亮的按钮）', async () => {
+  const { view } = await mount()
+  assert.equal(micOf(inboxRow(view)), null)
+})
+
+test('语音结果写进输入框，回车即可记账——提交走的还是原来那条路', async () => {
+  const sp = fakeSpeech()
+  const { render } = await mount()
+  const mic = micOf(inboxRow(render()))
+  assert.ok(mic !== null, '应当渲染出麦克风按钮')
+
+  mic.props.onClick(ev())
+  assert.equal(sp.started, 1, '点一下开始听')
+
+  // 中间结果也实时灌进输入框：用户说话时能看见字在长，而不是说完才一下子出现。
+  sp.inst.onresult({ results: [[{ transcript: '补充核心表的负责人信息' }]] })
+  const after = inboxRow(render())
+  assert.equal(inputOf(after).props.value, '补充核心表的负责人信息')
+
+  // 关键：语音**只填输入框**，不新增写入通路。
+  requests = []
+  inputOf(after).props.onKeyDown(ev({ key: 'Enter' }))
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].path, '/api/workbench/node-add')
+  assert.equal(requests[0].body.title, '补充核心表的负责人信息')
+})
+
+test('麦克风没授权时把原因说出来，不静默失败', async () => {
+  const sp = fakeSpeech()
+  const { render } = await mount()
+  micOf(inboxRow(render())).props.onClick(ev())
+  sp.inst.onerror({ error: 'not-allowed' })
+  // 「没授权」与「没听见」必须分开：前者要改浏览器设置，后者再试一次就行，
+  // 混成一句「语音失败」等于什么都没说。
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /麦克风没有授权/)
+})
+
+// ============================================================ 归位建议
+
+/**
+ * 建一份「收件箱那条能拿到建议」的 fixture：子项用词与待办标题重合。
+ * 用**真 host** 建，于是 parentSuggestions 是服务端真的算出来的——这条用例
+ * 顺带验证了 host → 面板这条派生字段的交接。
+ */
+async function planWithSuggestion() {
+  const tmp = await mkdtemp(join(tmpdir(), 'dsh-wb-sug-'))
+  const call = hostCall(tmp)
+  await call('plan_node_add', { title: '数据资产盘点', type: 'plan' })
+  await call('plan_node_add', { title: '梳理核心表清单（含负责人与更新频率）', type: 'todo', parent: '数据资产盘点' })
+  // 第二个**不相关**的计划不可省：只放一个计划时它同时就是建议目标，于是
+  // 「建议排在最前」和「建议排在后面」渲染出来完全一样，断言形同虚设。
+  await call('plan_node_add', { title: '低电压治理攻坚', type: 'plan' })
+  await call('plan_node_add', { title: '补充核心表的负责人与更新频率', type: 'todo' })
+  const shown = await call('plan_show')
+  return { tmp, plan: shown.plan }
+}
+
+/** 某条待办行里的行内动作按钮，按文案定位（↳ 归位 / ⇧ 提升 / × 删除）。 */
+const actByText = (row, label) => row.children
+  .find((c) => c.type === 'button' && textOf(c) === label) ?? null
+
+test('归位建议排在归位选择器最前，一点就归位，理由看得见', async () => {
+  const { tmp, plan } = await planWithSuggestion()
+  const keep = planPayload
+  planPayload = plan
+  try {
+    const fresh = plan.nodes.find((n) => n.type === 'todo')
+    assert.ok(
+      Array.isArray(fresh.parentSuggestions) && fresh.parentSuggestions.length > 0,
+      'fixture 必须真的带上建议，否则下面全是空断言',
+    )
+
+    const { render } = await mount()
+    const row = byText(render(), 'dsh-wb-task', '补充核心表')
+    assert.ok(row !== null, '找不到刚记的那条待办')
+    actByText(row, '↳').props.onClick(ev())
+
+    const pick = firstByClass(render(), 'dsh-wb-movepick')
+    assert.ok(pick !== null, '应当展开归位选择器')
+    const chips = byClass(pick, 'dsh-wb-chip').filter((c) => !textOf(c).includes('取消'))
+    assert.ok(classesOf(chips[0]).includes('sug'), '建议应当排在最前')
+    assert.match(textOf(chips[0]), /建议 ↳ 数据资产盘点/)
+    // 除了建议还得有别的可选——「给出建议及选择」里的「选择」就是这个。
+    assert.ok(
+      chips.some((c) => textOf(c).includes('低电压治理攻坚')),
+      '建议之外还要保留其它可归位的计划',
+    )
+    // 理由要写在按钮的 title 与选择器标签上——藏在 tooltip 里等于没给。
+    assert.match(String(chips[0].props.title), /建议归到「数据资产盘点」：/)
+    const label = textOf(firstByClass(pick, 'dsh-wb-movepicklabel'))
+    // 用 includes 而不是 assert.match：理由里可能有正则特殊字符，转义反而易错。
+    assert.ok(label.includes(fresh.parentSuggestions[0].why), '理由要摊在标签上，实际是：' + label)
+
+    requests = []
+    chips[0].props.onClick(ev())
+    await flush()
+    const mv = requests.find((r) => r.path === '/api/workbench/node-move')
+    assert.ok(mv !== undefined, '点击建议应当发起归位')
+    assert.equal(mv.body.parent, fresh.parentSuggestions[0].id)
+  } finally {
+    planPayload = keep
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
+
+test('记入收件箱后：有建议就自动展开选择器，没建议就不展开', async () => {
+  const { tmp, plan } = await planWithSuggestion()
+  const keep = planPayload
+  try {
+    // ① 有建议：记完立刻摊开，因为它是**行内**的，不打断连着记几条。
+    planPayload = plan
+    nodeEcho = { id: plan.nodes.find((n) => n.type === 'todo').id, type: 'todo', title: '补充核心表的负责人与更新频率' }
+    {
+      const { render } = await mount()
+      inputOf(inboxRow(render())).props.onChange({ target: { value: '补充核心表的负责人与更新频率' } })
+      inputOf(inboxRow(render())).props.onKeyDown(ev({ key: 'Enter' }))
+      await flush()
+      assert.ok(firstByClass(render(), 'dsh-wb-movepick') !== null, '有建议 → 自动展开')
+    }
+    // ② 没建议：白占一行就是噪声，不该弹。
+    planPayload = keep
+    const shared = planPayload.nodes.find((n) => n.type === 'todo')
+    nodeEcho = { id: shared.id, type: 'todo', title: shared.title }
+    {
+      const { render } = await mount()
+      const fresh = planPayload.nodes.find((n) => n.type === 'todo')
+      assert.ok(fresh !== undefined, '共享 fixture 应当有一条收件箱待办')
+      assert.deepEqual(fresh.parentSuggestions, [], '共享 fixture 这条应当没有建议')
+      inputOf(inboxRow(render())).props.onChange({ target: { value: shared.title } })
+      inputOf(inboxRow(render())).props.onKeyDown(ev({ key: 'Enter' }))
+      await flush()
+      assert.equal(firstByClass(render(), 'dsh-wb-movepick'), null, '没有建议 → 不展开')
+    }
+  } finally {
+    planPayload = keep
+    nodeEcho = null
+    await rm(tmp, { recursive: true, force: true })
+  }
 })

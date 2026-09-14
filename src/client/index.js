@@ -99,6 +99,9 @@ const CSS = [
   '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
   '.dsh-wb-chip.on{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);font-weight:600;}',
+  // 建议芯片：和「用户自己挑的目标」区分开——它是系统推断的。沿用强调色，
+  // 但**位置在前 + 文案带「建议」**才是主要区分手段，颜色只是辅助（不靠颜色单独表意）。
+  '.dsh-wb-chip.sug{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);}',
   // ── 主体 ────────────────────────────────────────────────────────────────
   '.dsh-wb-body{flex:1;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
@@ -181,6 +184,12 @@ const CSS = [
   '.dsh-wb-add button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-add button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-add button:disabled{opacity:.4;cursor:default;}',
+  // 语音按钮：外壳沿用提交按钮那一套，只是里面只放一个符号，所以横向收窄。
+  // 选择器要写到 `.dsh-wb-add .dsh-wb-mic`——`.dsh-wb-add button` 的特异性比单类高，
+  // 只写 `.dsh-wb-mic` 会被它压住。
+  '.dsh-wb-add .dsh-wb-mic{padding:var(--wb-sp-2) var(--wb-sp-3);line-height:1;}',
+  // 正在听 = 强调色描边 + 软底，沿用面板里「选中」那一套语言，不另造一套状态色。
+  '.dsh-wb-add .dsh-wb-mic.on{border-color:var(--wb-accent);background:var(--wb-accent-soft);color:var(--wb-fg);}',
   // ── 归位选择器 ──（同样收进强调色，不再另开一个紫色）
   '.dsh-wb-movepick{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-1) 0 var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px dashed var(--wb-accent);}',
   '.dsh-wb-movepicklabel{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
@@ -327,6 +336,85 @@ function apply(ctx) {
       if (clickTimer.current !== null) clearTimeout(clickTimer.current)
     }, [])
 
+    // ============================================================ 语音输入
+    // 边界划得很死：语音**只把识别结果写进输入框**，别的什么都不做。于是「怎么说」
+    // 与「怎么建」各管各的——提交仍走原来那条 /node-add，不必为新功能加工具或路由。
+    //
+    // 用浏览器原生的 Web Speech API，不引入任何依赖、不经过本插件。宿主和这个插件
+    // 都没有语音能力（查过 dsh 的客户端包，一处 speech/mic 都没有），所以只能落在
+    // 面板这一层。支持性：Chromium 系可用；不支持的浏览器**干脆不渲染这个按钮**，
+    // 而不是给一个永远点不亮的灰按钮。
+    const SR = typeof window !== 'undefined'
+      ? (window.SpeechRecognition || window.webkitSpeechRecognition || null)
+      : null
+    const [listening, setListening] = React.useState(false)
+    const recRef = React.useRef(null)
+    React.useEffect(() => () => {
+      const rec = recRef.current
+      recRef.current = null
+      if (rec !== null) { try { rec.stop() } catch (e) { /* 已经结束了 */ } }
+    }, [])
+
+    /** 收声：把中间结果实时灌进输入框，最后一段也是。 */
+    const startVoice = (setter) => {
+      let rec = null
+      try {
+        rec = new SR()
+      } catch (e) {
+        flash('这个浏览器起不了语音识别')
+        return
+      }
+      rec.lang = typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'zh-CN'
+      rec.continuous = false
+      rec.interimResults = true
+      rec.onresult = (ev) => {
+        let text = ''
+        for (let i = 0; i < ev.results.length; i++) text += ev.results[i][0].transcript
+        setter(text.trim())
+      }
+      // 失败必须说出来。「没听见」和「没授权」要分开——前者再试一次就行，
+      // 后者得去改浏览器设置，混成一句「语音失败」等于什么都没说。
+      rec.onerror = (ev) => {
+        const code = ev && ev.error ? String(ev.error) : ''
+        if (code === 'not-allowed' || code === 'service-not-allowed') {
+          flash('麦克风没有授权，请允许后再试')
+        } else if (code === 'no-speech') {
+          flash('没听到声音，再试一次')
+        } else if (code !== 'aborted') {
+          flash('语音识别失败：' + (code || '未知原因'))
+        }
+      }
+      rec.onend = () => { recRef.current = null; setListening(false) }
+      recRef.current = rec
+      setListening(true)
+      try {
+        rec.start()
+      } catch (e) {
+        // 重复 start 会抛。别让它把整块面板带崩。
+        recRef.current = null
+        setListening(false)
+        flash('语音识别启动失败，稍后再试')
+      }
+    }
+
+    const stopVoice = () => {
+      const rec = recRef.current
+      recRef.current = null
+      setListening(false)
+      if (rec !== null) { try { rec.stop() } catch (e) { /* onend 会兜底 */ } }
+    }
+
+    /** 语音按钮。不支持语音时返回 null，三个输入行都靠它保持行为一致。 */
+    const micButton = (setter, key) => {
+      if (SR === null) return null
+      return h('button', {
+        key,
+        className: 'dsh-wb-mic' + (listening ? ' on' : ''),
+        title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
+        onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
+      }, listening ? '■' : '🎤')
+    }
+
     const refresh = React.useCallback(() => {
       if (sessionId === undefined || sessionId === null || sessionId === '') {
         store.set({ error: '拿不到当前会话 id，无法定位工作区', loading: false })
@@ -360,6 +448,21 @@ function apply(ctx) {
       () => flash(type === 'plan' ? '已提升为计划' : '已降回待办'),
     ), [write])
     const addNode = React.useCallback((input, onOk) => write('node-add', input, onOk), [write])
+
+    /**
+     * 从一次写入的返回里取出「刚动的那个节点」——**要的是带派生字段的那份**。
+     * 返回体里的 `node` 只有 { id, type, title }，而 `plan.nodes` 里那份带了
+     * overdue / parentSuggestions 等派生字段（见 host 的 annotate）。所以按 id
+     * 回查一次，别拿 `res.node` 当完整节点用。
+     * 归位建议只挂顶层待办，所以这里只看 plan.nodes 就够。
+     */
+    const freshNode = (res) => {
+      if (res === null || res === undefined || res.node === null || res.node === undefined) return null
+      const nodes = res.plan !== null && res.plan !== undefined && Array.isArray(res.plan.nodes)
+        ? res.plan.nodes : []
+      for (const n of nodes) if (n.id === res.node.id) return n
+      return null
+    }
     const doMove = React.useCallback((id, parent, index) => {
       const args = { node: id, parent }
       // index 只在明确要给的时候才传。它的语义是「**先把自己摘掉**，再在这个
@@ -660,6 +763,11 @@ function apply(ctx) {
     /** 归位选择器：把这条待办移进哪个计划。 */
     const movePick = (node) => {
       const targets = moveTargets(plan, node)
+      // 建议是**服务端算好的派生字段**（见 host 的 suggestParent / annotate），
+      // 不是客户端自己推的：这样面板和 agent 看到的建议是同一个，agent 想改判
+      // 归属时不必再开一条通路。字段只挂在顶层待办上，别处取不到、也不会误用。
+      const sug = Array.isArray(node.parentSuggestions) ? node.parentSuggestions : []
+      const suggested = new Set(sug.map((s) => String(s.id)))
       const chips = []
       if (!isTopLevel(node.id)) {
         chips.push(h('button', {
@@ -668,7 +776,18 @@ function apply(ctx) {
           onClick: () => doMove(node.id, null),
         }, '顶层（收件箱）'))
       }
+      // 建议排在前面并标出来，理由挂在 title 上——用户要能看懂**为什么**推荐它，
+      // 才敢一键接受；只给一个名字就成了黑箱。
+      for (const s of sug) {
+        chips.push(h('button', {
+          key: 'sug-' + s.id,
+          className: 'dsh-wb-chip sug',
+          title: '建议归到「' + s.title + '」：' + s.why,
+          onClick: () => doMove(node.id, s.id),
+        }, '建议 ↳ ' + s.title))
+      }
       for (const t of targets) {
+        if (suggested.has(String(t.id))) continue
         chips.push(h('button', {
           key: t.id,
           className: 'dsh-wb-chip',
@@ -683,7 +802,11 @@ function apply(ctx) {
         onClick: () => store.set({ moving: null }),
       }, '取消'))
       return h('div', { className: 'dsh-wb-movepick', key: 'pick' },
-        h('span', { className: 'dsh-wb-movepicklabel' }, '移到：'), chips)
+        h('span', { className: 'dsh-wb-movepicklabel' },
+          // 有建议时把首要理由摊在标签上，而不是只藏在 tooltip 里——建议的说服力
+          // 全在理由上，藏起来等于没给。
+          sug.length > 0 ? '建议归到（' + sug[0].why + '）：' : '移到：'),
+        chips)
     }
 
     /** 一条待办。 */
@@ -809,6 +932,7 @@ function apply(ctx) {
             onChange: (e) => setNodeDraft(e.target.value),
             onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit('todo') } },
           }),
+          micButton(setNodeDraft, 'mic'),
           h('button', { onClick: () => submit('todo'), disabled: nodeDraft.trim() === '' }, '记作待办'),
           h('button', { onClick: () => submit('plan'), disabled: nodeDraft.trim() === '' }, '记作子计划'),
         ))
@@ -900,6 +1024,26 @@ function apply(ctx) {
     }
 
     // 收件箱：先记下来，之后再归位（↳）。没有它，「收不进来」这条就一直成立。
+    //
+    // 记入收件箱走这一个函数。回车与「记下」按钮原来各写了一遍提交逻辑——两份就会
+    // 有一份漏掉后面的「展开建议」，于是键盘记的没有建议、点按钮记的才有。
+    const submitInbox = () => {
+      const title = draft.trim()
+      if (title === '') return
+      addNode({ title, type: 'todo' }, (res) => {
+        setDraft('')
+        // 记完立刻把「该归到哪」摊开。它是**行内**的（不是弹窗），不打断连着记几条
+        // 的节奏；没有够格的建议就不弹，免得白占一行。
+        const fresh = freshNode(res)
+        const sug = fresh !== null && Array.isArray(fresh.parentSuggestions) ? fresh.parentSuggestions : []
+        if (sug.length > 0) {
+          store.set({ moving: fresh.id })
+          flash('已记入收件箱 · 建议归到「' + sug[0].title + '」')
+        } else {
+          flash('已记入收件箱')
+        }
+      })
+    }
     const inboxRows = []
     inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
       h('span', { className: 'dsh-wb-planid' }, '📥'),
@@ -917,16 +1061,13 @@ function apply(ctx) {
         onKeyDown: (e) => {
           if (e.key === 'Enter') {
             e.preventDefault()
-            const title = draft.trim()
-            if (title !== '') addNode({ title, type: 'todo' }, () => { setDraft(''); flash('已记入收件箱') })
+            submitInbox()
           }
         },
       }),
+      micButton(setDraft, 'mic'),
       h('button', {
-        onClick: () => {
-          const title = draft.trim()
-          if (title !== '') addNode({ title, type: 'todo' }, () => { setDraft(''); flash('已记入收件箱') })
-        },
+        onClick: submitInbox,
         disabled: draft.trim() === '',
         title: '记入收件箱',
       }, '记下'),
@@ -969,6 +1110,7 @@ function apply(ctx) {
           onChange: (e) => setNodeDraft(e.target.value),
           onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitRoot() } },
         }),
+        micButton(setNodeDraft, 'mic'),
         // 这里只有「建计划」一个提交口：顶层的待办就是收件箱，而收件箱的输入框
         // 就在上面常驻着，再放一个「记作待办」等于把同一个动作做两遍。
         h('button', { onClick: submitRoot, disabled: nodeDraft.trim() === '' }, '建计划'),
