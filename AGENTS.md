@@ -33,7 +33,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（133 个）
+node --test test/*.test.mjs   # 跑测试（170 个）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -53,12 +53,29 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 <workspace>/plan/.versions/     每次变更前的快照（版本留档）
 ```
 
-四类节点：`goal（计划）→ kr（子计划）→ task（待办）`，外加 `inbox[]`
-（不挂任何计划的游离待办，即**收件箱**）。收件箱是针对「收不进来」这个问题的解：
-记一条事的成本必须趋近于零，所以允许先记下来、之后再归位。
+**一棵递归树**（schema 2，结构细节见 `src/store.js` 顶部注释）：
 
-每个节点都可以带三个**可选**字段（缺省行为与加字段之前完全一致，老 `plan.json`
-不需要迁移）：
+```
+plan.nodes[]                      顶层节点；其中 type=todo 的顶层节点就是**收件箱**
+  node.type      'plan' | 'todo'  plan 可挂 children（深度不限），todo 是叶子
+  node.children[]                 只有 plan 有；子计划 = plan 嵌 plan
+```
+
+**为什么要从固定三层改成递归树**：三层表达不了「年度 → 季度 → 月度 → 周」这类链条，
+也放不下「子计划里再分子计划」——而这正是「可以分级」的诉求。递归树是同一个模型的
+自然表达：进度、定位、留档的算法都退化成同一个递归，特例反而更少（原来分散在
+`krProgress` / `goalProgress` 里的两套算法，现在合成一个 `nodeProgress`）。
+
+**老数据怎么办**：schema 1（`goals`/`krs`/`tasks` + `inbox`）在**读取时**自动迁移、
+写入时落成新格式，用户不需要跑任何迁移脚本，也不会有一刻看到坏数据。迁移是**无损**的
+——老 id（`g1` / `k1` / `t1`）原样保留，因为历史会话消息与 `.versions/` 里的快照都还在
+引用它们；新节点统一用 `n` 前缀，与老 id 不冲突。`restore` 回滚到老格式快照时同样迁移
+后落盘：回滚要的是「内容回到那一刻」，不是「格式回到那一刻」。
+
+**收件箱 = 顶层待办**（`type: 'todo'` 的顶层节点）。它是针对「收不进来」这个问题的解：
+记一条事的成本必须趋近于零，所以允许先记下来、之后再归位（`plan_node_move`）。
+
+每个节点都可以带这几个**可选**字段（缺省行为与加字段之前完全一致）：
 
 - `priority`：`high` / `normal`（默认） / `low` —— **管控强度开关，不是彩色标签**。
   `high` 要求计划有周期与负责人、待办有截止；缺口由 `nodeWarnings()` 以**警告**
@@ -69,19 +86,27 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
   与 `overdueWork`（该去催进度）。重新委派会重置回执——换人意味着上一轮作废。
 - `doneAt` / `startedAt`：完成与开工时间戳，是所有时间维度统计（周报）的上游。
   离开 `done` 会**清掉** `doneAt`，否则被撤回的完成会一直出现在「本周完成」里。
+- `metric`：`{ target, current, unit }`，可计数的节点按它算进度（原量化 KR 的字段）。
+
+**`type` 可以改（换型）**：`plan_node_set` 传 `type` 就把节点在原位改成计划或待办——
+随手记的待办后来发现要拆，提升为计划继续拆；拆完发现不必，降回待办。两条约束：
+**有子节点的计划不能降级为待办**（待办是叶子，孩子们会变成孤儿，不可逆），
+以及**跨类型时状态要重新归一**（`active` 只对计划合法，`todo`/`doing` 只对待办合法）。
+后者尤其重要：不归一留下的是「对该类型非法的状态」，而它不会报错，只会让进度、
+筛选、角标**静默错值**。
 
 **写入路径唯一**：面板（HTTP 面）与 agent 工具都调用 `store.js` 的同一组函数
-（`applyStatus` / `setPriority` / `setDelegate` / `setReceipt`），谁都不另写一套；
-每一次写入都自动归档版本，所以没有「绕过留档」的路径。
+（`applyFields` / `setStatus` / `setNodeType` / `setPriority` / `setDelegate` / `setReceipt`），
+谁都不另写一套；每一次写入都自动归档版本，所以没有「绕过留档」的路径。
 
 **为什么 JSON 为真相、Markdown 为视图**：计划是需要程序增删改查的树（进度汇总、
 按 id 定位、版本回滚），直接解析 Markdown 需要稳健解析器且格式漂移会静默丢数据；
 但只存 JSON 又失去人可读、可 git diff、可被 agent 直接读懂的好处。双表示各取所长：
 写入走结构化路径（有校验），阅读与 diff 走 Markdown。改数据结构时不要破坏这个分工。
 
-进度是**派生量**，不落盘：`krProgress` 量化 KR 按 `current/target`，清单 KR 按任务
-完成比例；`goalProgress` 取各 KR 平均；`planProgress` 取各目标平均（**不含收件箱**——
-收件箱不是计划的一部分，它计入角标与统计，但不影响计划完成度）。
+进度是**派生量**，不落盘：`nodeProgress` 递归算——有 `metric` 按 `current/target`，
+否则按子节点完成度的平均，叶子按 `done` 给 0 或 1；`planProgress` 取各**顶层计划**的
+平均（**不含收件箱**——收件箱不是计划的一部分，它计入角标与统计，但不影响完成度）。
 
 ## 必须知道的坑（都踩过）
 
@@ -114,11 +139,21 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 
 6. **改 host 半身后必须重启**才生效；只测 `--dump-config` 不足以证明插件逻辑正确。
 
-7. **新增节点种类时，所有「按 kind 定位」的地方都要一起改。** 收件箱待办的
-   kind 是 `inbox` 而不是 `task`，`plan_task_set` 曾经只按 `kind='task'` 找，
-   于是「面板上勾一条收件箱待办」直接报「找不到 task」——纯函数测试和产物断言
-   都发现不了，是 `test/host.test.mjs`（真跑工具）抓出来的。现在统一走
-   `resolveTodo`（只接受叶子）与 `resolveAny`（任意节点）。
+7. **定位分两层，别混用。** `resolveNode` / `resolveAny` 按 id / 标题 / 唯一包含匹配
+   找人（工具参数允许传标题）；`locate` **只按 id** 取「它在树里的位置」（父节点、
+   兄弟数组、下标），因为位置必须唯一确定。移动与删除必须
+   「先 `resolveAny` 再 `locate(node.id)`」——少了这一步，「按标题移动一个节点」
+   会报「找不到节点 id：xxx」。这条是 `test/host.test.mjs` 真跑工具时抓出来的。
+
+8. **DSH 工具的参数 schema 不接受 `null`。** `{ type: 'string' }` 收到 `null` 会直接抛
+   `invalid arguments: "parent" must be a string`，根本进不到函数体。所以「移到顶层」
+   这类语义只能用**省略参数**表达，不能用 `null` 占位——工具的参数描述里必须写清楚。
+   给工具加可选参数时留意同类问题。
+
+9. **递归结构里凡是「跨层找东西」的地方，都要写成递归。** `nextId` 扫 id、
+   `todoCounts` 数计划与待办、`collectNodes` 定位节点，最初都只遍历了顶层——
+   表现为「嵌套计划里的待办不计数」「新建节点与深层节点重号」。改数据结构后
+   第一件事是把所有遍历改成递归，并用测试覆盖「第三层」这种深度。
 
 ## 约定
 
@@ -129,8 +164,13 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 - **`lib/` 不入库**，一切从 `src/` 生成。
 - **纯逻辑抽到 `logic.cjs` / `store.js`** 以便 Node 里单测；React 组件里不留可测逻辑。
 - 注释和面向用户的文案用中文，标识符用英文。
-- 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言（现在 15 个工具、
-  7 条 HTTP 路由）。
+- **工具面按「节点」组织，不按「层级」组织。** 结构操作只有四个：
+  `plan_node_add` / `plan_node_set` / `plan_node_move` / `plan_node_remove`，
+  作用在任意节点上，`type` 决定它是计划还是待办。不要再按层级加
+  `plan_goal_*` / `plan_kr_*` / `plan_task_*` 三套——三套 API 做同一件事，
+  agent 每次都得先想「这东西算 goal 还是 kr」，而这些区分对人本就没有意义。
+- 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言（现在 13 个工具、
+  9 条 HTTP 路由）。
 - **跨半身重复的纯逻辑必须在测试里钉住一致性。** host 是 ESM、client 是 CJS，
   无法共享模块，像 `nextPriority` 这种映射只能各写一份——那就用断言把两份绑在一起
   （见 `test/logic.test.mjs`），否则改一侧忘另一侧，表现为「面板上点徽章跳到别的档」。
