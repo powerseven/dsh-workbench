@@ -286,6 +286,18 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
   payload 少一个派生字段，面板会静默走兜底分支，测试就悄悄退化成什么都没测。
   它测不了 CSS、真实 DnD 行为与 React 的调度语义，那部分只能在 `dsh web` 里实测。
 - **折叠之类的显示偏好一律不进 `plan.json`**（判据见「面板的本地状态」一节）。
+- **面板样式只用宿主的 design token，不自造颜色。** 颜色一律映射 `--dsw-alias-*`
+  成 `--wb-*` 短名（映射层在 `.dsh-wb-wrap` 上，见坑 #18），字号用 `var(--dsw-font-*-*)`，
+  动效用 `--ds-transition-duration` / `--ds-ease-in-out`；**不写硬编码 hex / rgb**，
+  间距与圆角对齐宿主侧栏组件的既有标尺（间距 2/4/6/8/12，圆角 4/6/8/999）。
+  这样明暗两态、以及宿主将来换肤都自动跟随。`test/build.test.mjs` 有断言守这条。
+- **文字只留两级：**`--wb-fg`（primary）与 `--wb-fg-2`（secondary，白底 5.8:1）。
+  宿主更浅的那两级（tertiary 3.7:1 / caption 2.5:1）在面板的 11–13px 尺寸下**达不到
+  AA 的 4.5:1**，所以层级改由字重、描边与留白表达。语义色里只有 danger（4.5:1）
+  能直接当文字色；warn 与 success 只做软底，文字仍走中性。
+- **一次改动的视觉部分要在真机验。** 内联 CSS 没有测试能覆盖——`test/client.test.mjs`
+  测不了样式，`build.test.mjs` 只守字符串纪律。做法是起一个独立端口的 `dsh web`，
+  用真实浏览器量 `getComputedStyle` + 算对比度（记得坑 #20）。
 
 ## 协作与版本控制
 
