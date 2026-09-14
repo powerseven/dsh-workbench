@@ -15,6 +15,18 @@
  *
  * 版本留档独立于 git：即使这个目录没被 commit、或用户根本不用 git，
  * 每次变更前的快照依然留在 .versions/ 里，可回滚。
+ *
+ * 关于「待办 / 计划 / 子计划 / 委派」四条主线（见 docs/PRD.md）：
+ * 本文件是它们的**唯一写入路径**——面板（HTTP 面）与 agent 工具都调用这里
+ * 的函数，不各自再写一套。三个新增概念全部是**可选字段**：
+ *
+ *   priority   重要程度 high | normal | low —— 决定这个节点要走多少流程
+ *   delegate   委派 { to, at, expectAt, status } —— 带回执，不是一次性指派
+ *   doneAt     完成时间戳 —— 所有「本周做了什么」类统计的上游
+ *   inbox      收件箱：不挂任何计划的根级待办
+ *
+ * 缺省行为与加字段之前完全一致：没写 priority 就当 normal，没写 delegate
+ * 就当没委派，没有 inbox 就当空数组。老 plan.json 不需要迁移。
  */
 
 import { existsSync } from 'node:fs'
@@ -30,6 +42,37 @@ export const VERSIONS_DIR = '.versions'
 export const TASK_STATUS = ['todo', 'doing', 'done', 'dropped']
 /** 目标/关键结果状态取值。 */
 export const NODE_STATUS = ['active', 'done', 'dropped']
+/**
+ * 重要程度取值（存英文枚举、界面显示中文，程序判断才稳定）。
+ * 它不是彩色标签，而是**管控强度开关**：
+ *   high   必须有周期与负责人；进度要更新；落后要预警；完成要证据
+ *   normal 要有截止；到期提醒
+ *   low    只记录，不催
+ * 默认 normal——如果默认 high，人人都标 high，管控机制立刻失效。
+ */
+export const PRIORITY = ['high', 'normal', 'low']
+export const DEFAULT_PRIORITY = 'normal'
+/** 委派回执状态：pending=待接受, accepted=已接受, declined=已拒绝, returned=已交回。 */
+export const DELEGATE_STATUS = ['pending', 'accepted', 'declined', 'returned']
+/** 节点种类：goal=计划（顶层）、kr=子计划、task=计划下的待办、inbox=不挂计划的待办。 */
+export const NODE_KIND = ['goal', 'kr', 'task', 'inbox']
+/** 中文标签，只用于「给人看的文本」（PLAN.md、工具输出文案），不参与程序判断。 */
+export const PRIORITY_LABEL = { high: '高', normal: '中', low: '低' }
+export const DELEGATE_LABEL = { pending: '待接受', accepted: '已接受', declined: '已拒绝', returned: '已交回' }
+export const KIND_LABEL = { goal: '计划', kr: '子计划', task: '待办', inbox: '收件箱待办' }
+
+/** 今天的日期（YYYY-MM-DD，本地时区）。逾期判定统一走它，便于测试注入。 */
+export function todayStr(now = new Date()) {
+  const d = now instanceof Date ? now : new Date(now)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return d.getFullYear() + '-' + m + '-' + day
+}
+
+/** 取一个非空字符串，否则 undefined（避免把空串写进 plan.json）。 */
+function opt(v) {
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : undefined
+}
 
 /** 数值夹取到 [0,1]。 */
 function clamp01(n) {
@@ -47,6 +90,9 @@ export function nextId(plan, prefix) {
     const n = Number(id.slice(prefix.length))
     if (Number.isInteger(n) && n > max) max = n
   }
+  // 收件箱里的待办与 KR 下的待办共用 t 前缀，编号必须一起扫——
+  // 否则「收件箱有 t1」时新建的任务会重号，按 id 定位就会指错节点。
+  for (const todo of plan.inbox ?? []) consider(todo.id)
   for (const goal of plan.goals ?? []) {
     consider(goal.id)
     for (const kr of goal.krs ?? []) {
@@ -66,7 +112,20 @@ export function emptyPlan(title = '个人工作计划') {
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
     goals: [],
+    inbox: [],
   }
+}
+
+/**
+ * 把从磁盘读到的计划补齐成完整形态（只在内存里补，不写盘）。
+ * 目前只补 `inbox`，这样上层可以无条件 `plan.inbox.forEach`，
+ * 而不必到处写 `?? []`。
+ */
+export function normalizePlan(plan) {
+  if (plan === null || typeof plan !== 'object') throw new Error('计划必须是对象')
+  if (!Array.isArray(plan.goals)) throw new Error('计划缺少 goals 数组')
+  if (!Array.isArray(plan.inbox)) plan.inbox = []
+  return plan
 }
 
 /**
@@ -100,25 +159,295 @@ export function planProgress(plan) {
   return goals.reduce((acc, g) => acc + goalProgress(g), 0) / goals.length
 }
 
-/** 全计划任务计数（用于面板角标与进度条文案）。 */
-export function taskCounts(plan) {
-  const out = { todo: 0, doing: 0, done: 0, dropped: 0, total: 0 }
+// ------------------------------------------------- 重要程度 / 时间戳 / 委派
+
+/** 读重要程度，缺失或脏值一律当 normal——老数据因此零迁移。 */
+export function priorityOf(node) {
+  const p = node === null || node === undefined ? undefined : node.priority
+  return PRIORITY.includes(p) ? p : DEFAULT_PRIORITY
+}
+
+/** 写重要程度（校验取值）。面板的徽章循环、工具参数都走这里。 */
+export function setPriority(node, priority) {
+  const p = opt(priority)
+  if (p === undefined || !PRIORITY.includes(p)) {
+    throw new Error('priority 必须是 ' + PRIORITY.join(' / ') + ' 之一，收到：' + String(priority))
+  }
+  node.priority = p
+  return node
+}
+
+/** 重要程度徽章点击时的循环顺序：高 → 中 → 低 → 高。 */
+export function nextPriority(priority) {
+  const list = ['high', 'normal', 'low']
+  const i = list.indexOf(priorityOf({ priority }))
+  return list[(i + 1) % list.length]
+}
+
+/**
+ * 改状态，并顺带维护两个时间戳：
+ *   - 进入 done 时补 `doneAt`（只在首次写入，重复 save 不会把时间刷新成「刚刚」）；
+ *   - 离开 done 时删掉 `doneAt`——否则它会在周报里继续被当成「本周完成」；
+ *   - 首次进入 doing 时补 `startedAt`，之后保持第一次的时间。
+ * 这两个时间戳是所有时间维度统计的上游（见 docs/PRD.md FR-R2）。
+ */
+export function applyStatus(node, status, now = new Date()) {
+  node.status = status
+  const iso = (now instanceof Date ? now : new Date(now)).toISOString()
+  if (status === 'done') {
+    if (opt(node.doneAt) === undefined) node.doneAt = iso
+  } else if (node.doneAt !== undefined) {
+    delete node.doneAt
+  }
+  if (status === 'doing' && opt(node.startedAt) === undefined) node.startedAt = iso
+  return node
+}
+
+/**
+ * 建/改委派。重新委派会把回执状态重置为 pending，并把委派时间刷成现在——
+ * 换人意味着上一轮的回执作废，留着旧的 accepted 会让人误以为对方已接单。
+ */
+export function setDelegate(node, input, now = new Date()) {
+  const to = opt(input?.to)
+  if (to === undefined) throw new Error('委派对象不能为空（to）')
+  const d = {
+    to,
+    at: (now instanceof Date ? now : new Date(now)).toISOString(),
+    status: 'pending',
+  }
+  const expectAt = opt(input?.expectAt)
+  if (expectAt !== undefined) d.expectAt = expectAt
+  const note = opt(input?.note)
+  if (note !== undefined) d.note = note
+  node.delegate = d
+  return node
+}
+
+/** 记一次回执（对方接受了/拒绝了/交回来了）。没有委派记录时报错，避免写出半截数据。 */
+export function setReceipt(node, status, input = {}, now = new Date()) {
+  const d = node?.delegate
+  if (d === null || d === undefined || typeof d !== 'object' || opt(d.to) === undefined) {
+    throw new Error('这个节点还没有委派记录，先建立委派再记回执')
+  }
+  const s = opt(status)
+  if (s === undefined || !DELEGATE_STATUS.includes(s)) {
+    throw new Error('回执状态必须是 ' + DELEGATE_STATUS.join(' / ') + ' 之一，收到：' + String(status))
+  }
+  d.status = s
+  d.receiptAt = (now instanceof Date ? now : new Date(now)).toISOString()
+  const note = opt(input?.note)
+  if (note !== undefined) d.note = note
+  const expectAt = opt(input?.expectAt)
+  if (expectAt !== undefined) d.expectAt = expectAt
+  return node
+}
+
+/**
+ * 把委派整理成可判断的形态（给面板与 agent 用）。
+ * 两个逾期标记分开算，因为它们该触发不同动作：
+ *   overdueReceipt 未回执且过了期望时间 → 该去问一句「接不接」；
+ *   overdueWork    已逾期且事情没做完   → 该去催进度。
+ */
+export function delegateState(node, today = todayStr()) {
+  const d = node === null || node === undefined ? undefined : node.delegate
+  if (d === null || d === undefined || typeof d !== 'object' || opt(d.to) === undefined) return null
+  const expectAt = opt(d.expectAt)
+  const settled = node.status === 'done' || node.status === 'dropped'
+  const late = expectAt !== undefined && expectAt < today
+  const status = DELEGATE_STATUS.includes(d.status) ? d.status : 'pending'
+  return {
+    to: String(d.to),
+    status,
+    at: opt(d.at) ?? null,
+    expectAt: expectAt ?? null,
+    overdueReceipt: late && !settled && status === 'pending',
+    overdueWork: late && !settled,
+  }
+}
+
+/**
+ * 管控校验：按重要程度检查这个节点是否缺必备信息。
+ *
+ * 返回**警告而不是拦下**，这是有意的：产品目标是「记下来」的成本趋近于零
+ * （见 PRD §2）。在捕获的那一刻就硬拦，会让人干脆不记。所以：先记下来，
+ * 面板与 agent 把缺口指出来，再由人补。
+ *
+ * 「负责人」只对计划节点（goal/kr）要求——待办默认就是自己负责，
+ * 若硬要求填负责人，每一条高优先级待办都会报警告，警告随即失去意义。
+ */
+export function nodeWarnings(node, kind = 'task') {
+  const out = []
+  const leaf = kind === 'task' || kind === 'inbox'
+  const period = leaf ? opt(node?.due) : (opt(node?.end) ?? opt(node?.start))
+  const owner = opt(node?.owner) ?? opt(node?.delegate?.to)
+  const p = priorityOf(node)
+  if (p === 'high') {
+    if (period === undefined) out.push(leaf ? '重要度为「高」，需要截止日期' : '重要度为「高」，需要周期（起止）')
+    if (!leaf && owner === undefined) out.push('重要度为「高」，需要负责人')
+  } else if (p === 'normal' && period === undefined) {
+    out.push(leaf ? '重要度为「中」，建议补一个截止日期' : '重要度为「中」，建议补一个结束日期')
+  }
+  const d = delegateState(node)
+  if (d !== null && d.overdueReceipt) out.push('委派给 ' + d.to + ' 已逾期未回执')
+  return out
+}
+
+/** 收集整棵树的节点（含收件箱），带种类与父节点。kind 传 'any' 表示全都要。 */
+export function collectNodes(plan, kind = 'any') {
+  const out = []
+  if (kind === 'inbox' || kind === 'any') {
+    for (const todo of plan.inbox ?? []) out.push({ node: todo, kind: 'inbox', parent: null })
+  }
   for (const goal of plan.goals ?? []) {
+    if (kind === 'goal' || kind === 'any') out.push({ node: goal, kind: 'goal', parent: null })
     for (const kr of goal.krs ?? []) {
+      if (kind === 'kr' || kind === 'any') out.push({ node: kr, kind: 'kr', parent: goal })
       for (const task of kr.tasks ?? []) {
-        const s = TASK_STATUS.includes(task.status) ? task.status : 'todo'
-        out[s] += 1
-        out.total += 1
+        if (kind === 'task' || kind === 'any') out.push({ node: task, kind: 'task', parent: kr })
       }
     }
   }
   return out
 }
 
+/**
+ * 在整棵树里按 id / 标题定位一个节点，不限定它是什么种类。
+ * 委派与重要程度要作用在「任意节点」上，所以需要它——三个 has* 工具
+ * 各自一套定位逻辑的话，迟早会出现「有的工具能按标题找、有的不能」。
+ */
+export function resolveAny(plan, ref) {
+  return resolveIn(collectNodes(plan, 'any'), ref, '节点')
+}
+
+/**
+ * 「我委派出去的」清单：所有带委派的节点，逾期的排前面。
+ * 这是 PRD FR-D4 的数据源——委派如果没有一个统一的视图，
+ * 交代出去的事就会真的消失。
+ */
+export function delegatedList(plan, today = todayStr()) {
+  const out = []
+  for (const item of collectNodes(plan, 'any')) {
+    const d = delegateState(item.node, today)
+    if (d === null) continue
+    out.push({
+      id: item.node.id,
+      kind: item.kind,
+      title: item.node.title ?? '',
+      parent: item.parent === null || item.parent === undefined ? null : item.parent.id,
+      status: item.node.status ?? '',
+      delegate: d,
+    })
+  }
+  out.sort((a, b) => {
+    const al = a.delegate.overdueReceipt || a.delegate.overdueWork ? 0 : 1
+    const bl = b.delegate.overdueReceipt || b.delegate.overdueWork ? 0 : 1
+    if (al !== bl) return al - bl
+    return String(a.delegate.expectAt ?? '9999').localeCompare(String(b.delegate.expectAt ?? '9999'))
+  })
+  return out
+}
+
+/** 全计划任务计数（用于面板角标与进度条文案）。含收件箱里的游离待办。 */
+export function taskCounts(plan) {
+  const out = { todo: 0, doing: 0, done: 0, dropped: 0, total: 0, inbox: 0, inboxOpen: 0 }
+  const count = (node) => {
+    const s = TASK_STATUS.includes(node.status) ? node.status : 'todo'
+    out[s] += 1
+    out.total += 1
+    return s
+  }
+  for (const todo of plan.inbox ?? []) {
+    out.inbox += 1
+    if (count(todo) !== 'done' && todo.status !== 'dropped') out.inboxOpen += 1
+  }
+  for (const goal of plan.goals ?? []) {
+    for (const kr of goal.krs ?? []) {
+      for (const task of kr.tasks ?? []) count(task)
+    }
+  }
+  return out
+}
+
+/** 节点的「时间锚点」：待办看 due，计划看 end（退一步 start）。 */
+export function anchorDate(node) {
+  if (node === null || node === undefined) return undefined
+  return opt(node.due) ?? opt(node.end) ?? opt(node.start)
+}
+
+/** 在 YYYY-MM-DD 上加天数，返回同格式字符串（用 UTC 运算避开时区夏令时）。 */
+function addDays(day, n) {
+  const t = Date.parse(day + 'T00:00:00Z')
+  if (!Number.isFinite(t)) return undefined
+  return new Date(t + n * 86400000).toISOString().slice(0, 10)
+}
+
+/**
+ * 是否已逾期：未结束、且锚点日期已过，或委派已过期而事情没做完。
+ * 已放弃/已完成一律不算逾期——否则「做完了」的项会一直在逾期列表里。
+ */
+export function isOverdue(node, today = todayStr()) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  if (node.status === 'done' || node.status === 'dropped') return false
+  const a = anchorDate(node)
+  if (a !== undefined && a < today) return true
+  const d = delegateState(node, today)
+  return d !== null && d.overdueWork
+}
+
+/** 是否在 [今天, 今天+days] 内到期（含今天）。 */
+export function isDueWithin(node, days = 7, today = todayStr()) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  if (node.status === 'done' || node.status === 'dropped') return false
+  const a = anchorDate(node)
+  if (a === undefined) return false
+  const limit = addDays(today, days)
+  if (limit === undefined) return false
+  return a >= today && a <= limit
+}
+
+/**
+ * 管控视角的汇总（面板筛选条的角标、agent 的预警都用它）：
+ *   high       未完成的「高」重要度节点数
+ *   delegated  带委派的节点数
+ *   overdue    逾期未完成数
+ *   week       7 天内到期数
+ *   warnings   存在管控缺口的节点数
+ *   inboxOpen  收件箱里还没归位的待办数
+ */
+export function controlSummary(plan, today = todayStr()) {
+  const nodes = collectNodes(plan, 'any')
+  const open = nodes.filter((x) => x.node.status !== 'done' && x.node.status !== 'dropped')
+  const counts = taskCounts(plan)
+  return {
+    high: open.filter((x) => priorityOf(x.node) === 'high').length,
+    delegated: nodes.filter((x) => delegateState(x.node, today) !== null).length,
+    overdue: open.filter((x) => isOverdue(x.node, today)).length,
+    week: open.filter((x) => isDueWithin(x.node, 7, today)).length,
+    warnings: nodes.filter((x) => nodeWarnings(x.node, x.kind).length > 0).length,
+    inbox: counts.inbox,
+    inboxOpen: counts.inboxOpen,
+  }
+}
+
 const pct = (n) => String(Math.round(n * 100)) + '%'
 
 /** 把计划渲染成 Markdown 视图。纯函数，便于测试。 */
 export function renderMarkdown(plan) {
+  /** 一个节点的附加标注（重要度 / 委派 / 完成时间）。 */
+  const extraOf = (node) => {
+    const out = []
+    const p = priorityOf(node)
+    if (p !== 'normal') out.push('重要度' + PRIORITY_LABEL[p])
+    const d = delegateState(node)
+    if (d !== null) {
+      let s = '委派 ' + d.to + '（' + DELEGATE_LABEL[d.status] + (d.expectAt !== null ? '；期望 ' + d.expectAt : '') + '）'
+      if (d.overdueReceipt) s += ' ⚠ 逾期未回执'
+      out.push(s)
+    }
+    if (typeof node.doneAt === 'string' && node.doneAt !== '') out.push('完成于 ' + node.doneAt.slice(0, 10))
+    return out
+  }
+
   const lines = []
   lines.push('# ' + (plan.title || '个人工作计划'))
   lines.push('')
@@ -129,6 +458,13 @@ export function renderMarkdown(plan) {
   lines.push('- 整体完成度：' + pct(planProgress(plan)))
   const c = taskCounts(plan)
   lines.push('- 任务：共 ' + String(c.total) + '，已完成 ' + String(c.done) + '，进行中 ' + String(c.doing) + '，待办 ' + String(c.todo))
+  if (c.inbox > 0) {
+    lines.push('- 收件箱：' + String(c.inbox) + ' 条（未完成 ' + String(c.inboxOpen) + '）')
+  }
+  const ctrl = controlSummary(plan)
+  lines.push('- 管控：高重要度 ' + String(ctrl.high) + ' · 委派中 ' + String(ctrl.delegated)
+    + ' · 逾期 ' + String(ctrl.overdue) + ' · 7 天内到期 ' + String(ctrl.week))
+  if (ctrl.warnings > 0) lines.push('- 管控缺口：' + String(ctrl.warnings) + ' 处待补（见各节点标注）')
   lines.push('')
 
   for (const goal of plan.goals ?? []) {
@@ -136,6 +472,8 @@ export function renderMarkdown(plan) {
     if (goal.owner) lines.push('- 负责人：' + goal.owner)
     if (goal.start || goal.end) lines.push('- 周期：' + (goal.start || '?') + ' ~ ' + (goal.end || '?'))
     if (goal.status && goal.status !== 'active') lines.push('- 状态：' + goal.status)
+    const gExtra = extraOf(goal)
+    if (gExtra.length > 0) lines.push('- ' + gExtra.join('；'))
     if (goal.note) lines.push('- 备注：' + goal.note)
     lines.push('')
     for (const kr of goal.krs ?? []) {
@@ -143,6 +481,10 @@ export function renderMarkdown(plan) {
         ? '  ' + String(kr.current ?? 0) + '/' + String(kr.target) + (kr.unit ? ' ' + kr.unit : '')
         : ''
       lines.push('### ' + kr.id + ' · ' + (kr.title || '(未命名KR)') + '  ' + pct(krProgress(kr)) + q)
+      if (kr.owner) lines.push('  - 负责人：' + kr.owner)
+      if (kr.start || kr.end) lines.push('  - 周期：' + (kr.start || '?') + ' ~ ' + (kr.end || '?'))
+      const kExtra = extraOf(kr)
+      if (kExtra.length > 0) lines.push('  - ' + kExtra.join('；'))
       if (kr.note) lines.push('')
       if (kr.note) lines.push('  ' + kr.note)
       lines.push('')
@@ -152,45 +494,58 @@ export function renderMarkdown(plan) {
         if (task.status === 'doing') bits.push('进行中')
         if (task.status === 'dropped') bits.push('已放弃')
         if (task.due) bits.push('截止 ' + task.due)
+        bits.push(...extraOf(task))
         lines.push('- ' + box + ' ' + task.id + ' · ' + (task.title || '(未命名任务)') + (bits.length ? '  _(' + bits.join('；') + ')_' : ''))
         if (task.note) lines.push('  - ' + task.note)
       }
       lines.push('')
     }
   }
+
+  // 收件箱放在最后：先读计划、再读还没归位的东西。
+  const inbox = plan.inbox ?? []
+  if (inbox.length > 0) {
+    lines.push('## 收件箱 · 未归类待办  ' + String(inbox.length) + ' 条')
+    lines.push('')
+    for (const todo of inbox) {
+      const box = todo.status === 'done' ? '[x]' : '[ ]'
+      const bits = []
+      if (todo.status === 'doing') bits.push('进行中')
+      if (todo.status === 'dropped') bits.push('已放弃')
+      if (todo.due) bits.push('截止 ' + todo.due)
+      bits.push(...extraOf(todo))
+      lines.push('- ' + box + ' ' + todo.id + ' · ' + (todo.title || '(未命名待办)') + (bits.length ? '  _(' + bits.join('；') + ')_' : ''))
+      if (todo.note) lines.push('  - ' + todo.note)
+    }
+    lines.push('')
+  }
   return lines.join('\n')
 }
 
 /**
- * 按 id 或标题在计划里定位一个节点。
- * 先精确匹配 id，再精确匹配标题，最后做一次包含匹配（大小写不敏感）。
+ * 在给定候选集里按 id / 标题 / 唯一包含匹配定位一个节点。
  * 命中多个时报错而不是随便挑一个——静默挑错会让 agent 改错对象。
  */
-export function resolveRef(plan, ref, kind) {
+function resolveIn(nodes, ref, label) {
   if (typeof ref !== 'string' || ref.trim() === '') {
-    throw new Error('需要一个 ' + kind + ' 的 id 或标题')
+    throw new Error('需要一个 ' + label + ' 的 id 或标题')
   }
   const needle = ref.trim()
   const lower = needle.toLowerCase()
-  const nodes = []
-  if (kind === 'goal') {
-    for (const goal of plan.goals ?? []) nodes.push({ node: goal, parent: null })
-  } else if (kind === 'kr') {
-    for (const goal of plan.goals ?? []) for (const kr of goal.krs ?? []) nodes.push({ node: kr, parent: goal })
-  } else {
-    for (const goal of plan.goals ?? []) {
-      for (const kr of goal.krs ?? []) for (const task of kr.tasks ?? []) nodes.push({ node: task, parent: kr })
-    }
-  }
   const byId = nodes.find((x) => x.node.id === needle)
   if (byId) return byId
   const byTitle = nodes.filter((x) => (x.node.title || '') === needle)
   if (byTitle.length === 1) return byTitle[0]
-  if (byTitle.length > 1) throw new Error('标题「' + needle + '」匹配到多个 ' + kind + '，请改用 id')
+  if (byTitle.length > 1) throw new Error('标题「' + needle + '」匹配到多个 ' + label + '，请改用 id')
   const byFuzzy = nodes.filter((x) => (x.node.title || '').toLowerCase().includes(lower))
   if (byFuzzy.length === 1) return byFuzzy[0]
-  if (byFuzzy.length > 1) throw new Error('「' + needle + '」模糊匹配到多个 ' + kind + '，请改用 id')
-  throw new Error('找不到 ' + kind + '：' + needle)
+  if (byFuzzy.length > 1) throw new Error('「' + needle + '」模糊匹配到多个 ' + label + '，请改用 id')
+  throw new Error('找不到 ' + label + '：' + needle)
+}
+
+/** 按种类定位节点（goal / kr / task / inbox）。 */
+export function resolveRef(plan, ref, kind) {
+  return resolveIn(collectNodes(plan, kind), ref, kind)
 }
 
 /** 一个计划文件（一个工作区一份）。 */
@@ -218,7 +573,8 @@ export class PlanStore {
     if (parsed === null || typeof parsed !== 'object' || !Array.isArray(parsed.goals)) {
       throw new Error('plan.json 结构不合法：缺少 goals 数组（' + this.file + '）')
     }
-    return parsed
+    // 补 inbox（老文件没有这个键），只在内存里补，不写盘。
+    return normalizePlan(parsed)
   }
 
   /**
