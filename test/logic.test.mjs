@@ -19,6 +19,7 @@ const {
   flattenNodes, FILTERS, focusList, filterCounts, moveTargets,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
+  bytesToBase64, pickImages, AI_MAX_IMAGES,
 } = require('../src/client/logic.cjs')
 
 test('pct 四舍五入并夹取到 0..100', () => {
@@ -674,4 +675,33 @@ test('dropTarget 的精确下标与 host 的「不传 index 就追加」落在�
   host.moveNode(b, 'n5', null)
   assert.equal(shape(a), 'n1(n2,n3,n4);n6;n7;n5')
   assert.equal(shape(a), shape(b), '拖到空白处与 ↳ 选「顶层」应当等效')
+})
+
+
+test('bytesToBase64 与 Node 的 Buffer 结果一致（含 1/2 字节的填充边界）', () => {
+  // 图片要走 JSON 请求体，只能编码成 base64；编错了 host 侧会直接拒收，
+  // 所以拿 Node 自己的实现当对照，把 0..5 字节都过一遍（覆盖 = 与 == 两种填充）。
+  const cases = [
+    [],
+    [0x41],
+    [0x41, 0x42],
+    [0x41, 0x42, 0x43],
+    [0x41, 0x42, 0x43, 0x44],
+    [0xff, 0x00, 0x7f, 0x80, 0x01],
+  ]
+  for (const bytes of cases) {
+    assert.equal(bytesToBase64(Uint8Array.from(bytes)), Buffer.from(bytes).toString('base64'))
+  }
+  assert.equal(bytesToBase64(Uint8Array.from([0x41])), 'QQ==')
+  assert.equal(bytesToBase64(Uint8Array.from([0x41, 0x42])), 'QUI=')
+  assert.equal(bytesToBase64(null), '', '没有字节就返回空串，不抛')
+})
+
+test('pickImages 只挑「还装得下」的几张，并报出丢了几张', () => {
+  const files = ['a', 'b', 'c']
+  assert.deepEqual(pickImages(files, []), { picked: ['a', 'b', 'c'], dropped: 0 })
+  assert.deepEqual(pickImages(files, ['x', 'y', 'z']), { picked: ['a'], dropped: 2 })
+  assert.deepEqual(pickImages(files, ['x', 'y', 'z', 'w']), { picked: [], dropped: 3 })
+  assert.deepEqual(pickImages([], []), { picked: [], dropped: 0 })
+  assert.equal(AI_MAX_IMAGES, 4)
 })

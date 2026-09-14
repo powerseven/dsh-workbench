@@ -10,7 +10,7 @@
  * 收集路由（顺带验证 webServer 不存在时工具照常可用）。
  */
 
-import { test, before, after } from 'node:test'
+import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
 import { mkdtemp, readFile, rm, readdir, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -24,6 +24,43 @@ const SESSION_ID = 'session-1'
 let dir = ''
 let tools = new Map()
 let routes = new Map()
+
+/**
+ * 三个**可选**的宿主服务。默认全是 null（= 宿主没装），用例要用就自己装上：
+ * AI 入口必须在这三个都缺失时也能给出人话错误，而不是崩在 ctx.get 上。
+ */
+let fakeLlm = null
+let fakeAttachments = null
+let fakeDefaultModel = null
+
+/** 一个按脚本回话的假模型：只发 text-delta + finish，够覆盖解析路径。 */
+function llmReturning(text, opts = {}) {
+  const calls = []
+  return {
+    calls,
+    resolveModelInfo: async () => ({ inputModalities: opts.modalities === undefined ? ['text', 'image'] : opts.modalities }),
+    stream: async function* (options) {
+      calls.push(options)
+      yield { type: 'text-delta', text }
+      yield { type: 'finish', reason: { kind: 'stop' } }
+    },
+  }
+}
+
+/** 假附件库：只记录收到了什么，返回一个够用的 ImageAttachmentRef。 */
+function attachmentsReturning() {
+  const saved = []
+  return {
+    saved,
+    saveImages: async (inputs) => inputs.map((input, i) => {
+      saved.push({ bytes: input.data.length, mediaType: input.mediaType, name: input.name })
+      return {
+        attachmentId: 'att' + i, mediaType: input.mediaType,
+        bytes: input.data.length, width: 1, height: 1, name: input.name,
+      }
+    }),
+  }
+}
 
 /** 假 Cordis 上下文。 */
 function bootstrap() {
@@ -40,6 +77,9 @@ function bootstrap() {
       if (name === 'agents') {
         return { list: () => [{ session: { header: { id: SESSION_ID, cwd: dir } } }] }
       }
+      if (name === 'llm') return fakeLlm
+      if (name === 'attachments') return fakeAttachments
+      if (name === 'agentDefaultModel') return fakeDefaultModel
       return undefined
     },
   }
@@ -62,6 +102,15 @@ before(async () => {
 
 after(async () => {
   if (dir !== '') await rm(dir, { recursive: true, force: true })
+})
+
+// 每个用例前把三个可选服务摘掉：宿主没装模型插件是**默认情形**，
+// 想测「有模型」的用例自己装。不重置的话前一个用例的假模型会漏进后面，
+// 表现是「明明没装 llm，/ai-parse 却成功了」。
+beforeEach(() => {
+  fakeLlm = null
+  fakeAttachments = null
+  fakeDefaultModel = null
 })
 
 /** 调一个工具（模拟 agent 调用：会话 header 里带 cwd）。 */
@@ -109,11 +158,12 @@ test('注册了完整的工具集（节点模型：增删改移 + 待办状态 +
 })
 
 test('注册了 HTTP 数据面路由', () => {
+  // /ai-parse 是 AI 入口的解析口（只解析、不写入），写操作仍走 node-* / todo-set。
   assert.deepEqual(
     [...routes.keys()].sort(),
-    ['/api/workbench/get', '/api/workbench/history', '/api/workbench/init',
-      '/api/workbench/node-add', '/api/workbench/node-move', '/api/workbench/node-remove',
-      '/api/workbench/node-set', '/api/workbench/snapshot',
+    ['/api/workbench/ai-parse', '/api/workbench/get', '/api/workbench/history',
+      '/api/workbench/init', '/api/workbench/node-add', '/api/workbench/node-move',
+      '/api/workbench/node-remove', '/api/workbench/node-set', '/api/workbench/snapshot',
       '/api/workbench/todo-set'].sort(),
   )
 })
@@ -771,4 +821,144 @@ test('回滚能把计划恢复到历史版本', async () => {
   const r = await call('plan_restore', { file: first.file })
   assert.equal(r.ok, true)
   assert.equal(r.restoredFrom, first.file)
+})
+
+// ---------------------------------------------------------------- AI 入口
+
+/**
+ * 这一节的立场：/ai-parse 是**只读**的解析口。它读计划、问模型、返回候选，
+ * 但一个字节都不写——「采纳」是用户点了之后走 /node-add 的。所以除了断言
+ * 返回值，还要断言**计划文件与版本快照都没动**：一旦它偷偷写盘，用户改主意
+ * 就会留下一堆垃圾，而版本历史也会被冲淡。
+ */
+async function snapshotOfAiFixture() {
+  const files = await readdir(join(dir, 'plan', '.versions'))
+  return {
+    plan: await readFile(join(dir, 'plan', 'plan.json'), 'utf8'),
+    versions: files.filter((f) => f.endsWith('.json')).length,
+  }
+}
+
+test('/get 下发 AI 可用性：没有模型服务时是 false，并说明缺什么', async () => {
+  const r = await post('/get', { sessionId: SESSION_ID })
+  assert.equal(r.payload.ai.available, false)
+  assert.match(r.payload.ai.reason, /模型服务/)
+})
+
+test('/get 下发 AI 可用性：有模型但没选默认模型时也是 false', async () => {
+  fakeLlm = llmReturning('{}')
+  const r = await post('/get', { sessionId: SESSION_ID })
+  assert.equal(r.payload.ai.available, false)
+  assert.match(r.payload.ai.reason, /默认模型/)
+})
+
+test('/ai-parse 把模型回复变成待办 + 归位候选，且不写入任何数据', async () => {
+  await call('plan_node_add', { title: 'AI解析用计划', type: 'plan' })
+  await call('plan_node_add', { title: 'AI解析用子计划', type: 'plan', parent: 'AI解析用计划' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning('```json\n{"tasks":[{"title":"补台账","due":"2026-10-01","priority":"高","plan":"AI解析用子计划"}]}\n```')
+
+  const before = await snapshotOfAiFixture()
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '下周三前把台账补完' })
+  const after = await snapshotOfAiFixture()
+
+  assert.equal(r.status, 200)
+  assert.equal(r.payload.ok, true)
+  assert.equal(r.payload.tasks.length, 1)
+  const task = r.payload.tasks[0]
+  assert.equal(task.title, '补台账')
+  assert.equal(task.due, '2026-10-01')
+  assert.equal(task.priority, 'high', '中文「高」要在 host 侧收敛成合法取值')
+  // 模型点名的计划排最前（与 src/ai.js 的 attachSuggestions 同一条规则）。
+  assert.equal(task.candidates[0].kind, 'plan')
+  assert.equal(task.candidates[0].title, 'AI解析用子计划')
+  assert.equal(task.candidates[0].why, '模型判断归到这里')
+  // 收件箱与新建计划永远在末尾。
+  assert.equal(task.candidates[task.candidates.length - 2].kind, 'inbox')
+  assert.equal(task.candidates[task.candidates.length - 1].kind, 'new')
+
+  assert.equal(after.plan, before.plan, '解析不该改计划文件')
+  assert.equal(after.versions, before.versions, '解析不该留版本快照')
+})
+
+test('/ai-parse 把文本与计划大纲一起交给模型（模型得知道现有计划才能建议归位）', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning('{"tasks":[]}')
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把台账补完' })
+  // tasks 为空会走 error 分支，这里只关心**发出去的请求**长什么样。
+  assert.equal(r.payload.ok, false)
+  const sent = fakeLlm.calls[0]
+  assert.equal(sent.provider, 'deepseek')
+  assert.equal(sent.model, 'deepseek-chat')
+  assert.equal(sent.messages[0].role, 'user')
+  assert.ok(sent.system.includes('AI解析用计划'), '系统提示词要带上现有计划大纲')
+  assert.ok(sent.messages[0].content.some((b) => b.type === 'text' && b.text.includes('把台账补完')))
+})
+
+test('/ai-parse 图片先入附件库，再以 image block 交给模型', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-vl' }) }
+  fakeLlm = llmReturning('{"tasks":[{"title":"看图记的一条"}]}')
+  fakeAttachments = attachmentsReturning()
+  // 1x1 的 PNG，base64 后很短；用真字节是为了验证 host 侧确实解了 base64。
+  const png = 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='
+  const r = await post('/ai-parse', {
+    sessionId: SESSION_ID,
+    text: '',
+    images: [{ mediaType: 'image/png', data: png, name: '白板.png' }],
+  })
+  assert.equal(r.payload.ok, true)
+  assert.equal(fakeAttachments.saved.length, 1)
+  assert.equal(fakeAttachments.saved[0].bytes, 70, '收到的是**解码后**的字节数，不是 base64 长度')
+  const blocks = fakeLlm.calls[0].messages[0].content
+  assert.equal(blocks[0].type, 'image')
+  assert.equal(blocks[0].attachment.attachmentId, 'att0')
+  assert.equal(blocks[1].type, 'text', '文字块压在图片之后')
+})
+
+test('/ai-parse 模型不支持图片时明确报错，而不是把图丢掉', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'text-only' }) }
+  fakeLlm = llmReturning('{}', { modalities: ['text'] })
+  fakeAttachments = attachmentsReturning()
+  const r = await post('/ai-parse', {
+    sessionId: SESSION_ID,
+    text: '',
+    images: [{ mediaType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' }],
+  })
+  assert.equal(r.payload.ok, false)
+  assert.match(r.payload.error, /不支持图片输入/)
+  assert.equal(fakeAttachments.saved.length, 0, '能力检查要在入附件库之前')
+})
+
+test('/ai-parse 的四条入参护栏：空输入 / 图片超限 / 坏类型 / 没有模型服务', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'm' }) }
+  fakeLlm = llmReturning('{}')
+  fakeAttachments = attachmentsReturning()
+
+  const empty = await post('/ai-parse', { sessionId: SESSION_ID, text: '   ', images: [] })
+  assert.match(empty.payload.error, /没有可解析的内容/)
+
+  const many = await post('/ai-parse', {
+    sessionId: SESSION_ID,
+    text: 'x',
+    images: [1, 2, 3, 4, 5].map(() => ({ mediaType: 'image/png', data: 'AAAA' })),
+  })
+  assert.match(many.payload.error, /一次最多 4 张图片/)
+
+  const badType = await post('/ai-parse', {
+    sessionId: SESSION_ID, text: '',
+    images: [{ mediaType: 'application/pdf', data: 'AAAA' }],
+  })
+  assert.match(badType.payload.error, /不支持的图片类型/)
+
+  // 没有 llm：连默认模型都问不到，直接给「为什么不能用」。
+  fakeLlm = null
+  const none = await post('/ai-parse', { sessionId: SESSION_ID, text: 'x' })
+  assert.equal(none.payload.ok, false)
+  assert.match(none.payload.error, /AI 解析不可用/)
+})
+
+test('/ai-parse 少 sessionId 时与其它路由一样报「找不到工作区」', async () => {
+  const r = await post('/ai-parse', { text: 'x' })
+  assert.equal(r.payload.ok, false)
+  assert.match(r.payload.error, /sessionId/)
 })

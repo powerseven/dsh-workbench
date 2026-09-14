@@ -569,6 +569,51 @@ function dropTarget(plan, dragId, refId, place) {
   return { node: dragId, parent: toParentId, index: at }
 }
 
+// ------------------------------------------------------- AI 入口：图片编码
+
+var B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+
+/**
+ * 字节数组 → base64。
+ *
+ * 不用 btoa：它只吃 Latin-1 字符串，要先 String.fromCharCode(...bytes) 展开，
+ * 一张 3MiB 的截图会把参数栈直接撑爆（RangeError）。而且这个面板跑在浏览器里，
+ * 但**测试跑在 Node 里**——自己实现一份，两边行为一致、也能单测。
+ *
+ * 图片必须先转成 base64 才能进 JSON 请求体（host 侧的 attachments.saveImages
+ * 收的就是「声明类型 + base64」）。
+ */
+function bytesToBase64(bytes) {
+  var out = ''
+  var len = bytes === null || bytes === undefined ? 0 : bytes.length
+  for (var i = 0; i < len; i += 3) {
+    var b0 = bytes[i]
+    var b1 = i + 1 < len ? bytes[i + 1] : 0
+    var b2 = i + 2 < len ? bytes[i + 2] : 0
+    out += B64[b0 >> 2]
+    out += B64[((b0 & 3) << 4) | (b1 >> 4)]
+    // 不足三字节时补 '='：这是 base64 的定长填充约定，少一个 host 侧就会拒收。
+    out += i + 1 < len ? B64[((b1 & 15) << 2) | (b2 >> 6)] : '='
+    out += i + 2 < len ? B64[b2 & 63] : '='
+  }
+  return out
+}
+
+/** 一次 AI 解析最多带几张图（与 host 的 MAX_IMAGES 对应，超限由 host 拦）。 */
+var AI_MAX_IMAGES = 4
+
+/** 挑出「还能加几张」：超出的直接丢掉，并告诉用户丢了几张。 */
+function pickImages(files, existing) {
+  var room = AI_MAX_IMAGES - (existing === null || existing === undefined ? 0 : existing.length)
+  if (room <= 0) return { picked: [], dropped: (files || []).length }
+  var picked = []
+  for (var i = 0; i < (files || []).length; i++) {
+    if (picked.length >= room) break
+    picked.push(files[i])
+  }
+  return { picked: picked, dropped: (files || []).length - picked.length }
+}
+
 if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exports) {
   module.exports = {
     pct: pct,
@@ -607,5 +652,8 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     descendantCount: descendantCount,
     isDescendantOf: isDescendantOf,
     dropTarget: dropTarget,
+    bytesToBase64: bytesToBase64,
+    pickImages: pickImages,
+    AI_MAX_IMAGES: AI_MAX_IMAGES,
   }
 }
