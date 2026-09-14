@@ -510,6 +510,46 @@ test('HTTP /node-move 能归位（面板上的 ↳ 按钮走这条）', async ()
   assert.ok(dig(plan.nodes, parent.id).children.some((x) => x.id === target.id))
 })
 
+test('HTTP /node-move 带 index 能同层重排（面板拖拽走这条）', async () => {
+  // 面板把拖拽落点算成 { parent, index } 之后走这条路由。index 的语义是
+  // 「**先把自己摘掉**再插入」，客户端必须按同一套坐标系算——两边只要错一位，
+  // 表现是「拖完之后顺序差一格」，很像手滑，是最难从现象倒推回来的那类错。
+  const made = await call('plan_node_add', { title: '拖拽排序测试计划', type: 'plan' })
+  const pid = made.node.id
+  const a = await call('plan_node_add', { title: '排序甲', type: 'todo', parent: pid })
+  await call('plan_node_add', { title: '排序乙', type: 'todo', parent: pid })
+  await call('plan_node_add', { title: '排序丙', type: 'todo', parent: pid })
+
+  const order = async () => (await post('/get', { sessionId: SESSION_ID })).payload.plan.nodes
+    .find((n) => n.id === pid).children.map((x) => x.title)
+
+  assert.deepEqual(await order(), ['排序甲', '排序乙', '排序丙'])
+
+  // 把「甲」拖到「丙」后面：摘掉甲之后列表是 [乙, 丙]，丙在下标 1，插到它之后 = 2
+  const moved = await post('/node-move', { sessionId: SESSION_ID, node: a.node.id, parent: pid, index: 2 })
+  assert.equal(moved.payload.ok, true)
+  assert.deepEqual(await order(), ['排序乙', '排序丙', '排序甲'], 'index 按「摘掉自己之后」的坐标系解释')
+
+  // 拖回最前面：摘掉甲之后是 [乙, 丙]，插到下标 0
+  await post('/node-move', { sessionId: SESSION_ID, node: a.node.id, parent: pid, index: 0 })
+  assert.deepEqual(await order(), ['排序甲', '排序乙', '排序丙'])
+
+  // 不传 index = 追加到末尾（↳ 归位选择器走这条，与拖到空白处等效）
+  await post('/node-move', { sessionId: SESSION_ID, node: a.node.id, parent: pid })
+  assert.deepEqual(await order(), ['排序乙', '排序丙', '排序甲'])
+})
+
+test('HTTP /node-set 只传 title 就能改名（面板双击改名走这条）', async () => {
+  const made = await call('plan_node_add', { title: '改名测试计划', type: 'plan' })
+  const { payload } = await post('/node-set', { sessionId: SESSION_ID, node: made.node.id, title: '改过名字的计划' })
+  assert.equal(payload.ok, true)
+  const plan = await readPlan()
+  assert.equal(dig(plan.nodes, made.node.id).title, '改过名字的计划')
+  // 改名不该顺手改动别的字段——双击改名是最高频的就地编辑，误伤代价最大。
+  assert.equal(dig(plan.nodes, made.node.id).type, 'plan')
+  assert.equal(dig(plan.nodes, made.node.id).status, 'active')
+})
+
 test('HTTP /node-set 能改重要程度与记回执', async () => {
   const shown = await post('/get', { sessionId: SESSION_ID })
   const target = shown.payload.plan.nodes.find((t) => t.title === '给张三的活')

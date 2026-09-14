@@ -18,6 +18,7 @@ const {
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
   flattenNodes, FILTERS, focusList, filterCounts, moveTargets,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
+  COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
 } = require('../src/client/logic.cjs')
 
 test('pct 四舍五入并夹取到 0..100', () => {
@@ -481,4 +482,196 @@ test('moveTargets 对空计划与脏数据安全', () => {
 
 test('todayStr 输出本地日期', () => {
   assert.match(todayStr(), /^\d{4}-\d{2}-\d{2}$/)
+})
+
+// ---------------------------------------------------- 折叠状态（本机显示偏好）
+
+test('parseCollapsed 解析正常数据，并丢掉非字符串项', () => {
+  assert.deepEqual(parseCollapsed('["n1","n2"]'), ['n1', 'n2'])
+  assert.deepEqual(parseCollapsed('["n1",3,null,"n2",""]'), ['n1', 'n2'])
+})
+
+test('parseCollapsed 对脏数据一律退化成「没折叠过」', () => {
+  // localStorage 里那个键可能被手改、被旧版本写过、被别的插件占了；
+  // 显示偏好解析失败不该把整个面板打崩。
+  assert.deepEqual(parseCollapsed('不是 JSON'), [])
+  assert.deepEqual(parseCollapsed('{"n1":true}'), [], '对象不是列表')
+  assert.deepEqual(parseCollapsed('null'), [])
+  assert.deepEqual(parseCollapsed(''), [])
+  assert.deepEqual(parseCollapsed(undefined), [])
+  assert.deepEqual(parseCollapsed(42), [])
+})
+
+test('serializeCollapsed 排序后写出，且与 parseCollapsed 往返一致', () => {
+  assert.equal(serializeCollapsed(['n3', 'n1', 'n2']), '["n1","n2","n3"]')
+  assert.deepEqual(parseCollapsed(serializeCollapsed(['n2', 'n1'])), ['n1', 'n2'])
+  assert.equal(serializeCollapsed(null), '[]')
+})
+
+test('COLLAPSE_KEY 是带插件前缀的独立键（不撞别人的 localStorage）', () => {
+  assert.equal(COLLAPSE_KEY, 'dsh-workbench:collapsed')
+})
+
+// ------------------------------------------------------------ 折叠与拖拽辅助
+
+test('descendantCount 递归数出所有后代，与 host 的 nodeStats 对得上（跨半身约定）', async () => {
+  const host = await import('../src/store.js')
+  const plan = dropFixture()
+  const flat = []
+  const walk = (list) => { for (const n of list) { flat.push(n); walk(childrenOf(n)) } }
+  walk(plan.nodes)
+  for (const node of flat) {
+    const mine = descendantCount(node)
+    // nodeStats 把节点自己也数进去，所以这里减 1 —— 两边口径因此能对上。
+    assert.equal(mine, host.nodeStats(node).total - 1, node.id + ' 的后代数')
+  }
+})
+
+test('descendantCount 对叶子是 0，对脏数据安全', () => {
+  assert.equal(descendantCount({ type: 'todo' }), 0)
+  assert.equal(descendantCount({ type: 'plan', children: [] }), 0)
+  assert.equal(descendantCount(null), 0)
+})
+
+test('isDescendantOf 与 host 的实现逐对一致（跨半身约定）', async () => {
+  const host = await import('../src/store.js')
+  const plan = dropFixture()
+  const flat = []
+  const walk = (list) => { for (const n of list) { flat.push(n); walk(childrenOf(n)) } }
+  walk(plan.nodes)
+  // 两边实现不同（host 逐层 locate，客户端一趟递归），但必须给出同一个答案——
+  // 否则会出现「面板不让拖，服务端却能移」这种没人说得清的错位。
+  for (const a of flat) {
+    for (const b of flat) {
+      assert.equal(isDescendantOf(a, b), host.isDescendantOf(plan, a, b), a.id + ' 是否在 ' + b.id + ' 之下')
+    }
+  }
+})
+
+test('isDescendantOf 不含自己，也不认脏数据', () => {
+  const plan = dropFixture()
+  const n1 = plan.nodes[0]
+  assert.equal(isDescendantOf(n1, n1), false, '自己不是自己的后代')
+  assert.equal(isDescendantOf(null, n1), false)
+  assert.equal(isDescendantOf({ id: 'x' }, null), false)
+  assert.equal(isDescendantOf({}, n1), false, '没有 id 的节点不参与判断')
+})
+
+// -------------------------------------------------------------- 拖拽落点
+
+/** 拖拽用例共用的树：
+ *    n1 A
+ *      n2 a1 / n3 a2
+ *      n4 B
+ *        n5 b1
+ *    n6 i1（顶层待办 = 收件箱）
+ *    n7 C（空计划）
+ */
+function dropFixture() {
+  return {
+    schema: 2,
+    version: 1,
+    title: 't',
+    nodes: [
+      {
+        id: 'n1',
+        type: 'plan',
+        title: 'A',
+        status: 'active',
+        children: [
+          { id: 'n2', type: 'todo', title: 'a1', status: 'todo' },
+          { id: 'n3', type: 'todo', title: 'a2', status: 'todo' },
+          {
+            id: 'n4',
+            type: 'plan',
+            title: 'B',
+            status: 'active',
+            children: [{ id: 'n5', type: 'todo', title: 'b1', status: 'todo' }],
+          },
+        ],
+      },
+      { id: 'n6', type: 'todo', title: 'i1', status: 'todo' },
+      { id: 'n7', type: 'plan', title: 'C', status: 'active', children: [] },
+    ],
+  }
+}
+
+/** 把树压成一行，便于断言移动后的形状，如 `n1(n2,n3);n6`。 */
+function shape(plan) {
+  const walk = (n) => {
+    const kids = Array.isArray(n.children) ? n.children : []
+    return n.id + (kids.length > 0 ? '(' + kids.map(walk).join(',') + ')' : '')
+  }
+  return plan.nodes.map(walk).join(';')
+}
+
+test('dropTarget 只管算落点，不改数据', () => {
+  const plan = dropFixture()
+  const before = shape(plan)
+  dropTarget(plan, 'n2', 'n3', 'after')
+  assert.equal(shape(plan), before, '纯函数：算落点不该动原树')
+})
+
+test('dropTarget 拒绝自身、子孙、非法类型与不存在的节点', () => {
+  const plan = dropFixture()
+  assert.equal(dropTarget(plan, 'n2', 'n2', 'after'), null, '拖到自己身上')
+  assert.equal(dropTarget(plan, 'n1', 'n4', 'inside'), null, '拖进自己的子树会成环')
+  assert.equal(dropTarget(plan, 'n1', 'n5', 'before'), null, '子孙的旁边也在子树里')
+  assert.equal(dropTarget(plan, 'n2', 'n6', 'inside'), null, '待办是叶子，不能当容器')
+  assert.equal(dropTarget(plan, '没这个节点', 'n3', 'after'), null)
+  assert.equal(dropTarget(plan, 'n2', '没这个节点', 'after'), null)
+  assert.equal(dropTarget(null, 'n2', 'n3', 'after'), null)
+  assert.equal(dropTarget(plan, '', 'n3', 'after'), null)
+})
+
+test('dropTarget 把「落回原地」判成 null（不产生空写入、不留空版本快照）', () => {
+  const plan = dropFixture()
+  // n3 已经紧跟在 n2 后面：插到 n2 之后 = 原地
+  assert.equal(dropTarget(plan, 'n3', 'n2', 'after'), null)
+  // n2 已经在 n3 前面：插到 n3 之前 = 原地
+  assert.equal(dropTarget(plan, 'n2', 'n3', 'before'), null)
+  // n7 已经是顶层最后一个：落到空白处 = 原地
+  assert.equal(dropTarget(plan, 'n7', null, 'after'), null)
+  // 但 n6 不是最后一个：落到空白处是真的移动（挪到末尾）
+  assert.deepEqual(dropTarget(plan, 'n6', null, 'after'), { node: 'n6', parent: null, index: 2 })
+})
+
+test('dropTarget 算出的 index 与 host 的 moveNode 语义完全一致（跨半身约定）', async () => {
+  const host = await import('../src/store.js')
+  // 这是本次最要紧的一条断言：`/node-move` 的 index 语义是「**先把自己摘掉**
+  // 再插入」，客户端必须按同一套坐标系算位。两边只要错一位，表现是
+  // 「拖完之后顺序差一格」——很像手滑，非常难查。所以这里不比对数字，
+  // 直接把客户端的落点喂给真的 moveNode，看树长成什么样。
+  const cases = [
+    // [拖谁, 落在谁身上, 哪一档, 期望形状, 说明]
+    ['n2', 'n3', 'after', 'n1(n3,n2,n4(n5));n6;n7', '同层往后挪一位'],
+    ['n3', 'n2', 'before', 'n1(n3,n2,n4(n5));n6;n7', '同层往前挪一位'],
+    ['n2', 'n4', 'inside', 'n1(n3,n4(n5,n2));n6;n7', '放进子计划（追加到末尾）'],
+    ['n5', 'n4', 'before', 'n1(n2,n3,n5,n4);n6;n7', '从子计划里提上来，插在子计划前面'],
+    ['n5', 'n1', 'inside', 'n1(n2,n3,n4,n5);n6;n7', '提到父计划下当最后一项'],
+    ['n2', 'n6', 'before', 'n1(n3,n4(n5));n2;n6;n7', '跨到顶层，插在另一个顶层节点前'],
+    ['n5', null, 'after', 'n1(n2,n3,n4);n6;n7;n5', '拖到空白处 = 移回顶层末尾'],
+    ['n6', null, 'after', 'n1(n2,n3,n4(n5));n7;n6', '顶层重排：挪到末尾'],
+  ]
+  for (const [drag, ref, place, expected, why] of cases) {
+    const plan = dropFixture()
+    const target = dropTarget(plan, drag, ref, place)
+    assert.notEqual(target, null, why + '：应当算出落点')
+    host.moveNode(plan, target.node, target.parent, target.index)
+    assert.equal(shape(plan), expected, why)
+  }
+})
+
+test('dropTarget 的精确下标与 host 的「不传 index 就追加」落在同一个位置', async () => {
+  const host = await import('../src/store.js')
+  // 归位选择器（↳）走的是「不给 index」这条路，语义是追加到末尾。
+  // 与拖拽给的精确下标必须落在同一个位置，否则同一个目标会有两种结果。
+  const a = dropFixture()
+  const b = dropFixture()
+  const target = dropTarget(a, 'n5', null, 'after')
+  assert.deepEqual(target, { node: 'n5', parent: null, index: 3 })
+  host.moveNode(a, target.node, target.parent, target.index)
+  host.moveNode(b, 'n5', null)
+  assert.equal(shape(a), 'n1(n2,n3,n4);n6;n7;n5')
+  assert.equal(shape(a), shape(b), '拖到空白处与 ↳ 选「顶层」应当等效')
 })
