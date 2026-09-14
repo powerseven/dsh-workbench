@@ -16,7 +16,7 @@ const {
   pct, barWidth, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr,
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
-  flattenNodes, FILTERS, focusList, filterCounts, moveTargets,
+  flattenNodes, FILTERS, focusList, filterCounts, moveTargets, boardColumns,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
   bytesToBase64, pickImages, AI_MAX_IMAGES,
@@ -457,6 +457,73 @@ test('summarize 带上筛选角标', () => {
   const s = summarize(annotatedPlan())
   assert.equal(s.filters.high, 2)
   assert.equal(s.filters.overdue, 1)
+})
+
+// ---------------------------------------------------------------- 看板分列
+
+test('boardColumns 按顶层计划分列，收件箱单列，列头带进度与计数', () => {
+  const cols = boardColumns(annotatedPlan(), 'all', '2026-09-14')
+  // annotatedPlan: g1(计划) > k1(子计划) > t1..t4 ；t9 顶层待办(收件箱)
+  assert.deepEqual(cols.map((c) => c.kind), ['plan', 'inbox'])
+  assert.equal(cols[0].title, 'Q4 计划')
+  assert.equal(cols[0].progress, 0.25)
+  // g1 名下共 4 张待办（t1..t4 都在 g1 子树里）；open = t1、t2（t3 完成、t4 放弃）
+  assert.equal(cols[0].total, 4)
+  assert.equal(cols[0].open, 2)
+  // 收件箱列把顶层待办归到一起，而不是每条顶层待办占一列
+  assert.equal(cols[1].kind, 'inbox')
+  assert.equal(cols[1].title, '收件箱')
+  assert.equal(cols[1].total, 1)
+})
+
+test('boardColumns 卡片带「所属子计划」上下文路径（列只代表顶层计划）', () => {
+  const cols = boardColumns(annotatedPlan(), 'all', '2026-09-14')
+  const t2 = cols[0].cards.find((c) => c.node.id === 't2')
+  assert.equal(t2.path, '子计划', 't2 在子计划 k1 下，路径应显示子计划标题')
+  // 顶层计划直接名下的待办（若有）路径应为空
+  const direct = boardColumns(annotatedPlan(), 'all', '2026-09-14')
+  const inboxCard = direct[1].cards[0]
+  assert.equal(inboxCard.path, '', '收件箱待办没有父级上下文')
+})
+
+test('boardColumns 全量态把已完成的沉到列底', () => {
+  const cols = boardColumns(annotatedPlan(), 'all', '2026-09-14')
+  const ids = cols[0].cards.map((c) => c.node.id)
+  // t1、t2 未完成排在前，t3(完成)、t4(放弃) 沉底
+  assert.deepEqual(ids, ['t1', 't2', 't3', 't4'])
+})
+
+test('boardColumns 尊重筛选器：只放命中筛选的待办进列', () => {
+  // 重要度高：t2、t9 命中（t3 已完成、t4 已放弃被排除）。
+  const cols = boardColumns(annotatedPlan(), 'high', '2026-09-14')
+  const g1 = cols.find((c) => c.kind === 'plan')
+  assert.deepEqual(g1.cards.map((c) => c.node.id), ['t2'])
+  const inbox = cols.find((c) => c.kind === 'inbox')
+  assert.deepEqual(inbox.cards.map((c) => c.node.id), ['t9'])
+})
+
+test('boardColumns 没有任何待办的计划列被丢弃，纯空计划整棵看板为空', () => {
+  const plan = { nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
+  assert.deepEqual(boardColumns(plan, 'all'), [], '只有计划、没有任务时看板应为空')
+})
+
+test('boardColumns 对空计划与脏数据安全', () => {
+  assert.deepEqual(boardColumns(null), [])
+  assert.deepEqual(boardColumns({}), [])
+  assert.deepEqual(boardColumns({ nodes: 'nope' }), [])
+})
+
+test('boardColumns 多个顶层待办要并回收件箱一列，而不是各占一列', () => {
+  const plan = {
+    nodes: [
+      { id: 'g1', type: 'plan', title: 'P', status: 'active', children: [{ id: 'a', type: 'todo', title: '甲', status: 'todo' }] },
+      { id: 'i1', type: 'todo', title: '游离一', status: 'todo' },
+      { id: 'i2', type: 'todo', title: '游离二', status: 'todo' },
+    ],
+  }
+  const cols = boardColumns(plan, 'all')
+  assert.deepEqual(cols.map((c) => c.kind), ['plan', 'inbox'])
+  assert.equal(cols[1].total, 2, '两条顶层待办应并回收件箱一列')
 })
 
 // ---------------------------------------------------------------- 归位候选

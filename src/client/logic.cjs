@@ -380,6 +380,113 @@ function filterCounts(plan, today) {
   return out
 }
 
+// -------------------------------------------------------------- 看板分列
+
+/**
+ * 看板视图的数据：把整棵计划树按**顶层计划**分列，每个顶层计划（或收件箱）占一列，
+ * 列里是它名下的全部待办（含嵌套子计划里的），卡片带「属于哪个子计划」的上下文路径。
+ *
+ * 这是树形之外另一种读法——节点一多，树会越缩越深、越难俯瞰；看板用「横向铺开」
+ * 让「每个计划里现在有什么、做完了多少」一眼可见。它**只读** /get 下发的数据，
+ * 不新增任何工具或路由（与树形共用同一份 payload）。
+ *
+ * 筛选器同样作用于看板：filterId 不是 'all' 时，只把命中筛选的待办放进列里
+ * （聚焦列表已经帮我们算好了逾期 / 重要度 / 落后等口径，本地不重算）。
+ *
+ * 列顺序 = 顶层节点顺序，最后接一个收件箱列（所有顶层待办归在一起，而不是每个
+ * 顶层待办占一列）。没有任何待办的计划列会被丢弃，保持看板清爽。
+ *
+ * 纯函数、无 IO，便于在 test/logic.test.mjs 里钉住分组口径。
+ */
+function boardColumns(plan, filterId, today) {
+  if (plan === null || plan === undefined || typeof plan !== 'object') return []
+  var t = (typeof today === 'string' && today !== '') ? today : todayStr()
+  var useFilter = (typeof filterId === 'string' && filterId !== '' && filterId !== 'all')
+
+  // 待办清单：筛选态走 focusList（口径只在 host 一处），全量态直接摊平后只留待办。
+  var flat = useFilter
+    ? focusList(plan, filterId, t)
+    : flattenNodes(plan).filter(function (x) { return x.type === 'todo' })
+  if (flat.length === 0) return []
+
+  // 建 id → 节点 的索引，供卡片的「上下文路径」把 id 翻成标题。
+  var index = {}
+  var roots = planNodes(plan)
+  var planRootIds = []
+  var inboxRootIds = []
+  for (var r = 0; r < roots.length; r++) {
+    var rid = String(roots[r].id)
+    index[rid] = roots[r]
+    if (nodeType(roots[r]) === 'plan') planRootIds.push(rid)
+    else inboxRootIds.push(rid)
+    var kids = childrenOf(roots[r])
+    for (var w = 0; w < kids.length; w++) {
+      var stack = [kids[w]]
+      while (stack.length > 0) {
+        var cur = stack.pop()
+        if (cur === null || cur === undefined || typeof cur !== 'object') continue
+        index[String(cur.id)] = cur
+        var ck = childrenOf(cur)
+        for (var c2 = 0; c2 < ck.length; c2++) stack.push(ck[c2])
+      }
+    }
+  }
+
+  // 列顺序：顶层计划在前，收件箱列（若有顶层待办）垫后。
+  var order = planRootIds.slice()
+  if (inboxRootIds.length > 0) order.push('__inbox__')
+  var meta = {}
+  for (var p = 0; p < planRootIds.length; p++) {
+    meta[planRootIds[p]] = { kind: 'plan', node: index[planRootIds[p]] }
+  }
+  meta['__inbox__'] = { kind: 'inbox', node: null }
+  var bucket = {}
+  for (var o = 0; o < order.length; o++) bucket[order[o]] = []
+
+  for (var f = 0; f < flat.length; f++) {
+    var segs = flat[f].path.split(' / ')
+    var topId = segs[0]
+    if (bucket[topId] !== undefined) bucket[topId].push(flat[f])
+    else if (inboxRootIds.indexOf(topId) >= 0) bucket['__inbox__'].push(flat[f])
+  }
+
+  var cols = []
+  for (var c = 0; c < order.length; c++) {
+    var gid = order[c]
+    var items = bucket[gid]
+    if (items.length === 0) continue
+    // 全量态把已完成的沉到列底；筛选态已由 focusList 排好序（逾期→重要度→快到期）。
+    if (!useFilter) {
+      items = items.slice().sort(function (a, b) {
+        var ao = (a.node.status === 'done' || a.node.status === 'dropped') ? 1 : 0
+        var bo = (b.node.status === 'done' || b.node.status === 'dropped') ? 1 : 0
+        return ao - bo
+      })
+    }
+    var openCount = 0
+    for (var n = 0; n < items.length; n++) if (isOpen(items[n].node)) openCount++
+    var cards = items.map(function (it) {
+      var ids = it.path.split(' / ')
+      ids.pop()                                  // 去掉自身
+      var ctx = ids.slice(1)                      // 去掉顶层归属（列本身已经代表它）
+        .map(function (id) { return index[id] !== undefined ? index[id].title : id })
+        .join(' / ')
+      return { node: it.node, path: ctx }
+    })
+    var m = meta[gid]
+    cols.push({
+      id: gid,
+      kind: m.kind,
+      title: m.kind === 'inbox' ? '收件箱' : m.node.title,
+      progress: m.kind === 'plan' ? progressOf(m.node) : null,
+      total: items.length,
+      open: openCount,
+      cards: cards,
+    })
+  }
+  return cols
+}
+
 // -------------------------------------------------------------- 归位候选
 
 /**
@@ -645,6 +752,7 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     FILTERS: FILTERS,
     focusList: focusList,
     filterCounts: filterCounts,
+    boardColumns: boardColumns,
     moveTargets: moveTargets,
     COLLAPSE_KEY: COLLAPSE_KEY,
     parseCollapsed: parseCollapsed,
