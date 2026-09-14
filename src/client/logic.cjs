@@ -422,6 +422,153 @@ function moveTargets(plan, node) {
   return out
 }
 
+// ------------------------------------------------- 就地编辑辅助（折叠 / 拖拽）
+
+/** 折叠状态在 localStorage 里的键。只影响这一台浏览器的显示，不进 plan.json。 */
+var COLLAPSE_KEY = 'dsh-workbench:collapsed'
+
+/**
+ * 折叠状态：把 localStorage 里那串 JSON 解析成 id 数组。
+ *
+ * 单独抽出来是因为它要吃掉**脏数据**——用户手改过、旧版本写过、别的插件
+ * 占了同一个键，都可能留下解析不了的东西。解析失败一律当「没折叠过」，
+ * 绝不让一段坏字符串把整个面板打崩（显示层面的偏好不值得用可用性去换）。
+ */
+function parseCollapsed(raw) {
+  if (typeof raw !== 'string' || raw === '') return []
+  var data = null
+  try { data = JSON.parse(raw) } catch (e) { return [] }
+  if (!Array.isArray(data)) return []
+  var out = []
+  for (var i = 0; i < data.length; i++) {
+    if (typeof data[i] === 'string' && data[i] !== '') out.push(data[i])
+  }
+  return out
+}
+
+/** 折叠状态 → 可写回 localStorage 的字符串（排序后再写，便于人肉对 diff）。 */
+function serializeCollapsed(ids) {
+  var list = Array.isArray(ids) ? ids.slice() : []
+  list.sort()
+  return JSON.stringify(list)
+}
+
+/** 节点下面一共挂着多少个后代（折叠时提示「藏了几条」）。 */
+function descendantCount(node) {
+  var kids = childrenOf(node)
+  var n = 0
+  for (var i = 0; i < kids.length; i++) n += 1 + descendantCount(kids[i])
+  return n
+}
+
+/**
+ * ref 是否落在 ancestor 的子树里（不含 ancestor 自己）。
+ *
+ * 与 host 半身 store.js 的 `isDescendantOf` **同语义、不同实现**：那边反复
+ * 调 locate（每层从上往下找一遍），这边一趟递归下去（拖拽每帧都要问，不能
+ * 每次 O(n·深度)）。签名也不同——这边不需要 plan，因为是从 ancestor 往下找。
+ * 两边的一致性由 test/logic.test.mjs 在所有节点对上逐一比对来钉住。
+ *
+ * 比较用 id 而不是对象身份：面板拿到的树是 host annotate() 重新造过的对象图，
+ * 身份只在同一份 payload 内成立，而 id 在任何一份拷贝里都成立。
+ */
+function isDescendantOf(node, ancestor) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  if (ancestor === null || ancestor === undefined || typeof ancestor !== 'object') return false
+  if (node.id === undefined || node.id === null) return false
+  var id = String(node.id)
+  var kids = childrenOf(ancestor)
+  for (var i = 0; i < kids.length; i++) {
+    var kid = kids[i]
+    if (kid === null || kid === undefined || typeof kid !== 'object') continue
+    if (kid === node || String(kid.id) === id) return true
+    if (isDescendantOf(node, kid)) return true
+  }
+  return false
+}
+
+/**
+ * 拖拽落点 → node-move 的参数 `{ node, parent, index }`；落点非法或等于原地时返回 null。
+ *
+ * 语义分三档，对应行内的三段高度：
+ *   before  插到这一行前面（成为它的同级）
+ *   after   插到这一行后面（成为它的同级）
+ *   inside  放进这一行里面（只有计划能当容器——待办是叶子）
+ *
+ * **返回 null 而不是「尽力而为」**：调用方据此决定要不要 preventDefault，
+ * 浏览器于是自己在非法落点显示禁止光标。服务端还会再拦一次（不变量归数据层），
+ * 这里只是为了不让用户白拖一趟。
+ *
+ * 关于 `index`：/node-move 的解释是「**先把节点摘掉**，再在此下标插入」
+ * （见 store.js 的 moveNode），所以这里必须也在摘掉拖拽节点之后的列表里算位置。
+ * 不然同层往后拖会稳定差一位——这种错很难一眼看出来，因为多数情况下
+ * 看起来只是「顺序没完全对」。
+ */
+function dropTarget(plan, dragId, refId, place) {
+  if (plan === null || plan === undefined || typeof plan !== 'object') return null
+  if (typeof dragId !== 'string' || dragId === '') return null
+
+  // 一趟递归同时建出「按 id 索引的节点 + 父节点 + 同级下标 + 同级数组」，
+  // 后面所有判断都查这张表，不再各自遍历。
+  var info = {}
+  var walk = function (list, parent) {
+    for (var i = 0; i < list.length; i++) {
+      var n = list[i]
+      if (n === null || n === undefined || typeof n !== 'object') continue
+      var id = String(n.id)
+      info[id] = { node: n, parent: parent, index: i, siblings: list }
+      walk(childrenOf(n), n)
+    }
+  }
+  walk(planNodes(plan), null)
+
+  var from = info[dragId]
+  if (from === undefined) return null
+
+  var refKey = refId === null || refId === undefined ? '' : String(refId)
+  if (refKey === dragId) return null
+
+  var sameParent
+  var toParentId
+  var at
+
+  if (refKey === '') {
+    // 落在空白处 → 移回顶层末尾（收件箱）。这是**拖**着归位的那条路，
+    // 与 ↳ 选择器并存：选择器适合跨很远的目标，拖动适合挪到眼前的位置。
+    sameParent = from.parent === null
+    toParentId = null
+    at = sameParent ? from.siblings.length - 1 : planNodes(plan).length
+  } else {
+    var ref = info[refKey]
+    if (ref === undefined) return null
+    // 不能拖进自己的子树：那不是排序，是把节点摘出来再塞回自己下面（成环）。
+    if (isDescendantOf(ref.node, from.node)) return null
+
+    if (place === 'inside') {
+      if (nodeType(ref.node) !== 'plan') return null
+      toParentId = refKey
+      sameParent = from.parent !== null && String(from.parent.id) === refKey
+      // 追加为最后一个子项：下标 = 摘掉自己之后的子节点数。
+      at = childrenOf(ref.node).length - (sameParent ? 1 : 0)
+    } else {
+      toParentId = ref.parent === null ? null : String(ref.parent.id)
+      sameParent = ref.parent === null
+        ? from.parent === null
+        : (from.parent !== null && ref.parent.id === from.parent.id)
+      at = ref.index + (place === 'after' ? 1 : 0)
+      // 同层时把下标换算到「摘掉自己之后」的坐标系：自己原本在目标之前，
+      // 摘掉后后面所有节点前移一位。
+      if (sameParent && from.index < at) at -= 1
+    }
+  }
+
+  // 落点就是原地 → 什么都不做。不判这一条的话，一次「拖回原处」也会写盘
+  // 并留下一个版本快照，把版本历史冲淡成噪声。
+  if (sameParent && at === from.index) return null
+
+  return { node: dragId, parent: toParentId, index: at }
+}
+
 if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exports) {
   module.exports = {
     pct: pct,
@@ -454,5 +601,11 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     focusList: focusList,
     filterCounts: filterCounts,
     moveTargets: moveTargets,
+    COLLAPSE_KEY: COLLAPSE_KEY,
+    parseCollapsed: parseCollapsed,
+    serializeCollapsed: serializeCollapsed,
+    descendantCount: descendantCount,
+    isDescendantOf: isDescendantOf,
+    dropTarget: dropTarget,
   }
 }

@@ -1,6 +1,6 @@
 {
   "name": "dsh-workbench",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "个人工作台：工作计划的目标拆解、进度跟踪与版本留档（DeepSeek Harness Web 插件）。",
   "type": "module",
   "main": "lib/index.js",

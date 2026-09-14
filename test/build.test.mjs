@@ -53,9 +53,18 @@ test('client bundle 内联了纯逻辑函数（UI 直接引用闭包里的名字
     'function inboxOf(', 'function planNodes(', 'function childrenOf(',
     'function evidenceLabel(', 'function evidenceList(', 'function unverifiedOf(',
     'function paceText(',
+    'function parseCollapsed(', 'function serializeCollapsed(', 'function descendantCount(',
+    'function isDescendantOf(', 'function dropTarget(',
   ]) {
     assert.ok(client.includes(fn), 'bundle 缺少内联函数 ' + fn)
   }
+})
+
+test('折叠状态的 localStorage 键只有一处定义（两处各写一份会静默读错值）', () => {
+  // logic.cjs 与 client/index.js 被内联进同一个闭包：前者用 var 声明键名，
+  // 后者直接引用。若哪天两边各写一份 const，先声明的会赢——改另一处就不生效，
+  // 而且不报错（本次实现时就先踩了一次重复声明）。
+  assert.equal((client.match(/dsh-workbench:collapsed/g) || []).length, 1)
 })
 
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {

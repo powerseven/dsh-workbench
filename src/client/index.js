@@ -13,10 +13,15 @@
  *   · 落后标记（进度没跟上周期的节点，徽章显示差多少个百分点）
  *   · 完成证据标记（📎n 已附证据 / ⊘ 已完成但无证据，等人核验）
  *   · 筛选条（重要度高 / 我委派出去的 / 本周到期 / 逾期 / 落后 / 无证据的完成项）
+ *   · 就地编辑：双击改名、拖拽排序与归位、折叠展开（层级深了要能收）
  *
- * 勾选、徽章、归位、删除都直接回写 plan.json，所以面板与 agent 改的是同一份
- * 数据；写入统一走 /api/workbench/*，落到 host 半身的同一套 store 逻辑
- * （含版本归档）——面板不自己算完成度，也不自己写盘。
+ * 勾选、徽章、归位、删除、改名、排序都直接回写 plan.json，所以面板与 agent
+ * 改的是同一份数据；写入统一走 /api/workbench/*，落到 host 半身的同一套
+ * store 逻辑（含版本归档）——面板不自己算完成度，也不自己写盘。
+ *
+ * **就地编辑没有为它新增任何工具或路由**：改名走 /node-set 的 title，
+ * 排序走 /node-move 的 index，都是既有入口。折叠状态是本机显示偏好，
+ * 只进 localStorage，不进 plan.json（它不属于计划数据，也不该被版本留档）。
  *
  * betterSidebar 是硬依赖（inject 中声明），Cordis 会等服务出现后再 apply，
  * 因此不做降级形态。数据面：/api/workbench/*。
@@ -96,6 +101,22 @@ const CSS = [
   // 归位选择器
   '.dsh-wb-movepick{display:flex;gap:4px;flex-wrap:wrap;align-items:center;margin:2px 0 6px;padding:5px 7px;border-radius:8px;background:rgba(130,80,223,.07);border:1px dashed rgba(130,80,223,.35);}',
   '.dsh-wb-movepicklabel{font-size:11px;color:rgba(127,127,127,.9);}',
+  // 折叠控点。没有子节点时占位但不可点，让同层的标题左边缘对齐。
+  '.dsh-wb-caret{flex:none;width:11px;text-align:center;cursor:pointer;color:rgba(127,127,127,.85);user-select:none;font-size:10px;}',
+  '.dsh-wb-caret:hover{color:inherit;}',
+  '.dsh-wb-caret.none{visibility:hidden;cursor:default;}',
+  // 就地改名：输入框沿用标题的字号与粗细，换进去时行高不跳
+  '.dsh-wb-rename{flex:1;min-width:0;font:inherit;font-weight:inherit;padding:1px 5px;border-radius:5px;border:1px solid rgba(9,105,218,.6);background:transparent;color:inherit;}',
+  '.dsh-wb-rename:focus{outline:none;}',
+  // 拖拽：落点用 inset 阴影画线，不参与布局，所以指示线出现时行不会抖
+  '.dsh-wb-drop-before{box-shadow:inset 0 2px 0 0 #0969da;}',
+  '.dsh-wb-drop-after{box-shadow:inset 0 -2px 0 0 #0969da;}',
+  '.dsh-wb-drop-inside{background:rgba(9,105,218,.1);outline:1px dashed rgba(9,105,218,.5);outline-offset:-1px;}',
+  '.dsh-wb-dragging{opacity:.4;}',
+  '.dsh-wb-rootdrop{height:2px;border-radius:2px;background:rgba(9,105,218,.6);margin:6px 2px;}',
+  // 新建顶层计划：空工作区时它是唯一的建计划入口
+  '.dsh-wb-rootadd{display:block;width:100%;margin-top:10px;border:1px dashed rgba(127,127,127,.4);background:transparent;color:rgba(127,127,127,.9);border-radius:7px;padding:4px 8px;font:inherit;font-size:12px;cursor:pointer;}',
+  '.dsh-wb-rootadd:hover{background:rgba(127,127,127,.1);color:inherit;}',
   // 聚焦列表
   '.dsh-wb-focus{display:flex;align-items:flex-start;gap:6px;padding:5px 6px;border-radius:6px;margin-bottom:2px;}',
   '.dsh-wb-focus:hover{background:rgba(127,127,127,.1);}',
@@ -106,8 +127,25 @@ const CSS = [
   '.dsh-wb-err{margin:8px 10px;padding:8px 10px;border-radius:8px;background:rgba(209,36,47,.1);color:#d1242f;font-size:12px;line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:5px 10px;border-top:1px solid rgba(127,127,127,.18);font-size:10px;color:rgba(127,127,127,.7);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:4px 10px;font-size:11px;color:#2da44e;flex:none;}',
-  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-planbar > div{background:#2f7be0;}.dsh-wb-planq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}.dsh-wb-behind{color:#e3b341;}.dsh-wb-unverif{color:#e3b341;}.dsh-wb-evid{color:#57ab5a;}}',
+  '@media (prefers-color-scheme: dark){.dsh-wb-pct{color:#6cb0f5;}.dsh-wb-planbar > div{background:#2f7be0;}.dsh-wb-planq{color:#6cb0f5;}.dsh-wb-chip.on{color:#6cb0f5;}.dsh-wb-deleg{color:#b18aff;}.dsh-wb-pri.normal{color:rgba(200,200,200,.8);}.dsh-wb-behind{color:#e3b341;}.dsh-wb-unverif{color:#e3b341;}.dsh-wb-evid{color:#57ab5a;}.dsh-wb-drop-before{box-shadow:inset 0 2px 0 0 #6cb0f5;}.dsh-wb-drop-after{box-shadow:inset 0 -2px 0 0 #6cb0f5;}.dsh-wb-drop-inside{background:rgba(108,176,245,.14);outline-color:rgba(108,176,245,.55);}.dsh-wb-rootdrop{background:rgba(108,176,245,.7);}}',
 ].join('')
+
+/**
+ * 折叠状态读写。绑在浏览器上而不是计划里：它是「这台机器上这个人现在想看到
+ * 什么」，不是计划数据——写进 plan.json 会污染 diff、占版本快照，还会跟着
+ * git 提交跑到别人机器上（别人打开就发现几层是收着的，完全莫名其妙）。
+ * localStorage 在隐私/受限环境下会抛异常，所以两头都吞掉：存不下就退化成
+ * 「每次打开都是全展开」，这在可用性上是可接受的降级。
+ *
+ * COLLAPSE_KEY 来自 logic.cjs（它被内联进同一个闭包，见文件头）——两处各写
+ * 一份的话，改了一处就静默读到另一处的旧值。
+ */
+function loadCollapsed() {
+  try { return parseCollapsed(window.localStorage.getItem(COLLAPSE_KEY)) } catch (e) { return [] }
+}
+function saveCollapsed(ids) {
+  try { window.localStorage.setItem(COLLAPSE_KEY, serializeCollapsed(ids)) } catch (e) { /* 忽略 */ }
+}
 
 function injectStyles(css) {
   const el = document.createElement('style')
@@ -115,6 +153,13 @@ function injectStyles(css) {
   document.head.appendChild(el)
   return () => { el.remove() }
 }
+
+/**
+ * 「正在加子项」的父节点 id 用一个哨兵值表示顶层。节点 id 由 host 生成的
+ * `n`/`g`/`k`/`t` 前缀加数字组成，`__root__` 不可能撞上——用一个不可能
+ * 撞上的字符串，比再加一份 `addingRoot: true` 状态要少一个可能不同步的字段。
+ */
+const ROOT_ADD = '__root__'
 
 /** 极简可订阅 store：只在 set 时替换整个 state 对象，getSnapshot 引用稳定。 */
 function createStore() {
@@ -181,6 +226,18 @@ function apply(ctx) {
     // 一个常驻（收件箱）+ 一个按需（节点下加子项），一次只会有后者一个。
     const [draft, setDraft] = React.useState('')
     const [nodeDraft, setNodeDraft] = React.useState('')
+    // 就地编辑的三份状态也放本地，理由同上：拖拽时鼠标每动一下都要更新落点，
+    // 放进全局 store 会让 tab 角标跟着重算（它订阅 store.get），白烧一遍整棵树。
+    const [collapsed, setCollapsed] = React.useState(() => loadCollapsed())
+    const [editing, setEditing] = React.useState(null)   // { id, original } | null
+    const [editDraft, setEditDraft] = React.useState('')
+    const [dragId, setDragId] = React.useState(null)
+    const [hint, setHint] = React.useState(null)         // { id, place } | null（id=null 表示落在空白处）
+    // 单击「切换完成」与双击「改名」抢的是同一个元素，单击因此必须延后执行。
+    const clickTimer = React.useRef(null)
+    React.useEffect(() => () => {
+      if (clickTimer.current !== null) clearTimeout(clickTimer.current)
+    }, [])
 
     const refresh = React.useCallback(() => {
       if (sessionId === undefined || sessionId === null || sessionId === '') {
@@ -215,7 +272,14 @@ function apply(ctx) {
       () => flash(type === 'plan' ? '已提升为计划' : '已降回待办'),
     ), [write])
     const addNode = React.useCallback((input, onOk) => write('node-add', input, onOk), [write])
-    const doMove = React.useCallback((id, parent) => write('node-move', { node: id, parent }), [write])
+    const doMove = React.useCallback((id, parent, index) => {
+      const args = { node: id, parent }
+      // index 只在明确要给的时候才传。它的语义是「**先把自己摘掉**，再在这个
+      // 下标插入」（见 host 的 moveNode / 拖拽落点的计算），不传表示追加到末尾
+      // ——归位选择器就走「追加」，拖拽走「精确插入」。
+      if (typeof index === 'number') args.index = index
+      return write('node-move', args)
+    }, [write])
     const doRemove = React.useCallback((node) => {
       const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
       if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
@@ -232,6 +296,198 @@ function apply(ctx) {
     const inbox = inboxOf(plan)
     const roots = planNodes(plan)
     const isTopLevel = (id) => roots.some((n) => n.id === id)
+
+    // ============================================================ 折叠展开
+    //
+    // 折叠状态是本机的显示偏好，不落进 plan.json（见文件头）。默认全展开：
+    // 自动收起虽然省点击，但会让人「看不见的东西等于不存在」，而计划漏看一条
+    // 的代价远大于多点一下。想快速俯瞰就按头部的「全部收起」。
+
+    const isCollapsed = (id) => collapsed.indexOf(String(id)) >= 0
+    const applyCollapse = (ids) => { setCollapsed(ids); saveCollapsed(ids) }
+    const toggleCollapse = (id) => {
+      const key = String(id)
+      applyCollapse(isCollapsed(key) ? collapsed.filter((x) => x !== key) : collapsed.concat([key]))
+    }
+    /** 展开（用在「往收着的计划里加子项」这类会让新内容立刻不可见的地方）。 */
+    const expand = (id) => {
+      const key = String(id)
+      if (isCollapsed(key)) applyCollapse(collapsed.filter((x) => x !== key))
+    }
+    const collapseAll = () => {
+      const ids = []
+      // 只收**有子节点的**计划：收一个空计划没有任何视觉效果，却会往
+      // localStorage 里堆一串永远不会被读到的 id。
+      const visit = (n) => {
+        const kids = childrenOf(n)
+        if (kids.length === 0) return
+        ids.push(String(n.id))
+        for (const k of kids) visit(k)
+      }
+      for (const r of roots) visit(r)
+      applyCollapse(ids)
+    }
+
+    /** 折叠控点。叶子留一个同宽的占位，保证同层计划的标题左边缘对齐。 */
+    const caret = (node) => {
+      if (childrenOf(node).length === 0) {
+        return h('span', { className: 'dsh-wb-caret none', key: 'caret' }, '▾')
+      }
+      const open = !isCollapsed(node.id)
+      return h('span', {
+        key: 'caret',
+        className: 'dsh-wb-caret',
+        title: (open ? '收起' : '展开') + '（' + descendantCount(node) + ' 个子项）',
+        onClick: (e) => { e.stopPropagation(); toggleCollapse(node.id) },
+      }, open ? '▾' : '▸')
+    }
+
+    // ============================================================ 就地改名
+
+    const startRename = (node) => {
+      setEditing({ id: String(node.id), original: String(node.title) })
+      setEditDraft(String(node.title))
+    }
+
+    const commitRename = () => {
+      const cur = editing
+      setEditing(null)
+      if (cur === null) return
+      const title = editDraft.trim()
+      // 空标题与「没改」都不发请求。服务端对空标题本来就是忽略，但白走一趟会
+      // 在版本历史里留下一条「改了但什么都没变」的快照，以后回看很费解。
+      if (title === '' || title === cur.original) return
+      write('node-set', { node: cur.id, title }, () => flash('已改名'))
+    }
+
+    /** 改名输入框：回车提交、Esc 放弃、失焦也按提交算（点到别处不白打一遍）。 */
+    const renameInput = (key) => h('input', {
+      key,
+      className: 'dsh-wb-rename',
+      autoFocus: true,
+      value: editDraft,
+      onChange: (e) => setEditDraft(e.target.value),
+      onClick: (e) => e.stopPropagation(),
+      onKeyDown: (e) => {
+        if (e.key === 'Enter') { e.preventDefault(); commitRename() } else if (e.key === 'Escape') { e.preventDefault(); setEditing(null) }
+      },
+      onBlur: commitRename,
+    })
+
+    // ============================================================ 拖拽排序
+
+    /**
+     * 落点判定的三档高度：上缘 30% = 插到它前面，下缘 30% = 插到它后面，
+     * 中间 = 放进去（只有计划能当容器）。边带再窄就不好点，再宽则「放进去」
+     * 几乎够不着——计划标题只有一行字那么高。
+     */
+    const PLACE_BAND = 0.3
+
+    const placeAt = (e, isPlan) => {
+      const rect = e.currentTarget.getBoundingClientRect()
+      const ratio = rect.height > 0 ? (e.clientY - rect.top) / rect.height : 0.5
+      if (ratio < PLACE_BAND) return 'before'
+      if (ratio > 1 - PLACE_BAND) return 'after'
+      // 待办是叶子，中间那档降级成「按上下半插到前/后」。
+      return isPlan ? 'inside' : (ratio < 0.5 ? 'before' : 'after')
+    }
+
+    /**
+     * 拖拽源挂在**标题**上（不是整行）。整行可拖会顺手把复选框也变成拖拽把手，
+     * 想勾选却拖了一下；标题是天然的「抓住这一条」的位置，落点则仍由整行接收。
+     */
+    const dragFrom = (node) => ({
+      draggable: true,
+      onDragStart: (e) => {
+        setDragId(String(node.id))
+        try {
+          e.dataTransfer.setData('text/plain', String(node.id))
+          e.dataTransfer.effectAllowed = 'move'
+        } catch (err) { /* 个别环境禁写 dataTransfer，不影响内部拖拽 */ }
+      },
+      onDragEnd: () => { setDragId(null); setHint(null) },
+    })
+
+    /**
+     * 拖拽目标：整行接收。**只有合法落点才 preventDefault**——非法时把
+     * 决定权交给浏览器，它会显示禁止光标，比我们自己画一个「无效」标记
+     * 更省事也更准确。合法性一律问 dropTarget，UI 不自己判一遍（判定逻辑要单份）。
+     */
+    const dragOnto = (node, isPlan) => ({
+      onDragOver: (e) => {
+        // 先无条件拦住冒泡：body 上挂着「拖到空白处 = 移回顶层」的接收器，
+        // 只要有一次没拦（比如拖到自己身上提前 return 的那一支），指示器
+        // 就会在正在拖的那一行上闪出「移到顶层」。
+        e.stopPropagation()
+        if (dragId === null || dragId === String(node.id)) return
+        const place = placeAt(e, isPlan)
+        if (dropTarget(plan, dragId, String(node.id), place) === null) {
+          if (hint !== null) setHint(null)
+          return
+        }
+        e.preventDefault()
+        if (hint === null || hint.id !== String(node.id) || hint.place !== place) {
+          setHint({ id: String(node.id), place })
+        }
+      },
+      onDrop: (e) => {
+        e.stopPropagation()
+        const place = placeAt(e, isPlan)
+        const target = dropTarget(plan, dragId, String(node.id), place)
+        setDragId(null)
+        setHint(null)
+        if (target === null) return
+        e.preventDefault()
+        doMove(target.node, target.parent, target.index)
+        flash('已移动')
+      },
+    })
+
+    /** 这一行该挂的拖拽状态类名（拖起来的那行变淡，落点行画线或高亮）。 */
+    const dragClass = (id) => {
+      const key = String(id)
+      let cls = ''
+      if (dragId === key) cls += ' dsh-wb-dragging'
+      if (hint !== null && hint.id === key) cls += ' dsh-wb-drop-' + hint.place
+      return cls
+    }
+
+    /**
+     * 标题上的三种手势：单击切换完成、双击就地改名、按住拖动排序。
+     *
+     * 单击必须**延后执行**：双击会先触发两次 click，立刻切换的话，一次改名
+     * 会顺带把事办了（还留下两个版本快照）。延迟只加在这条便利路径上，
+     * 复选框依旧是即时的——想快就点框。
+     * 计划标题不参与切换（它没有「完成」这个单击语义），所以只延后待办。
+     */
+    const titleProps = (node, base, opts) => {
+      const canToggle = opts.canToggle === true
+      const props = { className: base }
+      // 筛选视图里的顺序是按筛选条件算出来的，拖动它没有意义（也没有接收器），
+      // 所以那里只给改名，不给拖拽手柄。
+      if (opts.draggable !== false) Object.assign(props, dragFrom(node))
+      props.onDoubleClick = () => {
+        if (clickTimer.current !== null) { clearTimeout(clickTimer.current); clickTimer.current = null }
+        startRename(node)
+      }
+      if (!canToggle) return props
+      if (node.status === 'done') props.className += ' done'
+      else if (node.status === 'dropped') props.className += ' dropped'
+      props.onClick = () => {
+        if (clickTimer.current !== null) return
+        clickTimer.current = setTimeout(() => {
+          clickTimer.current = null
+          setTodo(node.id, toggleStatus(node.status))
+        }, 200)
+      }
+      return props
+    }
+
+    /** 标题位：改名中显示输入框，否则显示可拖可双击的标题。 */
+    const titleNode = (node, base, opts) => {
+      if (editing !== null && editing.id === String(node.id)) return renameInput('rename')
+      return h('span', titleProps(node, base, opts || {}), node.title)
+    }
 
     /** 重要程度徽章：点击在高 → 中 → 低之间循环。 */
     const priBadge = (node) => {
@@ -345,21 +601,19 @@ function apply(ctx) {
     /** 一条待办。 */
     const renderTodo = (node, depth) => {
       const done = node.status === 'done'
-      const rows = [h('div', {
-        className: 'dsh-wb-task',
+      const rows = [h('div', Object.assign({
+        className: 'dsh-wb-task' + dragClass(node.id),
         key: 'row',
         style: { marginLeft: (10 + depth * 12) + 'px' },
-        title: statusLabel(node.status) + (node.note ? '\n' + node.note : ''),
-      },
+        title: statusLabel(node.status) + (node.note ? '\n' + node.note : '')
+          + '\n（单击切换完成 · 双击改名 · 拖动可排序或归位）',
+      }, dragOnto(node, false)),
         h('input', {
           type: 'checkbox',
           checked: done,
           onChange: () => setTodo(node.id, toggleStatus(node.status)),
         }),
-        h('span', {
-          className: 'dsh-wb-tasktitle' + (done ? ' done' : node.status === 'dropped' ? ' dropped' : ''),
-          onClick: () => setTodo(node.id, toggleStatus(node.status)),
-        }, node.title),
+        titleNode(node, 'dsh-wb-tasktitle', { canToggle: true }),
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -399,9 +653,14 @@ function apply(ctx) {
         : null
       const progress = progressOf(node)
 
-      const head = h('div', { className: 'dsh-wb-planhead', key: 'head', style: { marginLeft: (depth * 12) + 'px' } },
+      const head = h('div', Object.assign({
+        className: 'dsh-wb-planhead' + dragClass(node.id),
+        key: 'head',
+        style: { marginLeft: (depth * 12) + 'px' },
+      }, dragOnto(node, true)),
+        caret(node),
         h('span', { className: 'dsh-wb-planid' }, node.id),
-        h('span', { className: 'dsh-wb-plantitle' }, node.title),
+        titleNode(node, 'dsh-wb-plantitle', { canToggle: false }),
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -412,7 +671,9 @@ function apply(ctx) {
         h('button', {
           className: 'dsh-wb-act',
           title: '在这个计划下加一项',
-          onClick: (e) => { e.stopPropagation(); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
+          // 往收着的计划里加子项要顺手展开：不展开的话新加的东西立刻不可见，
+          // 看起来就像「加了但没加上」。
+          onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, '＋'),
         // 降回待办只在空计划上出现：有子节点的计划降级会让孩子们变成孤儿，
         // host 会拒绝。与其让用户点了再看到报错，不如不给这个按钮。
@@ -428,16 +689,21 @@ function apply(ctx) {
         }, '×'),
       )
 
-      const body = [
-        head,
-        meta.length > 0 ? h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 12) + 'px' } },
-          meta.map((x, i) => h('span', { key: i }, x))) : null,
-        h('div', { className: 'dsh-wb-planbar', key: 'bar', style: { marginLeft: (depth * 12) + 'px' } },
-          h('div', { style: { width: barWidth(progress) } })),
-      ]
+      // 收起来时只留标题行：进度百分比已经在标题行里，进度条与元信息属于
+      // 「展开了才看」的细节。这样「全部收起」得到的是一份紧凑的主线清单。
+      const open = !isCollapsed(node.id)
+      const body = [head]
+      if (open) {
+        if (meta.length > 0) {
+          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 12) + 'px' } },
+            meta.map((x, i) => h('span', { key: i }, x))))
+        }
+        body.push(h('div', { className: 'dsh-wb-planbar', key: 'bar', style: { marginLeft: (depth * 12) + 'px' } },
+          h('div', { style: { width: barWidth(progress) } })))
+      }
 
       // 加子项：两个提交按钮区分「待办」与「子计划」，不让用户猜默认值。
-      if (state.adding === node.id) {
+      if (open && state.adding === node.id) {
         const submit = (type) => {
           const title = nodeDraft.trim()
           if (title === '') return
@@ -460,8 +726,10 @@ function apply(ctx) {
         ))
       }
 
-      for (const kid of kids) {
-        body.push(nodeType(kid) === 'plan' ? renderPlan(kid, depth + 1) : renderTodo(kid, depth + 1))
+      if (open) {
+        for (const kid of kids) {
+          body.push(nodeType(kid) === 'plan' ? renderPlan(kid, depth + 1) : renderTodo(kid, depth + 1))
+        }
       }
 
       return h('div', { className: 'dsh-wb-plan', key: node.id }, body)
@@ -472,6 +740,9 @@ function apply(ctx) {
       h('span', { className: 'dsh-wb-title' }, '工作计划'),
       h('div', { className: 'dsh-wb-headright' },
         h('span', { className: 'dsh-wb-pct' }, pct(sum.progress)),
+        // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
+        sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部收起（只看主线）', onClick: collapseAll }, '⊟') : null,
+        sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部展开', onClick: () => applyCollapse([]) }, '⊞') : null,
         h('button', { className: 'dsh-wb-icon', title: '留档一个版本', onClick: snapshot, disabled: !sum.hasPlan }, '⤓'),
         h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, '⟳'),
       ),
@@ -525,10 +796,7 @@ function apply(ctx) {
               onChange: () => setTodo(node.id, toggleStatus(node.status)),
             })
             : null,
-          h('span', {
-            className: 'dsh-wb-tasktitle',
-            onClick: isLeaf ? () => setTodo(node.id, toggleStatus(node.status)) : null,
-          }, node.title),
+          titleNode(node, 'dsh-wb-tasktitle', { canToggle: isLeaf, draggable: false }),
           h('span', { className: 'dsh-wb-path' }, (isLeaf ? '' : typeLabel(item.type) + ' ') + item.path),
           delegChip(node),
           warnBadge(node),
@@ -581,7 +849,7 @@ function apply(ctx) {
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
         h('div', null, '这个工作区还没有计划。'),
-        h('div', null, '先用上面的输入框记两条待办，或在对话里对 agent 说：'),
+        h('div', null, '点下面的「＋ 新建顶层计划」开始，或在对话里对 agent 说：'),
         h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
           '「帮我把这个季度的工作计划拆成计划和子计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } }, '计划会落在 ' + (state.dir || '<工作区>/plan')),
@@ -592,7 +860,63 @@ function apply(ctx) {
       if (nodeType(node) === 'plan') body.push(renderPlan(node, 0))
     }
 
-    rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+    // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，
+    // 拖动适合挪到眼前的位置。接收器挂在 body 上，所以行内必须先 stopPropagation。
+    if (hint !== null && hint.id === null) body.push(h('div', { className: 'dsh-wb-rootdrop', key: 'rootdrop' }))
+
+    // 新建顶层计划。空工作区时这是**唯一**的建计划入口——不能为了建第一个计划
+    // 就被迫去开一个对话，「让 agent 也能做」不等于「只能靠 agent 做」。
+    if (state.adding === ROOT_ADD) {
+      const submitRoot = () => {
+        const title = nodeDraft.trim()
+        if (title === '') return
+        addNode({ title, type: 'plan' }, () => { setNodeDraft(''); flash('已新建计划') })
+      }
+      body.push(h('div', { className: 'dsh-wb-add', key: 'rootadd' },
+        h('input', {
+          type: 'text',
+          autoFocus: true,
+          placeholder: '新建一个顶层计划…',
+          value: nodeDraft,
+          onChange: (e) => setNodeDraft(e.target.value),
+          onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitRoot() } },
+        }),
+        // 这里只有「建计划」一个提交口：顶层的待办就是收件箱，而收件箱的输入框
+        // 就在上面常驻着，再放一个「记作待办」等于把同一个动作做两遍。
+        h('button', { onClick: submitRoot, disabled: nodeDraft.trim() === '' }, '建计划'),
+        h('button', { onClick: () => { setNodeDraft(''); store.set({ adding: null }) } }, '取消'),
+      ))
+    } else {
+      body.push(h('button', {
+        key: 'rootadd',
+        className: 'dsh-wb-rootadd',
+        onClick: () => { setNodeDraft(''); store.set({ adding: ROOT_ADD }) },
+      }, '＋ 新建顶层计划'))
+    }
+
+    rows.push(h('div', {
+      className: 'dsh-wb-body',
+      key: 'body',
+      onDragOver: (e) => {
+        if (dragId === null) return
+        if (dropTarget(plan, dragId, null, 'after') === null) {
+          if (hint !== null) setHint(null)
+          return
+        }
+        e.preventDefault()
+        if (hint === null || hint.id !== null) setHint({ id: null, place: 'root' })
+      },
+      onDrop: (e) => {
+        if (dragId === null) return
+        const target = dropTarget(plan, dragId, null, 'after')
+        setDragId(null)
+        setHint(null)
+        if (target === null) return
+        e.preventDefault()
+        doMove(target.node, target.parent, target.index)
+        flash('已移到顶层')
+      },
+    }, body))
     if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
 
     return h('div', { className: 'dsh-wb-wrap' }, rows)
