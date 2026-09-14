@@ -1,0 +1,15 @@
+# 构建产物（由 scripts/build.mjs 从 src/ 生成，不入库）
+lib/
+
+# 依赖
+node_modules/
+pnpm-lock.yaml
+
+# 编辑器 / 系统
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# 注意：工作区里的计划数据 <workspace>/plan/ 不在本仓库内，
+# 它属于用户自己的项目工作区，由 dsh-workbench 在运行时生成。

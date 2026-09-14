@@ -1,0 +1,11 @@
+# dsh-workbench bundle patch：往 web profile 组合树里插一行。
+#
+# 安装（用户已有 web profile）：
+#   dsh plugin --profile web add /绝对路径/dsh-workbench
+# 装完必须重启 dsh web —— host 插件是组合树里的一行，不是运行时热加载。
+#
+# 注意：这里是 `insert`。不要在自己的 profile cordis.patch.yml 里
+# 再对同一个 id 写一条顶层 `- id:` 行，否则插件会注册两次。
+- insert:
+    - id: dsh-workbench
+      name: 'dsh-workbench'
