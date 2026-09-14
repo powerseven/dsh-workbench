@@ -16,23 +16,31 @@ import { join } from 'node:path'
 
 import {
   DELEGATE_STATUS,
+  EVIDENCE_KIND,
+  PACE_THRESHOLD,
   PlanStore,
   SCHEMA,
   PRIORITY,
+  addEvidence,
   appendChild,
+  applyFields,
   applyStatus,
+  behindList,
   childrenOf,
   collectNodes,
   controlSummary,
   delegateState,
   delegatedList,
   emptyPlan,
+  evidenceOf,
+  evidenceWarnings,
   inboxOf,
   isDescendantOf,
   isDueWithin,
   isOverdue,
   isPlan,
   isTodo,
+  isUnverified,
   locate,
   makeNode,
   migratePlan,
@@ -43,6 +51,7 @@ import {
   nodeStats,
   nodeWarnings,
   normalizePlan,
+  paceOf,
   planProgress,
   priorityOf,
   removeNode,
@@ -58,6 +67,7 @@ import {
   todayStr,
   topPlans,
   typeOf,
+  unverifiedList,
 } from '../src/store.js'
 
 /** 一份 schema 2 的样例计划：计划 → 两个子计划 → 待办（含一条量化子计划）。 */
@@ -357,6 +367,20 @@ test('makeNode 接受重要程度、量化字段与时间字段', () => {
   assert.equal(node.owner, '张三')
   assert.equal(node.end, '2026-12-31')
   assert.equal(node.note, '备注')
+})
+
+test('applyFields 只更新量化进度的一部分时，不把 target / unit 抹掉', () => {
+  const plan = emptyPlan()
+  const node = makeNode(plan, { title: 'x', type: 'plan', target: 12, current: 3, unit: '个' })
+  applyFields(node, { current: 7 })
+  assert.deepEqual(node.metric, { target: 12, current: 7, unit: '个' }, '只传 current 不该丢 target')
+  assert.equal(nodeProgress(node), 7 / 12, '进度按合并后的 metric 算')
+})
+
+test('applyFields 对没有 metric 的节点也能只写 current', () => {
+  const node = { id: 'n1', type: 'plan', title: 'x', status: 'active' }
+  applyFields(node, { current: 5 })
+  assert.deepEqual(node.metric, { current: 5 })
 })
 
 test('appendChild 不传 parent 就放到顶层', () => {
@@ -1016,4 +1040,229 @@ test('计划的锚点日期取 end（退一步 start）', () => {
 test('todayStr 输出本地时区的 YYYY-MM-DD', () => {
   assert.match(todayStr(), /^\d{4}-\d{2}-\d{2}$/)
   assert.equal(todayStr(new Date(2026, 8, 14, 23, 0, 0)), '2026-09-14')
+})
+
+// ------------------------------------------------------------------ 配速
+
+test('paceOf 只在「有完整周期 + 周期正在走」时给配速', () => {
+  // 2026-09-01 ~ 2026-09-21，今天 9-11 → 20 天里过了 10 天，应到 50%
+  const node = { type: 'plan', status: 'active', start: '2026-09-01', end: '2026-09-21' }
+  const p = paceOf(node, 0.2, '2026-09-11')
+  assert.equal(Math.round(p.expected * 100), 50)
+  assert.equal(p.actual, 0.2)
+  assert.equal(Math.round(p.gap * 100), 30)
+  assert.equal(p.behind, true)
+})
+
+test('paceOf 的四种边界：没周期 / 还没开始 / 已过结束日 / 已结束', () => {
+  const base = { type: 'plan', status: 'active', start: '2026-09-01', end: '2026-09-21' }
+  assert.equal(paceOf({ type: 'plan', status: 'active', end: '2026-09-21' }, 0, '2026-09-11'), null, '缺 start')
+  assert.equal(paceOf({ type: 'plan', status: 'active', start: '2026-09-01' }, 0, '2026-09-11'), null, '缺 end')
+  assert.equal(paceOf(base, 0, '2026-08-20'), null, 'start 还没到 → 不是落后')
+  assert.equal(paceOf(base, 0, '2026-09-30'), null, '已过 end → 那是逾期，交给逾期信号')
+  assert.equal(paceOf({ ...base, status: 'done' }, 1, '2026-09-11'), null, '已完成不报配速')
+  assert.equal(paceOf({ ...base, status: 'dropped' }, 0, '2026-09-11'), null, '已放弃不报配速')
+})
+
+test('paceOf 对脏数据与颠倒的周期安全（不报配速，也不抛错）', () => {
+  assert.equal(paceOf({ type: 'plan', status: 'active', start: '2026-09-21', end: '2026-09-01' }, 0, '2026-09-11'), null)
+  assert.equal(paceOf({ type: 'plan', status: 'active', start: '2026-09-01', end: '2026-09-01' }, 0, '2026-09-01'), null, '同一天算不出跨度')
+  assert.equal(paceOf({ type: 'plan', status: 'active', start: '乱写', end: '2026-09-21' }, 0, '2026-09-11'), null)
+  assert.equal(paceOf(null, 0, '2026-09-11'), null)
+})
+
+test('paceOf 的阈值是 15 个百分点（刚好 15% 算落后，14% 不算）', () => {
+  assert.equal(PACE_THRESHOLD, 0.15)
+  // 09-01 ~ 09-21，今天 09-11 → expected = 0.5
+  const node = { type: 'plan', status: 'active', start: '2026-09-01', end: '2026-09-21' }
+  assert.equal(paceOf(node, 0.35, '2026-09-11').behind, true, '差 15 个百分点 → 报')
+  assert.equal(paceOf(node, 0.36, '2026-09-11').behind, false, '差 14 个百分点 → 不报')
+  assert.equal(paceOf(node, 0.5, '2026-09-11').behind, false, '刚好跟上 → 不报')
+  assert.equal(paceOf(node, 0.9, '2026-09-11').behind, false, '超前 → 不报')
+})
+
+test('paceOf 的 actual 夹取到 0..1，不因为脏进度算出负数', () => {
+  const node = { type: 'plan', status: 'active', start: '2026-09-01', end: '2026-09-21' }
+  assert.equal(paceOf(node, 3, '2026-09-11').actual, 1)
+  assert.equal(paceOf(node, -1, '2026-09-11').actual, 0)
+})
+
+test('paceOf 不传 progress 时自己算（量化节点按 metric）', () => {
+  const node = {
+    type: 'plan', status: 'active', start: '2026-09-01', end: '2026-09-21',
+    metric: { target: 10, current: 2 },
+  }
+  assert.equal(paceOf(node, undefined, '2026-09-11').actual, 0.2)
+})
+
+test('behindList 只收落后且未结束的节点，差距大的排前面', () => {
+  const plan = emptyPlan()
+  plan.nodes.push(
+    { id: 'g1', type: 'plan', title: '落后很多的', status: 'active', start: '2026-09-01', end: '2026-09-21', children: [] },
+    { id: 'g2', type: 'plan', title: '落后一点的', status: 'active', start: '2026-09-01', end: '2026-09-21', metric: { target: 10, current: 3 }, children: [] },
+    { id: 'g3', type: 'plan', title: '跟得上的', status: 'active', start: '2026-09-01', end: '2026-09-21', metric: { target: 10, current: 5 }, children: [] },
+    { id: 'g4', type: 'plan', title: '没周期的', status: 'active', children: [] },
+    { id: 'g5', type: 'plan', title: '已完成但落后过的', status: 'done', start: '2026-09-01', end: '2026-09-21', children: [] },
+  )
+  const list = behindList(plan, '2026-09-11')
+  assert.deepEqual(list.map((x) => x.id), ['g1', 'g2'], '差 50 个百分点的排在差 20 个的前面')
+  assert.equal(list[0].pace.behind, true)
+  assert.equal(list[0].path, 'g1')
+})
+
+test('behindList 的节点进度是递归算的（父计划跟着子节点落后）', () => {
+  const plan = emptyPlan()
+  plan.nodes.push({
+    id: 'g1', type: 'plan', title: '父计划', status: 'active',
+    start: '2026-09-01', end: '2026-09-21',
+    children: [
+      { id: 'n1', type: 'todo', title: '没做的', status: 'todo' },
+      { id: 'n2', type: 'todo', title: '也做没的', status: 'todo' },
+    ],
+  })
+  const list = behindList(plan, '2026-09-11')
+  assert.deepEqual(list.map((x) => x.id), ['g1'], '待办没有周期，不参与配速')
+  assert.equal(list[0].progress, 0)
+})
+
+// ------------------------------------------------------------------ 证据
+
+test('addEvidence 追加而不是覆盖，并补上时间戳', () => {
+  const node = { id: 't1', type: 'todo', status: 'done' }
+  addEvidence(node, { kind: 'file', ref: 'docs/a.md' }, new Date('2026-09-14T02:00:00Z'))
+  addEvidence(node, { kind: 'command', ref: 'npm test' }, new Date('2026-09-14T03:00:00Z'))
+  assert.equal(node.evidence.length, 2)
+  assert.deepEqual(node.evidence[0], { kind: 'file', ref: 'docs/a.md', at: '2026-09-14T02:00:00.000Z' })
+  assert.equal(node.evidence[1].kind, 'command')
+})
+
+test('addEvidence 的 kind 缺省按 note（不核验），传错枚举才报错', () => {
+  const node = {}
+  assert.equal(addEvidence(node, { ref: '一句话' }).kind, 'note')
+  assert.throws(() => addEvidence(node, { kind: 'filee', ref: 'x' }), /证据类型必须是/)
+})
+
+test('addEvidence 必须有 ref，否则报错而不是写半截数据', () => {
+  assert.throws(() => addEvidence({}, { kind: 'file' }), /证据需要一个 ref/)
+  assert.throws(() => addEvidence({}, { ref: '   ' }), /证据需要一个 ref/)
+  assert.throws(() => addEvidence(null, { ref: 'x' }), /证据要挂在节点上/)
+})
+
+test('addEvidence 对同 kind + 同 ref 不重复追加（agent 重试不该产生两条一样的证据）', () => {
+  const node = {}
+  addEvidence(node, { kind: 'file', ref: 'out/a.md' }, new Date('2026-09-10T00:00:00Z'))
+  addEvidence(node, { kind: 'file', ref: 'out/a.md' }, new Date('2026-09-14T00:00:00Z'))
+  assert.equal(node.evidence.length, 1, '重复的条目不含新信息，只会让审查变糊')
+  assert.equal(node.evidence[0].at, '2026-09-14T00:00:00.000Z', '时间刷成最后一次')
+  // 同 ref 不同类型算两条：文件与命令是两种凭据
+  addEvidence(node, { kind: 'command', ref: 'out/a.md' })
+  assert.equal(node.evidence.length, 2)
+})
+
+test('addEvidence 可以带一条说明', () => {
+  const node = {}
+  addEvidence(node, { kind: 'session', ref: 'sess-123', note: '这次会话里改的' })
+  assert.equal(node.evidence[0].note, '这次会话里改的')
+})
+
+test('evidenceOf 永远返回数组', () => {
+  assert.deepEqual(evidenceOf({}), [])
+  assert.deepEqual(evidenceOf({ evidence: 'nope' }), [])
+  assert.equal(evidenceOf({ evidence: [{ kind: 'note', ref: 'x' }] }).length, 1)
+  assert.deepEqual(evidenceOf(null), [])
+})
+
+test('isUnverified 只认「已完成且没有任何证据」', () => {
+  assert.equal(isUnverified({ status: 'done' }), true)
+  assert.equal(isUnverified({ status: 'done', evidence: [] }), true)
+  assert.equal(isUnverified({ status: 'done', evidence: [{ kind: 'note', ref: 'x' }] }), false)
+  assert.equal(isUnverified({ status: 'todo' }), false)
+  assert.equal(isUnverified({ status: 'doing' }), false)
+  assert.equal(isUnverified({ status: 'dropped' }), false)
+  assert.equal(isUnverified(null), false)
+})
+
+test('unverifiedList 收已完成无证据的节点，最近完成的排前面', () => {
+  const plan = emptyPlan()
+  plan.nodes.push(
+    { id: 'a', type: 'todo', title: '上周', status: 'done', doneAt: '2026-09-01T00:00:00.000Z' },
+    { id: 'b', type: 'todo', title: '刚做完', status: 'done', doneAt: '2026-09-13T00:00:00.000Z', priority: 'high' },
+    { id: 'c', type: 'todo', title: '有证据的', status: 'done', evidence: [{ kind: 'file', ref: 'x', at: '2026-09-13T00:00:00.000Z' }] },
+    { id: 'd', type: 'todo', title: '没做完的', status: 'todo' },
+  )
+  const list = unverifiedList(plan)
+  assert.deepEqual(list.map((x) => x.id), ['b', 'a'])
+  assert.equal(list[0].priority, 'high')
+  assert.equal(list[0].path, 'b')
+})
+
+test('evidenceWarnings 只核验 file 类证据（文件在不在是客观事实）', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-wb-ev-'))
+  try {
+    await writeFile(join(dir, 'real.md'), '# 真的存在\n')
+    const node = {}
+    addEvidence(node, { kind: 'file', ref: 'real.md' })
+    addEvidence(node, { kind: 'file', ref: 'missing.md' })
+    addEvidence(node, { kind: 'command', ref: 'missing.md' }, new Date())
+    addEvidence(node, { kind: 'note', ref: '某件只在口头存在的事' })
+    const w = evidenceWarnings(node, dir)
+    assert.equal(w.length, 1, '只有那个不存在的文件被标出来')
+    assert.match(w[0], /证据所指的文件不存在：missing\.md/)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('evidenceWarnings 支持绝对路径，且没有工作区根时静默跳过', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-wb-ev2-'))
+  try {
+    const abs = join(dir, 'abs.txt')
+    await writeFile(abs, 'x')
+    const node = {}
+    addEvidence(node, { kind: 'file', ref: abs })
+    assert.deepEqual(evidenceWarnings(node, dir), [], '绝对路径直接查，不拼根目录')
+    addEvidence(node, { kind: 'file', ref: join(dir, 'nope.txt') })
+    assert.equal(evidenceWarnings(node, dir).length, 1)
+    assert.deepEqual(evidenceWarnings(node, undefined), [], '没根目录就不假装能核验')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('高重要度的完成项缺证据会进 warnings，其余档位只进「无证据」清单', () => {
+  const high = { type: 'todo', status: 'done', priority: 'high', due: '2026-09-01' }
+  assert.match(nodeWarnings(high, 'todo').join('；'), /完成但没有证据/)
+  addEvidence(high, { kind: 'file', ref: 'x.md' })
+  assert.doesNotMatch(nodeWarnings(high, 'todo').join('；'), /完成但没有证据/)
+
+  const normal = { type: 'todo', status: 'done', priority: 'normal', due: '2026-09-01' }
+  assert.doesNotMatch(nodeWarnings(normal, 'todo').join('；'), /证据/)
+  assert.equal(isUnverified(normal), true, '不进 ⚠，但照样进无证据清单')
+})
+
+test('controlSummary 统计落后与无证据的完成项', () => {
+  const plan = emptyPlan()
+  plan.nodes.push(
+    { id: 'g1', type: 'plan', title: '落后', status: 'active', start: '2026-09-01', end: '2026-09-21', children: [] },
+    { id: 'g2', type: 'plan', title: '跟上', status: 'active', start: '2026-09-01', end: '2026-09-21', metric: { target: 10, current: 6 }, children: [] },
+    { id: 'a', type: 'todo', title: '无证据完成', status: 'done' },
+    { id: 'b', type: 'todo', title: '有证据完成', status: 'done', evidence: [{ kind: 'note', ref: 'x', at: '2026-09-14T00:00:00.000Z' }] },
+  )
+  const s = controlSummary(plan, '2026-09-11')
+  assert.equal(s.behind, 1)
+  assert.equal(s.unverified, 1)
+})
+
+test('renderMarkdown 标出落后与证据，收件箱里的完成项也算', () => {
+  const plan = emptyPlan()
+  plan.nodes.push({
+    id: 'g1', type: 'plan', title: '落后的计划', status: 'active',
+    start: '2026-09-01', end: '2026-09-21', children: [],
+  })
+  plan.nodes.push({ id: 'a', type: 'todo', title: '无证据完成', status: 'done', evidence: undefined })
+  plan.nodes.push({ id: 'b', type: 'todo', title: '有证据', status: 'done', evidence: [{ kind: 'file', ref: 'out/b.md', at: '2026-09-14T00:00:00.000Z' }] })
+  const md = renderMarkdown(plan)
+  assert.match(md, /完成但无证据/, '无证据的完成项要标出来')
+  assert.match(md, /证据 1 条：文件/, '有证据的写出条数与类型')
+  assert.match(md, /完成但无证据：1 项待核验/)
 })
