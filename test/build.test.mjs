@@ -67,6 +67,80 @@ test('折叠状态的 localStorage 键只有一处定义（两处各写一份会
   assert.equal((client.match(/dsh-workbench:collapsed/g) || []).length, 1)
 })
 
+/** 取出源码里的 CSS 块（去掉注释行），供下面的样式纪律断言使用。 */
+function cssBlock() {
+  const src = readFileSync(join(root, 'src', 'client', 'index.js'), 'utf8')
+  const block = src.slice(src.indexOf('const CSS = ['), src.indexOf('].join(\'\')'))
+  return {
+    raw: block,
+    // 去掉 // 注释行，并压掉空白与字符串拼接符号，便于做稳定的包含判断
+    flat: block.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n').replace(/[\s'+]/g, ''),
+  }
+}
+
+test('面板样式不自管主题：产物里没有 prefers-color-scheme 分支', () => {
+  // 明暗两态由宿主重映射 --dsw-alias-* 完成（body[data-ds-dark-theme]{…}）。
+  // 面板自己写 @media (prefers-color-scheme: dark) 是错的：那跟的是系统偏好，
+  // 在「系统深色 + 用户选浅色」时会渲染出深色块，与宿主主题错位。
+  // 这条断言就是为了挡住它被写回来。
+  //
+  // 先去掉行注释再查：解释这条纪律的注释本身会写出这个媒体查询的名字，
+  // 不剥注释就会自己撞自己（本次加断言时先踩了一次）。
+  const code = client.replace(/\/\/[^\n]*/g, '')
+  assert.doesNotMatch(code, /prefers-color-scheme/)
+  // 但「减少动态效果」是 WCAG 要求、与主题无关，必须留着。
+  assert.match(code, /prefers-reduced-motion/)
+})
+
+test('面板样式只认宿主 design token，不自造颜色', () => {
+  // 硬编码 hex / rgba 一旦出现，明暗两态就必然只对一半，而且换肤时不会跟随。
+  const { raw } = cssBlock()
+  const rules = raw.split('\n').filter((l) => !l.trim().startsWith('//')).join('\n')
+  assert.doesNotMatch(rules, /#[0-9a-fA-F]{3,8}\b/, 'CSS 里出现了硬编码颜色')
+  assert.doesNotMatch(rules, /\brgba?\(/, 'CSS 里出现了 rgb()/rgba() 颜色')
+})
+
+test('别名层落在面板自己的根上，不在 :root', () => {
+  // var() 是在「声明它的那个元素」上完成替换的：写在 :root(html) 会按 html 的
+  // 浅色算死，body[data-ds-dark-theme] 的暗色映射传不下来——这正是「换了主题
+  // 面板不跟着变」的成因。声明在 .dsh-wb-wrap 才随上下文一起翻转。
+  const { flat } = cssBlock()
+  assert.ok(
+    flat.includes('.dsh-wb-wrap{--wb-fg:var(--dsw-alias-label-primary)'),
+    '别名层没有声明在 .dsh-wb-wrap 上',
+  )
+  assert.ok(!flat.includes(':root{'), '别名层不应声明在 :root 上')
+})
+
+test('面板字体与圆角取宿主标尺，且胶囊配了 corner-shape:round', () => {
+  // 字号一律走宿主阶梯（11/12/13），不出现自定的 font-size 像素值。
+  const { flat } = cssBlock()
+  for (const t of ['var(--dsw-font-xxxs-11)', 'var(--dsw-font-xxs-12)', 'var(--dsw-font-xs-13)']) {
+    assert.ok(flat.includes(t), 'CSS 没有使用宿主字号 token ' + t)
+  }
+  // 宿主对 * 施加 corner-shape:superellipse(1.5)，胶囊会被压变形，须配回 round。
+  assert.match(flat, /corner-shape:round/)
+})
+
+test('软底状态胶囊的文字走中性色，语义色只做描边与底色', () => {
+  // 宿主的红在浅色下是 #ec1313：对纯底 4.49:1（恰在 AA 的 4.5:1 线上），再叠一层
+  // 5% 红软底就掉到 4.45:1，就不达标了。所以**行内小胶囊**里的红只承担描边与底色，
+  // 文字一律中性（near-black / near-white，实测 18.9:1）。
+  //
+  // 例外是 `.dsh-wb-err`（整幅告警条）：一是它面积大、红字是通行约定，二是它的
+  // 信息不靠颜色单独承载。这条断言只钉「小胶囊」，不去限制告警条。
+  const { raw } = cssBlock()
+  for (const sel of ['.dsh-wb-pri.high', '.dsh-wb-deleg.late']) {
+    const line = raw.split('\n').find((l) => l.includes("'" + sel + '{'))
+    assert.ok(line, '找不到规则 ' + sel)
+    const body = line.slice(line.indexOf(sel + '{') + sel.length + 1)
+    assert.match(body, /(^|;)color:var\(--wb-fg\)/, sel + ' 的文字色应当是中性 token')
+    // 注意不能直接查 'color:var(--wb-danger)'：'border-color:var(--wb-danger)'
+    // 里也含这个子串，会把正确的描边误判成文字色。
+    assert.doesNotMatch(body, /(^|;)color:var\(--wb-danger\)/, sel + ' 不应把 danger 当文字色')
+  }
+})
+
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {
   const requires = [...client.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2])
   assert.deepEqual([...new Set(requires)], ['react'], '客户端只应 require react')
