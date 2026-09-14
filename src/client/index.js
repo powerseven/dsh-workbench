@@ -193,6 +193,35 @@ const CSS = [
   // ── 归位选择器 ──（同样收进强调色，不再另开一个紫色）
   '.dsh-wb-movepick{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-1) 0 var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px dashed var(--wb-accent);}',
   '.dsh-wb-movepicklabel{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  // ── AI 入口 ─────────────────────────────────────────────────────────────
+  // 整块用「强调色虚线框 + 软底」：这一区的内容**不是用户手打的**，是模型给的，
+  // 一眼要能分辨。虚线也顺带说明「还没落定」——点过采纳才会真写进计划。
+  '.dsh-wb-ai{margin:0 var(--wb-sp-5) var(--wb-sp-4);padding:var(--wb-sp-4);border:1px dashed var(--wb-accent);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);}',
+  '.dsh-wb-aihead{display:flex;align-items:center;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);font:var(--dsw-font-xxs-strong-12);}',
+  // 模型名摆在标题行右端：建议是谁给的、用的是哪个模型，不应该藏起来。
+  '.dsh-wb-aimodel{margin-left:auto;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-airow{display:flex;gap:var(--wb-sp-2);align-items:flex-start;}',
+  // 多行文本域：口述转写往往是一整段，一行输入框装不下也不好改。
+  '.dsh-wb-aitext{flex:1;min-width:0;font:inherit;color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);min-height:48px;resize:vertical;}',
+  '.dsh-wb-aitext::placeholder{color:var(--wb-fg-2);}',
+  '.dsh-wb-aitext:focus{border-color:var(--wb-accent);}',
+  '.dsh-wb-aibtn{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-aibtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
+  '.dsh-wb-aibtn:disabled{opacity:.4;cursor:default;}',
+  // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
+  '.dsh-wb-aibtn.primary{border-color:var(--wb-accent);background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
+  '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
+  '.dsh-wb-aitask{padding:var(--wb-sp-3) 0;border-top:1px dashed var(--wb-line-2);}',
+  '.dsh-wb-aititle{display:flex;gap:var(--wb-sp-3);align-items:baseline;}',
+  '.dsh-wb-aititle > span{flex:1;word-break:break-word;}',
+  '.dsh-wb-aimeta{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);white-space:nowrap;}',
+  // 新建计划的输入框就放在候选行里：它是「候选之一」，不是另一块表单——
+  // 用户的心智是「挑一个去处」，不是「先选模式再填表」。
+  '.dsh-wb-ainew{flex:none;width:9em;min-width:0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-1) var(--wb-sp-3);}',
+  '.dsh-wb-ainew::placeholder{color:var(--wb-fg-2);}',
+  '.dsh-wb-ainew:focus{border-color:var(--wb-accent);}',
   // ── 折叠控点（无子节点时占位不可点，让同层标题左边缘对齐）──────────────
   '.dsh-wb-caret{flex:none;width:12px;text-align:center;cursor:pointer;color:var(--wb-fg-2);user-select:none;font:var(--dsw-font-xxxs-11);border-radius:var(--wb-r-1);}',
   '.dsh-wb-caret:hover{background:var(--wb-hover);color:var(--wb-fg);}',
@@ -415,6 +444,235 @@ function apply(ctx) {
       }, listening ? '■' : '🎤')
     }
 
+    // ============================================================== AI 入口
+    //
+    // 只做三件事：① 收集素材（说话 / 打字 / 选图）→ ② 交给 host 解析成结构化待办
+    // → ③ 让用户挑去处，点了才写。**解析不写入**，所以中途改主意没有任何副作用，
+    // 也不用给「撤销一次 AI 导入」再想一套机制。
+    //
+    // 语音沿用上面的 Web Speech（只把识别结果写进这个文本域），图片走 file input
+    // 读成 base64；两者最终都是发给 /ai-parse 的普通字段，host 那边再决定怎么问模型。
+    const [aiOpen, setAiOpen] = React.useState(false)
+    const [aiText, setAiText] = React.useState('')
+    const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
+    const [aiBusy, setAiBusy] = React.useState(false)
+    const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿，逐条采纳
+
+    /** 选图：读成 base64 存进本地状态，超上限的直接丢掉并说明丢了几张。 */
+    const addPics = async (fileList) => {
+      const files = []
+      for (const f of fileList || []) files.push(f)
+      const room = AI_MAX_IMAGES - aiPics.length
+      const picked = files.slice(0, Math.max(room, 0))
+      const out = []
+      for (const file of picked) {
+        // arrayBuffer 是标准 API；读失败（权限/格式）不要拖垮整个面板，跳过即可。
+        let buf = null
+        try { buf = await file.arrayBuffer() } catch (e) { buf = null }
+        if (buf === null) continue
+        out.push({
+          mediaType: typeof file.type === 'string' && file.type !== '' ? file.type : 'image/png',
+          data: bytesToBase64(new Uint8Array(buf)),
+          name: typeof file.name === 'string' && file.name !== '' ? file.name : '图片',
+        })
+      }
+      setAiPics(aiPics.concat(out))
+      const dropped = files.length - picked.length
+      if (dropped > 0) flash('一次最多 ' + AI_MAX_IMAGES + ' 张图片，多的 ' + dropped + ' 张没带上')
+    }
+
+    const runAi = () => {
+      if (aiText.trim() === '' && aiPics.length === 0) {
+        flash('说点什么、贴一段文字，或选一张图片')
+        return
+      }
+      setAiBusy(true)
+      api('ai-parse', { sessionId, text: aiText.trim(), images: aiPics })
+        .then((r) => {
+          setAiBusy(false)
+          const list = Array.isArray(r.tasks) ? r.tasks : []
+          // newTitle 单独存一份：候选里的那个只是**默认值**，用户要能改。
+          setAiTasks(list.map((t, i) => {
+            const fresh = (Array.isArray(t.candidates) ? t.candidates : []).find((c) => c.kind === 'new')
+            return Object.assign({}, t, {
+              key: 'ai' + i,
+              newTitle: fresh !== undefined && typeof fresh.title === 'string' ? fresh.title : '',
+            })
+          }))
+          if (list.length === 0) flash('没解析出待办，换个说法试试')
+        })
+        .catch((e) => {
+          setAiBusy(false)
+          store.set({ error: e instanceof Error ? e.message : String(e) })
+        })
+    }
+
+    /** 采纳一条：把草稿落成真节点。choice 直接来自候选列表，不加中间层。 */
+    const aiApply = async (task, choice) => {
+      const args = { title: task.title, type: 'todo' }
+      if (typeof task.due === 'string' && task.due !== '') args.due = task.due
+      if (typeof task.priority === 'string' && task.priority !== '') args.priority = task.priority
+      if (typeof task.note === 'string' && task.note !== '') args.note = task.note
+      let where = '收件箱'
+      if (choice.kind === 'plan') {
+        args.parent = choice.id
+        where = choice.title
+      } else if (choice.kind === 'new') {
+        const title = String(choice.title === undefined ? '' : choice.title).trim()
+        // 名字是空的就先别动：拿任务标题去当计划名会造出一堆同名的空壳计划，
+        // 那比不建更糟（它还会进完成度统计）。
+        if (title === '') { flash('给新计划起个名字再建'); return }
+        const res = await write('node-add', { title, type: 'plan' })
+        if (res === null || res === undefined || res.node === null || res.node === undefined) return
+        args.parent = res.node.id
+        where = title
+      }
+      const res = await write('node-add', args)
+      if (res === null || res === undefined) return
+      setAiTasks((prev) => prev.filter((t) => t.key !== task.key))
+      flash('已加入「' + where + '」')
+    }
+
+    /** 全部按首选建议采纳。逐个 await：每步都要拿回新计划才能渲染下一步。 */
+    const aiApplyAll = async () => {
+      for (const task of aiTasks) {
+        const pick = Array.isArray(task.candidates) && task.candidates.length > 0
+          ? task.candidates[0] : { kind: 'inbox' }
+        await aiApply(task, pick)
+      }
+    }
+
+    /** 改某条草稿的新建计划名。用函数式更新，避免连着改几条时互相覆盖。 */
+    const setNewTitle = (key, value) => {
+      setAiTasks((prev) => prev.map((t) => (t.key === key ? Object.assign({}, t, { newTitle: value }) : t)))
+    }
+
+    /** AI 块。只在宿主真有模型服务时才渲染入口——点不亮的按钮不如不给。 */
+    const aiBlock = () => {
+      const ai = state.ai === null || state.ai === undefined ? { available: false } : state.ai
+      if (ai.available !== true) return null
+      const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
+      const head = h('div', { className: 'dsh-wb-aihead', key: 'ah' },
+        h('span', null, '✨ AI 导入'),
+        model === '' ? null : h('span', { className: 'dsh-wb-aimodel', title: '用这个模型解析' }, model),
+        h('button', {
+          className: 'dsh-wb-aibtn',
+          style: { marginLeft: 'auto' },
+          onClick: () => { setAiOpen(false); setAiText(''); setAiPics([]); setAiTasks([]) },
+        }, '收起'),
+      )
+      if (aiOpen !== true) {
+        return h('div', { className: 'dsh-wb-ai', key: 'ai' },
+          head,
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            onClick: () => setAiOpen(true),
+            title: '把一段口述或一张截图变成待办，并建议该放到哪个计划下',
+          }, '语音 / 图片转任务'),
+        )
+      }
+      const pics = aiPics.length === 0 ? null : h('div', { className: 'dsh-wb-aipics', key: 'pics' },
+        aiPics.map((p, i) => h('span', { className: 'dsh-wb-aipic', key: 'p' + i },
+          '🖼 ' + p.name,
+          h('button', {
+            title: '去掉这张',
+            onClick: () => setAiPics(aiPics.filter((_, j) => j !== i)),
+          }, '×'),
+        )),
+      )
+      const composer = h('div', { className: 'dsh-wb-ai', key: 'ai' },
+        head,
+        h('div', { className: 'dsh-wb-airow', key: 'row' },
+          h('textarea', {
+            className: 'dsh-wb-aitext',
+            placeholder: '把口述内容、会议纪要粘在这里，或直接说话 / 选一张截图…',
+            value: aiText,
+            onChange: (e) => setAiText(e.target.value),
+          }),
+          micButton(setAiText, 'mic'),
+          h('label', { className: 'dsh-wb-aibtn', title: '选一张截图（白板 / 清单 / 聊天记录）' },
+            '🖼 图片',
+            h('input', {
+              type: 'file',
+              accept: 'image/png,image/jpeg,image/webp,image/gif',
+              multiple: true,
+              style: { display: 'none' },
+              onChange: (e) => {
+                addPics(e.target.files)
+                // 清空 value：否则连着选同一个文件不会触发 change。
+                if (e.target !== null && e.target !== undefined) e.target.value = ''
+              },
+            }),
+          ),
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            disabled: aiBusy === true,
+            onClick: runAi,
+          }, aiBusy === true ? '解析中…' : '解析'),
+        ),
+        pics,
+        aiTasks.length === 0 ? null : h('div', { key: 'tasks' },
+          h('div', { className: 'dsh-wb-aipics', key: 'all' },
+            h('span', null, '解析出 ' + aiTasks.length + ' 条，逐条挑去处，或'),
+            h('button', { className: 'dsh-wb-aibtn', disabled: aiBusy === true, onClick: aiApplyAll },
+              '全部按首选建议加入'),
+          ),
+          aiTasks.map((task) => h('div', { className: 'dsh-wb-aitask', key: task.key },
+            h('div', { className: 'dsh-wb-aititle', key: 't' },
+              h('span', null, task.title),
+              typeof task.due === 'string' && task.due !== ''
+                ? h('span', { className: 'dsh-wb-aimeta', key: 'd' }, task.due) : null,
+              typeof task.priority === 'string' && task.priority !== ''
+                ? h('span', { className: 'dsh-wb-aimeta', key: 'p' }, priorityLabel(task.priority)) : null,
+              h('button', {
+                key: 'x',
+                className: 'dsh-wb-aibtn',
+                title: '丢弃这条',
+                onClick: () => setAiTasks((prev) => prev.filter((t) => t.key !== task.key)),
+              }, '×'),
+            ),
+            h('div', { className: 'dsh-wb-movepick', key: 'pick' },
+              h('span', { className: 'dsh-wb-movepicklabel' }, '归入：'),
+              (Array.isArray(task.candidates) ? task.candidates : []).map((c, i) => {
+                if (c.kind === 'plan') {
+                  return h('button', {
+                    key: 'c' + i,
+                    className: 'dsh-wb-chip' + (i === 0 ? ' sug' : ''),
+                    title: c.why,
+                    onClick: () => aiApply(task, c),
+                  }, (i === 0 ? '建议 ↳ ' : '↳ ') + c.title)
+                }
+                if (c.kind === 'inbox') {
+                  return h('button', {
+                    key: 'c' + i,
+                    className: 'dsh-wb-chip',
+                    title: c.why,
+                    onClick: () => aiApply(task, c),
+                  }, '收件箱')
+                }
+                // 新建计划：输入框 + 按钮一组。它跟其它候选**平级**，
+                // 所以放在同一行里，而不是另起一块表单。
+                return h('span', { key: 'c' + i, className: 'dsh-wb-aipic' },
+                  h('input', {
+                    className: 'dsh-wb-ainew',
+                    placeholder: '新建计划…',
+                    value: task.newTitle === undefined ? '' : task.newTitle,
+                    onChange: (e) => setNewTitle(task.key, e.target.value),
+                  }),
+                  h('button', {
+                    className: 'dsh-wb-chip',
+                    title: c.why,
+                    onClick: () => aiApply(task, { kind: 'new', title: task.newTitle }),
+                  }, '＋建计划'),
+                )
+              }),
+            ),
+          )),
+        ),
+      )
+      return composer
+    }
+
     const refresh = React.useCallback(() => {
       if (sessionId === undefined || sessionId === null || sessionId === '') {
         store.set({ error: '拿不到当前会话 id，无法定位工作区', loading: false })
@@ -422,20 +680,35 @@ function apply(ctx) {
       }
       store.set({ loading: true })
       api('get', { sessionId })
-        .then((r) => store.set({ plan: r.plan, cwd: r.cwd, dir: r.dir, error: null, loading: false }))
+        .then((r) => store.set({
+          plan: r.plan, cwd: r.cwd, dir: r.dir,
+          // ai 是**派生量、不落盘**：宿主有没有模型服务、默认模型是谁，每次现问。
+          // 面板据此决定要不要渲染那个入口——比「渲染出来点了才报错」强。
+          ai: r.ai === null || r.ai === undefined ? { available: false } : r.ai,
+          error: null, loading: false,
+        }))
         .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e), loading: false }))
     }, [sessionId])
 
     React.useEffect(() => { refresh() }, [refresh])
 
-    /** 所有写入都收敛到这一个函数：统一拿回新计划、统一清错。 */
+    /**
+     * 所有写入都收敛到这一个函数：统一拿回新计划、统一清错。
+     * **返回这个 Promise**：「先建计划、再把待办挂进去」这类两步写入要靠它串起来
+     * （第二步要用到第一步返回的新计划 id）。出错时 resolve 成 null，
+     * 因为错误已经进 store.error 了，不能让调用方再崩一次。
+     */
     const write = React.useCallback((method, args, onOk) => {
-      api(method, Object.assign({ sessionId }, args))
+      return api(method, Object.assign({ sessionId }, args))
         .then((r) => {
           store.set({ plan: r.plan, error: null, moving: null, adding: null })
           if (typeof onOk === 'function') onOk(r)
+          return r
         })
-        .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
+        .catch((e) => {
+          store.set({ error: e instanceof Error ? e.message : String(e) })
+          return null
+        })
     }, [sessionId])
 
     const setTodo = React.useCallback((id, status) => write('todo-set', { todo: id, status }), [write])
@@ -957,6 +1230,15 @@ function apply(ctx) {
         sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部展开', onClick: () => applyCollapse([]) }, '⊞') : null,
         h('button', { className: 'dsh-wb-icon', title: '留档一个版本', onClick: snapshot, disabled: !sum.hasPlan }, '⤓'),
         h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, '⟳'),
+        // AI 入口。宿主没有模型服务时（state.ai.available=false）**不渲染**——
+        // 给一个点了就报错的按钮，等于把「这里不能用」这件事藏到点之后。
+        state.ai !== null && state.ai !== undefined && state.ai.available === true
+          ? h('button', {
+            className: 'dsh-wb-icon',
+            title: 'AI 导入：用语音或图片建任务，并建议归到哪个计划',
+            onClick: () => setAiOpen(true),
+          }, '✨ AI')
+          : null,
       ),
     ))
     rows.push(h('div', { className: 'dsh-wb-bar', key: 'bar' },
@@ -985,6 +1267,12 @@ function apply(ctx) {
     if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
     if (state.error !== null && state.error !== undefined) {
       rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
+    }
+    // AI 块插在**错误条之后、列表之前**：它是「往这个计划里加东西」的入口，
+    // 位置要在内容之上，但不能越过错误提示（那会把报错顶下去看不见）。
+    {
+      const block = aiBlock()
+      if (block !== null) rows.push(block)
     }
 
     const body = []

@@ -9,7 +9,7 @@
 import { test, before } from 'node:test'
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { readFileSync, existsSync } from 'node:fs'
+import { readFileSync, existsSync, readdirSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -26,7 +26,7 @@ before(() => {
 })
 
 test('build 产出 host 与 client 三个文件', () => {
-  for (const f of ['index.js', 'store.js', 'client.js']) {
+  for (const f of ['index.js', 'store.js', 'ai.js', 'client.js']) {
     assert.ok(existsSync(join(lib, f)), '缺少构建产物 ' + f)
   }
 })
@@ -165,8 +165,24 @@ test('host 半身注册了完整的 plan_* 工具集（节点模型）', () => {
 
 test('host 半身暴露 /api/workbench 数据面', () => {
   assert.match(host, /'\/api\/workbench' \+ path/)
-  for (const route of ['/get', '/todo-set', '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot', '/history']) {
+  for (const route of ['/get', '/ai-parse', '/todo-set', '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot', '/history']) {
     assert.ok(host.includes("route('" + route + "'"), 'host 缺少路由 ' + route)
+  }
+})
+
+test('host 半身每个 src 文件都被拷进 lib（漏一个就是运行时「找不到模块」）', () => {
+  // 加 host 侧新文件时最容易漏的是 scripts/build.mjs 的 HOST_FILES 清单——
+  // 漏了以后 --dump-config 照样过（它只查组合树），只有真跑起来才报找不到模块。
+  const script = readFileSync(join(root, 'scripts', 'build.mjs'), 'utf8')
+  const listed = (script.match(/HOST_FILES = \[([^\]]+)\]/) || [])[1] ?? ''
+  const names = [...listed.matchAll(/'([^']+)'/g)].map((m) => m[1])
+  assert.ok(names.length >= 3, 'HOST_FILES 应当已列出 host 侧的多个文件')
+  for (const name of names) {
+    assert.ok(existsSync(join(root, 'lib', name)), 'lib/' + name + ' 不存在（src 里加了但没进 HOST_FILES？）')
+  }
+  // 反向：src 下新增的 .js 若没进清单，这里就会漏——所以顺手钉住 src 的清单。
+  for (const name of readdirSync(join(root, 'src')).filter((f) => f.endsWith('.js'))) {
+    assert.ok(names.includes(name), 'src/' + name + ' 没有出现在 HOST_FILES 里')
   }
 })
 

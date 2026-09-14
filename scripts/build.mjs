@@ -18,7 +18,10 @@ const lib = join(root, 'lib')
 mkdirSync(lib, { recursive: true })
 
 // ---- Host 半身 ----
-const HOST_FILES = ['index.js', 'store.js']
+// ai.js 是与模型打交道的那半边（提示词 / 回复解析 / 归位建议合并），纯 ESM，
+// 与 index.js、store.js 一起直接进 lib/。新增 host 侧文件必须同时加到这个清单，
+// 否则运行时会「找不到模块」，而 --dump-config 只查组合树、查不出来。
+const HOST_FILES = ['index.js', 'store.js', 'ai.js']
 for (const file of HOST_FILES) {
   copyFileSync(join(root, 'src', file), join(lib, file))
 }

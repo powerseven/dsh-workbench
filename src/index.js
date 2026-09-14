@@ -23,6 +23,8 @@
  * API，agent 花在「该用哪个」上的注意力迟早超过事情本身。
  */
 
+import { randomUUID } from 'node:crypto'
+
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DELEGATE_STATUS,
@@ -68,8 +70,19 @@ import {
   typeOf,
   unverifiedList,
 } from './store.js'
+import {
+  MAX_IMAGES,
+  aiSystemPrompt,
+  aiUserText,
+  attachSuggestions,
+  collectText,
+  parseAiReply,
+  planOutline,
+} from './ai.js'
 
 export const name = 'dsh-workbench'
+// 只声明 tools：llm / attachments 是**可选**依赖（宿主没有模型服务时工具照常能
+// 用），所以不在 inject 里写死，改成用到的时候 ctx.get 现取、取不到就给一句人话。
 export const inject = ['tools']
 
 /** 一个工作区一个 store，按 cwd 缓存（避免每次调用重新建对象）。 */
@@ -554,14 +567,19 @@ export function apply(ctx) {
       res.end(JSON.stringify(body))
     }
 
-    const MAX_BODY_BYTES = 1024 * 1024
-    const readBody = (req) => new Promise((resolve, reject) => {
+    const DEFAULT_MAX_BODY_BYTES = 1024 * 1024
+    /**
+     * /ai-parse 要收 base64 图片，1MiB 根本不够（一张截图转 base64 就三四 MiB），
+     * 所以请求体上限按路由给。**不统一抬到 8MiB**：其余路由都是几十字节的 JSON，
+     * 给它们放大上限只是白白扩大攻击面。
+     */
+    const readBody = (req, maxBytes = DEFAULT_MAX_BODY_BYTES) => new Promise((resolve, reject) => {
       let data = ''
       let size = 0
       req.on('data', (chunk) => {
         size += chunk.length
-        if (size > MAX_BODY_BYTES) {
-          const err = new Error('请求体过大（上限 1MiB）')
+        if (size > maxBytes) {
+          const err = new Error('请求体过大（上限 ' + Math.round(maxBytes / 1024 / 1024) + 'MiB）')
           err.statusCode = 413
           reject(err)
           req.destroy()
@@ -596,11 +614,59 @@ export function apply(ctx) {
       throw new Error('找不到会话 ' + sessionId + ' 的工作区目录（会话可能已关闭）')
     }
 
-    const route = (path, handler) => {
+    const AI_MAX_BODY_BYTES = 12 * 1024 * 1024
+    /** 一次模型调用最多等 90 秒；超时宁可报错，也不要让面板一直转圈。 */
+    const AI_TIMEOUT_MS = 90_000
+
+    /**
+     * AI 入口是否可用。**派生量，不落盘**：每次现问宿主有没有 llm 服务与默认模型。
+     * 面板据此决定要不要渲染那个入口——比「渲染出来点了才报错」强。
+     * llm / agentDefaultModel 都是**可选**服务：宿主没装模型插件时这里只是
+     * available=false，工具与面板其它部分照常工作。
+     */
+    const aiStatus = () => {
+      const llm = serverCtx.get('llm')
+      if (llm === undefined || llm === null) {
+        return { available: false, provider: '', model: '', reason: '宿主没有可用的模型服务（llm）' }
+      }
+      const defaults = serverCtx.get('agentDefaultModel')
+      const sel = defaults !== undefined && defaults !== null && typeof defaults.currentSelection === 'function'
+        ? defaults.currentSelection() : null
+      const provider = sel !== null && sel !== undefined && typeof sel.provider === 'string' ? sel.provider : ''
+      const model = sel !== null && sel !== undefined && typeof sel.model === 'string' ? sel.model : ''
+      if (provider === '' || model === '') {
+        return { available: false, provider: '', model: '', reason: '还没有选定默认模型' }
+      }
+      return { available: true, provider, model, reason: '' }
+    }
+
+    /**
+     * 图片能不能交给当前模型。
+     * 查得到能力就按能力判（明确不支持 → 拦下来并说清换哪个）；查不到就**放行**，
+     * 让它走到模型那儿由模型自己报错——因为「查不到」往往是宿主版本差异，
+     * 为此挡掉一个本来能用的功能不划算。
+     */
+    const assertImageCapable = async (llm, status) => {
+      if (typeof llm.resolveModelInfo !== 'function') return
+      let info = null
+      try {
+        info = await llm.resolveModelInfo(status.provider, status.model)
+      } catch (e) {
+        return
+      }
+      const modes = info !== null && info !== undefined && Array.isArray(info.inputModalities) ? info.inputModalities : []
+      if (modes.length > 0 && !modes.includes('image')) {
+        throw new Error('当前模型「' + status.model + '」不支持图片输入：换一个带视觉能力的模型，或只用文字 / 语音')
+      }
+    }
+
+    const IMAGE_TYPES = ['image/png', 'image/jpeg', 'image/webp', 'image/gif']
+
+    const route = (path, handler, maxBytes = DEFAULT_MAX_BODY_BYTES) => {
       serverCtx.webServer.register({
         kind: 'exact',
         path: '/api/workbench' + path,
-        handler: (req, res) => Promise.resolve(handler(req, res)).catch((e) => {
+        handler: (req, res) => Promise.resolve(handler(req, res, maxBytes)).catch((e) => {
           const status = e !== null && typeof e === 'object' && e.statusCode ? e.statusCode : 500
           json(res, { ok: false, error: e instanceof Error ? e.message : String(e) }, status)
         }),
@@ -612,8 +678,100 @@ export function apply(ctx) {
       const cwd = resolveCwd(body.sessionId)
       const store = storeFor(cwd)
       const plan = await store.load()
-      json(res, { ok: true, cwd, dir: store.dir, plan: withProgress(plan, store.root) })
+      json(res, { ok: true, cwd, dir: store.dir, ai: aiStatus(), plan: withProgress(plan, store.root) })
     })
+
+    /**
+     * AI 入口：把一段文本（语音转写 / 粘贴的纪要）或几张图片交给模型，换回一组
+     * 结构化待办，并附「该归到哪个计划」的候选。**不写任何数据**——采纳哪条、
+     * 建在哪儿，由用户在面板上点，之后仍走 /node-add。
+     *
+     * 为什么**不给 agent 也加一个 plan_ai_* 工具**：这个能力的价值是「人手上有一张
+     * 截图 / 一段口述，不想自己整理成待办」。agent 从来不缺这个能力——它自己就
+     * 看得见图片、读得懂口述，直接调 plan_node_add 即可，中间插一次模型调用只会
+     * 多一层失真。工具面因此保持不动（多一个工具，agent 每次决策就多一个候选）。
+     * 面板这条路之所以必要，是因为**人**没法把自己看到的东西直接变成结构化数据。
+     *
+     * 归位候选复用 store 的 suggestParent（与收件箱那条待办同一份权重、同一套解释），
+     * 模型只负责说「我觉得归到叫 X 的计划」，由 matchPlan 去比对——这样建议
+     * 一半可解释、一半有语义，两条路互为兜底。
+     */
+    route('/ai-parse', async (req, res, maxBytes) => {
+      const body = await readBody(req, maxBytes ?? AI_MAX_BODY_BYTES)
+      const store = storeFor(resolveCwd(body.sessionId))
+      const plan = await store.load()
+      const status = aiStatus()
+      if (status.available === false) throw new Error('AI 解析不可用：' + status.reason)
+
+      const text = optStr(body.text) ?? ''
+      const sent = Array.isArray(body.images) ? body.images : []
+      if (sent.length > MAX_IMAGES) throw new Error('一次最多 ' + MAX_IMAGES + ' 张图片')
+      if (text === '' && sent.length === 0) {
+        throw new Error('没有可解析的内容：说点什么、贴一段文字，或选一张图片')
+      }
+
+      const content = []
+      if (sent.length > 0) {
+        const attachments = serverCtx.get('attachments')
+        if (attachments === undefined || attachments === null) {
+          throw new Error('宿主没有附件服务（attachments），处理不了图片')
+        }
+        await assertImageCapable(serverCtx.get('llm'), status)
+        const inputs = []
+        for (const img of sent) {
+          if (img === null || typeof img !== 'object') throw new Error('图片格式不对')
+          const mediaType = typeof img.mediaType === 'string' ? img.mediaType : ''
+          const data = typeof img.data === 'string' ? img.data : ''
+          if (!IMAGE_TYPES.includes(mediaType)) {
+            throw new Error('不支持的图片类型：' + (mediaType === '' ? '未声明' : mediaType)
+              + '（只认 ' + IMAGE_TYPES.join(' / ') + '）')
+          }
+          if (data === '' || !/^[A-Za-z0-9+/]+={0,2}$/.test(data)) throw new Error('图片数据不是合法的 base64')
+          inputs.push({
+            data: Buffer.from(data, 'base64'),
+            mediaType,
+            ...(typeof img.name === 'string' && img.name !== '' ? { name: img.name } : {}),
+          })
+        }
+        // 先入库（内容寻址、规范化尺寸），模型拿到的才是 ImageAttachmentRef。
+        for (const ref of await attachments.saveImages(inputs)) {
+          content.push({ type: 'image', attachment: ref })
+        }
+      }
+      // 文字块压在图片**之后**：先给模型看图，再让它按指令拆条，符合视觉模型的习惯。
+      content.push({ type: 'text', text: aiUserText(text) })
+
+      const messages = [{
+        id: randomUUID(),
+        role: 'user',
+        content,
+        source: { kind: 'plugin', plugin: 'dsh-workbench' },
+      }]
+      let raw = ''
+      try {
+        raw = await collectText(serverCtx.get('llm'), {
+          provider: status.provider,
+          model: status.model,
+          messages,
+          system: aiSystemPrompt(planOutline(plan), todayStr()),
+          maxTokens: 2048,
+          signal: AbortSignal.timeout(AI_TIMEOUT_MS),
+        })
+      } catch (e) {
+        if (e !== null && typeof e === 'object' && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
+          throw new Error('模型 ' + Math.round(AI_TIMEOUT_MS / 1000) + ' 秒没有返回，素材可能太复杂，少一点再试')
+        }
+        throw e
+      }
+
+      const parsed = parseAiReply(raw)
+      if (parsed.error !== '') throw new Error(parsed.error)
+      json(res, {
+        ok: true,
+        tasks: attachSuggestions(plan, parsed.tasks, todayStr()),
+        model: { provider: status.provider, model: status.model },
+      })
+    }, AI_MAX_BODY_BYTES)
 
     /**
      * 勾选待办。与工具走同一条写入路径（含版本归档）。
