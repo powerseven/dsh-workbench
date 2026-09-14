@@ -63,6 +63,7 @@ import {
   setNodeType,
   setReceipt,
   setStatus,
+  suggestParent,
   todoCounts,
   todayStr,
   topPlans,
@@ -1265,4 +1266,106 @@ test('renderMarkdown 标出落后与证据，收件箱里的完成项也算', ()
   assert.match(md, /完成但无证据/, '无证据的完成项要标出来')
   assert.match(md, /证据 1 条：文件/, '有证据的写出条数与类型')
   assert.match(md, /完成但无证据：1 项待核验/)
+})
+
+// ============================================================ 归位建议
+
+/**
+ * 一份够用的计划树：顶层一个治理专项（带负责人、周期、量化单位），下面两个子计划，
+ * 另有一个完全不相干的攻坚计划（用来验「不会硬凑建议」）。
+ */
+function suggestFixture() {
+  return {
+    schema: 2, version: 1, title: 't',
+    nodes: [
+      {
+        id: 'n1', type: 'plan', title: 'Q4 数据治理专项', owner: '张三',
+        start: '2026-09-01', end: '2026-09-20',
+        metric: { target: 12, current: 3, unit: '条' },
+        children: [
+          { id: 'n2', type: 'plan', title: '数据资产盘点', children: [
+            { id: 'n3', type: 'todo', title: '梳理核心表清单（含负责人与更新频率）' },
+          ] },
+          { id: 'n5', type: 'plan', title: '质量规则落地', children: [
+            { id: 'n6', type: 'todo', title: '接入 12 条校验规则' },
+          ] },
+        ],
+      },
+      { id: 'n9', type: 'plan', title: '低电压治理攻坚', start: '2026-10-01', end: '2026-12-31', children: [] },
+    ],
+  }
+}
+
+const suggestFor = (title, extra) => suggestParent(
+  suggestFixture(),
+  Object.assign({ id: 'x', type: 'todo', title }, extra === undefined ? {} : extra),
+  '2026-09-14',
+)
+
+test('归位建议：与子项用词重合时推荐那个子计划，理由写清出处', () => {
+  const s = suggestFor('补充核心表的负责人与更新频率')
+  assert.ok(s.length > 0, '应当给出建议')
+  assert.equal(s[0].id, 'n2', '重合的那个子计划是「数据资产盘点」')
+  assert.match(s[0].why, /子项用词重合/)
+})
+
+test('归位建议：与计划标题重合时权重最高，超过子项', () => {
+  const s = suggestFor('接入校验规则的复核')
+  assert.equal(s[0].id, 'n5')
+  assert.match(s[0].why, /计划标题用词重合/)
+})
+
+test('归位建议：命中计划的量化单位', () => {
+  // 「再补 8 条」——除了单位「条」之外没有任何字面重合，于是只有 n1 命中。
+  const s = suggestFor('再补 8 条')
+  assert.equal(s.length, 1)
+  assert.equal(s[0].id, 'n1')
+  assert.match(s[0].why, /量化单位「条」/)
+})
+
+test('归位建议：截止日期落在计划周期内', () => {
+  // 标题刻意没有字面重合，只靠周期命中 n1（09-01~09-20），n9 是 10 月之后。
+  const s = suggestFor('交一下周报', { due: '2026-09-15' })
+  assert.equal(s[0].id, 'n1')
+  assert.match(s[0].why, /落在计划周期/)
+})
+
+test('归位建议：提到负责人', () => {
+  const s = suggestFor('让张三看看这个')
+  assert.equal(s[0].id, 'n1')
+  assert.match(s[0].why, /负责人 张三/)
+})
+
+test('归位建议：没有够格的依据就一个都不给（不硬凑）', () => {
+  // 这是最容易做坏的一条：宁可不说，也不要给一个「反正总会共用一个二字词」的随机建议。
+  assert.deepEqual(suggestFor('预约体检'), [], '完全不相干 → 无建议')
+  // 只和一个「子项」重合一处 = 1 分，低于阈值 2，同样不给。
+  assert.deepEqual(suggestFor('接入新机器'), [], '仅碰巧共用一个词 → 无建议')
+})
+
+test('归位建议：不会把节点推荐到它自己的子孙下', () => {
+  // 建议的候选集必须与 moveNode 用同一条合法性判定，否则会出现「一点就报错」的推荐。
+  const plan = suggestFixture()
+  plan.nodes[1].title = '数据治理二期' // 让 n9 也有字面重合，于是它成为唯一合法候选
+  const s = suggestParent(plan, plan.nodes[0], '2026-09-14')
+  const ids = s.map((x) => String(x.id))
+  assert.ok(ids.includes('n9'), '合法的候选应当出现')
+  assert.ok(!ids.includes('n2') && !ids.includes('n5'), '自己的子孙不能被推荐')
+  assert.ok(!ids.includes('n1'), '自己不能被推荐')
+})
+
+test('归位建议：最多三条，且同分时的顺序稳定', () => {
+  const plan = {
+    schema: 2, version: 1, title: 't',
+    nodes: ['A', 'B', 'C', 'D'].map((k, i) => ({
+      id: 'p' + i, type: 'plan', title: '数据' + k, children: [],
+    })),
+  }
+  const node = { id: 'x', type: 'todo', title: '数据相关的事' }
+  const s = suggestParent(plan, node, '2026-09-14')
+  assert.equal(s.length, 3, 'limit 默认 3')
+  // 分数相同 → 排序必须稳定（stable sort + 树里从上到下的顺序），
+  // 否则界面上的建议会自己跳位置。
+  assert.deepEqual(s.map((x) => x.id), ['p0', 'p1', 'p2'])
+  assert.deepEqual(suggestParent(plan, node, '2026-09-14'), s, '同一个计划每次算出来应当一致')
 })

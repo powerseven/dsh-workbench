@@ -906,6 +906,116 @@ export function appendChild(plan, node, parentRef) {
   return node
 }
 
+// ============================================================ 归位建议
+
+/**
+ * 把一段文字切成字符二元组。
+ *
+ * 中文没有词边界，所以不引入分词（那要带词典，还得养一份不断变旧的词表）。
+ * 用 bigram 近似「用词」：「数据治理」→ 数据 / 据治 / 治理。两边取交集算重合，
+ * 比逐字比对更能反映「说的是同一件事」，又完全不依赖模型或词典。
+ * 标点与空白先剔除，免得「，」「、」这类高频符号把相似度虚高。
+ */
+function bigrams(text) {
+  const s = String(text === null || text === undefined ? '' : text).replace(/[\s\p{P}\p{S}]/gu, '')
+  const out = new Set()
+  if (s.length === 1) out.add(s)
+  for (let i = 0; i + 1 < s.length; i++) out.add(s.slice(i, i + 2))
+  return out
+}
+
+/** 两个集合的交集大小。 */
+function overlap(a, b) {
+  let n = 0
+  for (const x of a) if (b.has(x)) n++
+  return n
+}
+
+/**
+ * 给一条「还没归位的顶层待办」推荐该放到哪个计划下，按分数降序。
+ *
+ * 为什么是**规则打分**而不是让模型判断：
+ *   1. 面板要即时给结果，归位是高频小动作，等一次模型调用不划算；
+ *   2. **建议必须能解释**——用户要能看懂「为什么推荐这个计划」才敢一键接受，
+ *      模型给的理由往往事后编得通、事前对不上；
+ *   3. 纯函数，可以逐条写进 store.test.mjs 钉住，改权重时能立刻看见行为变化。
+ * 代价是只能抓字面信号，认不出「回填」≈「补数」这类语义类比——这是有意的取舍。
+ *
+ * 候选集只包含**能把节点合法放进去**的计划（复用 isDescendantOf，与 moveNode
+ * 同一处判定，免得两处各写一份、日后只改一边）。
+ *
+ * 四个信号，每个都带一句人话理由；分数是权重之和，`why` 取权重最高的那条：
+ *   字面重合（计划标题 ×3 / 子项标题 ×1）、量化单位命中 ×2、
+ *   截止日期落在计划周期内 ×2、提到负责人 ×3。
+ */
+export function suggestParent(plan, node, today = todayStr(), limit = 3) {
+  if (plan === null || plan === undefined || node === null || node === undefined) return []
+
+  const title = bigrams(node.title)
+  if (title.size === 0) return []
+
+  const due = opt(node.due)
+  const out = []
+  // collectNodes 的深度优先顺序就是「树里从上到下」的稳定顺序，用它给同分兜底，
+  // 保证同一个计划每次算出来的顺序一样（否则界面上的建议会自己跳位置）。
+  for (const hit of collectNodes(plan, 'plan')) {
+    const p = hit.node
+    if (p.id === node.id) continue
+    // 与 moveNode 同一条合法性判定：不能把节点放进自己的子孙里。
+    if (isDescendantOf(plan, p, node)) continue
+
+    const signals = []
+
+    // ① 与计划标题的用词重合。权重最高：标题就是人为这个计划起的名字，
+    //    最接近「这条待办在说哪件事」。
+    const own = overlap(title, bigrams(p.title))
+    if (own > 0) signals.push({ score: own * 3, why: '与计划标题用词重合 ' + own + ' 处' })
+
+    // ② 与子项标题的重合。子项多的大计划会靠随机命中累积分数，所以封顶 3。
+    const kids = bigrams(childrenOf(p).map((c) => String(c.title ?? '')).join(' '))
+    const child = Math.min(overlap(title, kids), 3)
+    if (child > 0) signals.push({ score: child, why: '与它的子项用词重合 ' + child + ' 处' })
+
+    // ③ 量化单位命中：计划按「条/个/台区」计数时，待办里出现同一个量词往往就是同一批活。
+    const unit = p.metric !== null && p.metric !== undefined && typeof p.metric === 'object'
+      ? opt(p.metric.unit) : undefined
+    if (unit !== undefined && String(node.title ?? '').includes(unit)) {
+      signals.push({ score: 2, why: '提到该计划的量化单位「' + unit + '」' })
+    }
+
+    // ④ 截止日期落在计划周期内。周期不完整（只有 start 或只有 end）时不猜。
+    const start = opt(p.start)
+    const end = opt(p.end)
+    if (due !== undefined && start !== undefined && end !== undefined && due >= start && due <= end) {
+      signals.push({ score: 2, why: '截止 ' + due + ' 落在计划周期 ' + start + '~' + end + ' 内' })
+    }
+
+    // ⑤ 提到负责人。名字是很强的信号，但容易被同名误伤，所以只认完整包含。
+    const owner = opt(p.owner)
+    if (owner !== undefined && String(node.title ?? '').includes(owner)) {
+      signals.push({ score: 3, why: '提到负责人 ' + owner })
+    }
+
+    if (signals.length === 0) continue
+    let best = signals[0]
+    for (const s of signals) if (s.score > best.score) best = s
+    out.push({
+      id: String(p.id ?? ''),
+      title: String(p.title ?? ''),
+      path: hit.path,
+      score: signals.reduce((sum, s) => sum + s.score, 0),
+      why: best.why,
+    })
+  }
+
+  // 阈值 2：单个「子项用词重合一处」只有 1 分，不足以值得推荐（一条待办总能和
+  // 某处碰巧共用一个二字词），而标题重合一处就是 3 分，够格。
+  return out
+    .filter((s) => s.score >= 2)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, limit)
+}
+
 /**
  * 移动一个节点到新的父节点下（parent 为空 = 移到顶层），可指定落位下标。
  * 这是「收件箱归位」的实现：把游离待办拖进某个计划里。
