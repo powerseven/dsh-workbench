@@ -17,3 +17,6 @@ plan/
 *.swp
 .idea/
 .vscode/
+
+# 插件在本地写下的 agent 工作笔记（本机状态，不是插件源码）
+.workbuddy/
