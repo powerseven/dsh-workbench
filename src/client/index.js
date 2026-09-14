@@ -91,7 +91,11 @@ const CSS = [
   '.dsh-wb-bar-fill{height:100%;background:var(--wb-accent);transition:width var(--wb-dur) var(--wb-ease);}',
   // ── 筛选条 ──────────────────────────────────────────────────────────────
   '.dsh-wb-filters{display:flex;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);flex-wrap:wrap;flex:none;border-bottom:1px solid var(--wb-line);}',
-  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:0 var(--wb-sp-4);font:var(--dsw-font-xxxs-11);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  // 芯片的横向内边距只给 6px。这 6 个筛选芯片在窄宽（≈420px 的侧栏）下总宽 383px，
+  // 加上 5 个 4px 间隙是 403px——筛选行可用宽只要低于这个数就会折成两行，而第二行
+  // 只挂一个孤零零的芯片，整块高度还会从 37px 涨到 49px。用 sp-4(8px) 时 6 个芯片
+  // 各宽 4px，实测就会折行。纵向补回 2px 是为了让 11px 的字有正常行高，不与折行冲突。
+  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--dsw-font-xxxs-11);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
   '.dsh-wb-chip.on{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);font-weight:600;}',
@@ -99,7 +103,9 @@ const CSS = [
   '.dsh-wb-body{flex:1;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
   '.dsh-wb-plan{margin-bottom:var(--wb-sp-4);}',
-  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-2);}',
+  // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
+  // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
+  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
   '.dsh-wb-planid{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
   '.dsh-wb-plantitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
   '.dsh-wb-planpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
@@ -108,15 +114,24 @@ const CSS = [
   '.dsh-wb-planbar{height:2px;background:var(--wb-line);border-radius:var(--wb-pill);margin-bottom:var(--wb-sp-3);overflow:hidden;}',
   '.dsh-wb-planbar > div{height:100%;background:var(--wb-accent);}',
   // ── 待办行 ──────────────────────────────────────────────────────────────
-  '.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-2);border-radius:var(--wb-r-2);margin:var(--wb-sp-1) 0;transition:background var(--wb-dur) var(--wb-ease);}',
+  // 待办行按「密」来配：这个面板住在底部工作台里，纵向空间是最稀缺的资源，
+  // 一行省 3px、11 行就能多露出一条半任务。所以纵向内边距只给 2px、行间距给 0，
+  // 行与行的分隔交给 hover 底色——顺带得到「整列连成一片」的列表观感。
+  // 行高不在这里写死，直接吃 .dsh-wb-wrap 的 var(--dsw-font-xs-13)（13px/20px），
+  // 与宿主自己的列表同一套行高标尺。
+  '.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);margin:0;transition:background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-task:hover{background:var(--wb-hover);}',
   '.dsh-wb-task input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
-  '.dsh-wb-tasktitle{flex:1;line-height:1.5;word-break:break-word;cursor:pointer;}',
+  '.dsh-wb-tasktitle{flex:1;word-break:break-word;cursor:pointer;}',
   // 完成态用「变灰」而不是 opacity：叠透明度会把对比度一起压下去。
   '.dsh-wb-tasktitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
   '.dsh-wb-tasktitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
   '.dsh-wb-taskdue{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);white-space:nowrap;}',
-  // 逾期可以直接上色：宿主的 error 语义色在白底有 4.5:1，是少数能当文字用的语义色。
+  // 逾期日期是全表唯一「红字」——有意保留，但要说清它的真实数字：宿主的 error
+  // token 在浅色下是 #ec1313，对面板底色 4.49:1，严格按不四舍五入的算法差 0.01
+  // 不到 AA 的 4.5:1（这里底色是纯底，没有软底再往下压，所以比胶囊那两处好）。
+  // 之所以接受：它是每行里唯一需要立刻行动的信号，换成中性色就被埋掉了；
+  // 而且宿主的 token 集里找不到「明暗两态都能安全当文字」的第二个红。
   '.dsh-wb-taskdue.overdue{color:var(--wb-danger);font-weight:600;}',
   // 行内动作按钮：以前 opacity:0 只在 hover 现身，键盘与触屏完全够不到。
   // 现在键盘用 :focus-within 揭示，触屏用 @media (hover:none) 常驻。
@@ -128,14 +143,21 @@ const CSS = [
   // 「中/低」都不换更浅的灰（那会掉到 AA 以下），改用描边与留白区分。
   '.dsh-wb-pri.normal{color:var(--wb-fg-2);border-color:var(--wb-line-2);}',
   '.dsh-wb-pri.low{color:var(--wb-fg-2);}',
-  // 「高」用软底而不是实心红：实心红在暗色下配白字只有 2.6:1。
-  '.dsh-wb-pri.high{color:var(--wb-danger);background:var(--wb-danger-soft);border-color:var(--wb-danger);font-weight:600;}',
+  // 「高」的红只走描边 + 软底，文字保持中性。两个方向都试算过、都不安全：
+  // 浅色下的红是 #ec1313，对纯白 4.49:1，再叠一层 5% 红软底就掉到 4.45:1
+  // （AA 要 4.5:1）；暗色下换成 #f25a5a，实心红配白字只有 3.29:1。
+  // 既然红两个方向都当不了安全的文字色，就让它只承担「形状 + 底色」的信息，
+  // 顺带把「三行红字」的噪声降成「三个红边小胶囊」。
+  '.dsh-wb-pri.high{color:var(--wb-fg);background:var(--wb-danger-soft);border-color:var(--wb-danger);font-weight:600;}',
   '.dsh-wb-pri:hover{filter:brightness(.95);}',
   // ── 委派标记 ────────────────────────────────────────────────────────────
   // 以前用紫色（#8250df）——宿主的语义色里没有紫，所以它一眼就不像宿主的一部分。
   // 委派是「进行中」，归到强调色的软底；逾期才转 danger。
-  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);background:var(--wb-accent-soft);color:var(--wb-fg);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;}',
-  '.dsh-wb-deleg.late{background:var(--wb-danger-soft);color:var(--wb-danger);font-weight:600;}',
+  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid transparent;background:var(--wb-accent-soft);color:var(--wb-fg);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;}',
+  // 逾期仍然由红来表意，但同样只落在底色与描边上——理由同上面的「高」：
+  // 红字叠在红软底上是 4.45:1，达不到 4.5:1。基础态先声明透明描边是为了让这里
+  // 只改颜色、不改盒子尺寸，胶囊不会因逾期与否而变宽一像素。
+  '.dsh-wb-deleg.late{background:var(--wb-danger-soft);border-color:var(--wb-danger);color:var(--wb-fg);font-weight:600;}',
   // ── 管控缺口 ────────────────────────────────────────────────────────────
   '.dsh-wb-warn{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
   // ── 落后于周期 ──────────────────────────────────────────────────────────
@@ -179,7 +201,7 @@ const CSS = [
   '.dsh-wb-rootadd{display:block;width:100%;margin-top:var(--wb-sp-5);border:1px dashed var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-3) var(--wb-sp-4);font:inherit;cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-rootadd:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-accent);}',
   // ── 聚焦列表 ────────────────────────────────────────────────────────────
-  '.dsh-wb-focus{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);margin-bottom:var(--wb-sp-1);transition:background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-focus{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);margin:0;transition:background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-focus:hover{background:var(--wb-hover);}',
   '.dsh-wb-focus input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
@@ -188,8 +210,10 @@ const CSS = [
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
-  // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到。
-  '@media (hover:none){.dsh-wb-act{opacity:1;}}',
+  // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
+  // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
+  // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
+  '@media (hover:none){.dsh-wb-act{opacity:1;}.dsh-wb-task,.dsh-wb-focus{padding:var(--wb-sp-3) var(--wb-sp-2);}}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
 ].join('')

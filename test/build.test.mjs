@@ -122,6 +122,25 @@ test('面板字体与圆角取宿主标尺，且胶囊配了 corner-shape:round'
   assert.match(flat, /corner-shape:round/)
 })
 
+test('软底状态胶囊的文字走中性色，语义色只做描边与底色', () => {
+  // 宿主的红在浅色下是 #ec1313：对纯底 4.49:1（恰在 AA 的 4.5:1 线上），再叠一层
+  // 5% 红软底就掉到 4.45:1，就不达标了。所以**行内小胶囊**里的红只承担描边与底色，
+  // 文字一律中性（near-black / near-white，实测 18.9:1）。
+  //
+  // 例外是 `.dsh-wb-err`（整幅告警条）：一是它面积大、红字是通行约定，二是它的
+  // 信息不靠颜色单独承载。这条断言只钉「小胶囊」，不去限制告警条。
+  const { raw } = cssBlock()
+  for (const sel of ['.dsh-wb-pri.high', '.dsh-wb-deleg.late']) {
+    const line = raw.split('\n').find((l) => l.includes("'" + sel + '{'))
+    assert.ok(line, '找不到规则 ' + sel)
+    const body = line.slice(line.indexOf(sel + '{') + sel.length + 1)
+    assert.match(body, /(^|;)color:var\(--wb-fg\)/, sel + ' 的文字色应当是中性 token')
+    // 注意不能直接查 'color:var(--wb-danger)'：'border-color:var(--wb-danger)'
+    // 里也含这个子串，会把正确的描边误判成文字色。
+    assert.doesNotMatch(body, /(^|;)color:var\(--wb-danger\)/, sel + ' 不应把 danger 当文字色')
+  }
+})
+
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {
   const requires = [...client.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2])
   assert.deepEqual([...new Set(requires)], ['react'], '客户端只应 require react')
