@@ -5,10 +5,16 @@
 ## 这个项目是什么
 
 `dsh-workbench` 是一个 **DeepSeek Harness（dsh）Web 插件**，做「个人工作台」：
-工作计划的**目标拆解、进度跟踪与版本留档**，数据以 Markdown/JSON 落在用户
-自己的工作区里、纳入 git。
+工作计划的**待办 / 计划 / 子计划 / 委派**四条主线，加**重要程度（管控强度）**与
+**版本留档**；数据以 Markdown/JSON 落在用户自己的工作区里、纳入 git。
 
 它不是独立 web 应用。它跑在 `dsh web` 里，作为侧边栏的一个 tab 存在。
+
+**载体是硬约束：一切能力都必须落成 DSH 插件的两个面**——agent 工具 + 侧边栏面板。
+不做独立服务、不自建 LLM 通道、不自造会话与权限。需求侧只描述「要什么」，
+实现侧一律回答「怎么在插件的两个面上实现」。这条写在这里是为了防止需求漂移成
+「再起一个 web app」——那会丢掉本项目最大的优势：agent 天然在场、能自己读写计划。
+（需求方案见 [docs/PRD.md](./docs/PRD.md)，范围与模型见 [docs/SCOPE.md](./docs/SCOPE.md)。）
 
 ## 架构：一个包，两个半身
 
@@ -27,7 +33,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（54 个）
+node --test test/*.test.mjs   # 跑测试（133 个）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -47,7 +53,26 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 <workspace>/plan/.versions/     每次变更前的快照（版本留档）
 ```
 
-三层结构：`goal（目标）→ kr（关键结果）→ task（任务）`（叶子）。
+四类节点：`goal（计划）→ kr（子计划）→ task（待办）`，外加 `inbox[]`
+（不挂任何计划的游离待办，即**收件箱**）。收件箱是针对「收不进来」这个问题的解：
+记一条事的成本必须趋近于零，所以允许先记下来、之后再归位。
+
+每个节点都可以带三个**可选**字段（缺省行为与加字段之前完全一致，老 `plan.json`
+不需要迁移）：
+
+- `priority`：`high` / `normal`（默认） / `low` —— **管控强度开关，不是彩色标签**。
+  `high` 要求计划有周期与负责人、待办有截止；缺口由 `nodeWarnings()` 以**警告**
+  形式指出而**不硬拦**——在捕获的那一刻硬拦，人会干脆不记。默认 `normal` 也是有意的：
+  默认 `high` 会让人人标 `high`，管控机制立刻失效。
+- `delegate`：`{ to, at, expectAt, status }`，`status` ∈ `pending` / `accepted` /
+  `declined` / `returned`。两种逾期**分开算**：`overdueReceipt`（该去问一句「接不接」）
+  与 `overdueWork`（该去催进度）。重新委派会重置回执——换人意味着上一轮作废。
+- `doneAt` / `startedAt`：完成与开工时间戳，是所有时间维度统计（周报）的上游。
+  离开 `done` 会**清掉** `doneAt`，否则被撤回的完成会一直出现在「本周完成」里。
+
+**写入路径唯一**：面板（HTTP 面）与 agent 工具都调用 `store.js` 的同一组函数
+（`applyStatus` / `setPriority` / `setDelegate` / `setReceipt`），谁都不另写一套；
+每一次写入都自动归档版本，所以没有「绕过留档」的路径。
 
 **为什么 JSON 为真相、Markdown 为视图**：计划是需要程序增删改查的树（进度汇总、
 按 id 定位、版本回滚），直接解析 Markdown 需要稳健解析器且格式漂移会静默丢数据；
@@ -55,7 +80,8 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 写入走结构化路径（有校验），阅读与 diff 走 Markdown。改数据结构时不要破坏这个分工。
 
 进度是**派生量**，不落盘：`krProgress` 量化 KR 按 `current/target`，清单 KR 按任务
-完成比例；`goalProgress` 取各 KR 平均；`planProgress` 取各目标平均。
+完成比例；`goalProgress` 取各 KR 平均；`planProgress` 取各目标平均（**不含收件箱**——
+收件箱不是计划的一部分，它计入角标与统计，但不影响计划完成度）。
 
 ## 必须知道的坑（都踩过）
 
@@ -88,6 +114,12 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 
 6. **改 host 半身后必须重启**才生效；只测 `--dump-config` 不足以证明插件逻辑正确。
 
+7. **新增节点种类时，所有「按 kind 定位」的地方都要一起改。** 收件箱待办的
+   kind 是 `inbox` 而不是 `task`，`plan_task_set` 曾经只按 `kind='task'` 找，
+   于是「面板上勾一条收件箱待办」直接报「找不到 task」——纯函数测试和产物断言
+   都发现不了，是 `test/host.test.mjs`（真跑工具）抓出来的。现在统一走
+   `resolveTodo`（只接受叶子）与 `resolveAny`（任意节点）。
+
 ## 约定
 
 - **零构建期依赖**。`scripts/build.mjs` 只做拷贝 + 文本内联，不压缩不转译。
@@ -97,7 +129,14 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 - **`lib/` 不入库**，一切从 `src/` 生成。
 - **纯逻辑抽到 `logic.cjs` / `store.js`** 以便 Node 里单测；React 组件里不留可测逻辑。
 - 注释和面向用户的文案用中文，标识符用英文。
-- 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言。
+- 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言（现在 15 个工具、
+  7 条 HTTP 路由）。
+- **跨半身重复的纯逻辑必须在测试里钉住一致性。** host 是 ESM、client 是 CJS，
+  无法共享模块，像 `nextPriority` 这种映射只能各写一份——那就用断言把两份绑在一起
+  （见 `test/logic.test.mjs`），否则改一侧忘另一侧，表现为「面板上点徽章跳到别的档」。
+- **测行为优先用 `test/host.test.mjs` 的集成测试**，它用假 Cordis 上下文驱动
+  **真实的工具定义与 HTTP 路由**，能挡住「工具接错函数、路由漏 sessionId、参数名写错」
+  这一类产物断言抓不到的错。产物断言只用于守「静默失效」（见坑 #1）。
 
 ## 协作与版本控制
 
