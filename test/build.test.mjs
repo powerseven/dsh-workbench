@@ -141,6 +141,18 @@ test('软底状态胶囊的文字走中性色，语义色只做描边与底色',
   }
 })
 
+test('样式纪律也覆盖 CSS 之外：JS 内联样式里不许出现硬编码颜色', () => {
+  // 补盲区。上面那条断言是「切出 const CSS = [...] 那一块」来查的，所以写在渲染代码里的
+  // 内联样式照样能溜过去——空态里那句 `color: 'rgba(127,127,127,.95)'` 就是这样漏了两轮，
+  // 一直到做列对齐、逐行读渲染代码时才发现。CSS 块的每一行都以引号或 + 开头，滤掉后
+  // 剩下的就是 JS 部分。
+  const src = readFileSync(join(root, 'src', 'client', 'index.js'), 'utf8')
+    .replace(/\/\/[^\n]*/g, '') // 先剥注释：注释里会拿色值举例，不剥会自己撞自己
+  const js = src.split('\n').filter((l) => !/^\s*['+]/.test(l)).join('\n')
+  const hits = js.match(/#[0-9a-fA-F]{3,8}\b|rgba?\(/g) || []
+  assert.deepEqual(hits, [], 'CSS 块之外出现了硬编码颜色：' + hits.join(' '))
+})
+
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {
   const requires = [...client.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2])
   assert.deepEqual([...new Set(requires)], ['react'], '客户端只应 require react')

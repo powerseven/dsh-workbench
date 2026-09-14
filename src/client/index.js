@@ -66,6 +66,13 @@ const CSS = [
   // 命名出来是为了让「不许写随手值」这条能被一眼检查。
   + '--wb-sp-1:2px;--wb-sp-2:4px;--wb-sp-3:6px;--wb-sp-4:8px;--wb-sp-5:12px;'
   + '--wb-r-1:4px;--wb-r-2:6px;--wb-r-3:8px;--wb-pill:999px;'
+  // 列宽令牌，只在「宽容器」（见下面的容器查询）下当固定轨道用。数值不是随手取的，
+  // 是量出来的上限（11px 字号下各徽章的自然宽度）：委派 135 / 落后 63 / 待核验 48 /
+  // 证据 21 / 重要程度 25 / 逾期 84 / 量化 39 / 百分比 24 / 动作 21，单位 px。
+  // 命名出来是为了让「不许写随手值」这条能被一眼检查——这些数能被复核。
+  + '--wb-col-deleg:9em;--wb-col-warn:1.3em;--wb-col-behind:5em;--wb-col-evid:3.7em;'
+  + '--wb-col-pri:2.4em;--wb-col-due:6.6em;--wb-col-q:3.2em;--wb-col-pct:2em;'
+  + '--wb-col-act:1.7em;--wb-col-path:7em;'
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
   + 'display:flex;flex-direction:column;height:100%;min-height:0;'
   + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
@@ -210,6 +217,80 @@ const CSS = [
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
+  // ── 宽容器下把行改成固定列的 grid：徽章成列，而不是每行自己漂 ──────────────
+  // 行原本是 flex 右对齐的，于是每个徽章的位置取决于「它右边还有几个徽章」：实测
+  // 同一深度里 taskdue 的左边缘会漂 19px、pri 漂 27px、计划头的 behind 漂 33px。
+  // 后果是眼睛没法沿一列往下扫「哪些逾期了」——而这恰恰是宽面板里最常用的动作。
+  // 宽度够时给每个槽位一条固定轨道，列就钉住了；槽位缺席时轨道留空，位置不挪。
+  //
+  // 为什么用**容器查询**而不是媒体查询：面板宽度由底部工作台决定（1280 视口下约
+  // 1004px），和视口宽度不是一回事。拖动工作台边界时视口不变，媒体查询会去问视口、
+  // 问错人；容器查询问的是面板自己多宽，才是对的问题。
+  // 阈值 800px 是反推出来的、不是拍的：固定轨道 + 间隙 + 内边距合计吃掉约 565px，
+  // 再给标题留 18em（13px 下 234px，约 19 个汉字）才谈得上好读 → 565+234 ≈ 800。
+  // 低于它就切回 flex：宁可徽章参差，也不能把标题挤成 135px（实测 700px 时就这样，
+  // 标题全折行、内容总高反而从 531 涨到 631，密度的好处全赔进去了）。
+  '.dsh-wb-wrap{container:wb / inline-size;}',
+  '@container wb (min-width:800px){'
+  // 列号走自定义属性，于是每个槽位只需一条 grid-column 规则就能覆盖三个视图
+  // （待办行 / 计划头 / 聚焦行），不必按行类型各抄一份。
+  + '.dsh-wb-task{grid-template-columns:auto minmax(6em,1fr)'
+  + ' minmax(0,var(--wb-col-deleg)) minmax(0,var(--wb-col-warn)) minmax(0,var(--wb-col-behind))'
+  + ' minmax(0,var(--wb-col-evid)) minmax(0,var(--wb-col-pri)) minmax(0,var(--wb-col-due))'
+  + ' var(--wb-col-act) var(--wb-col-act) var(--wb-col-act);'
+  + '--wb-i-cb:1;--wb-i-title:2;--wb-i-deleg:3;--wb-i-warn:4;--wb-i-behind:5;--wb-i-evid:6;'
+  + '--wb-i-pri:7;--wb-i-due:8;--wb-i-a1:9;--wb-i-a2:10;--wb-i-a3:11;}'
+  + '.dsh-wb-planhead{grid-template-columns:auto auto minmax(6em,1fr)'
+  + ' minmax(0,var(--wb-col-deleg)) minmax(0,var(--wb-col-warn)) minmax(0,var(--wb-col-behind))'
+  + ' minmax(0,var(--wb-col-evid)) minmax(0,var(--wb-col-pri))'
+  + ' minmax(0,var(--wb-col-q)) minmax(0,var(--wb-col-pct))'
+  + ' var(--wb-col-act) var(--wb-col-act) var(--wb-col-act);'
+  + '--wb-i-caret:1;--wb-i-id:2;--wb-i-title:3;--wb-i-deleg:4;--wb-i-warn:5;--wb-i-behind:6;'
+  + '--wb-i-evid:7;--wb-i-pri:8;--wb-i-q:9;--wb-i-pct:10;--wb-i-a1:11;--wb-i-a2:12;--wb-i-a3:13;}'
+  + '.dsh-wb-focus{grid-template-columns:auto minmax(6em,1fr) minmax(0,var(--wb-col-path))'
+  + ' minmax(0,var(--wb-col-deleg)) minmax(0,var(--wb-col-warn)) minmax(0,var(--wb-col-behind))'
+  + ' minmax(0,var(--wb-col-evid)) minmax(0,var(--wb-col-pri)) minmax(0,var(--wb-col-due));'
+  + '--wb-i-cb:1;--wb-i-title:2;--wb-i-path:3;--wb-i-deleg:4;--wb-i-warn:5;--wb-i-behind:6;'
+  + '--wb-i-evid:7;--wb-i-pri:8;--wb-i-due:9;}'
+  // 行本体：align-items:start + 元信息各自 2px 上边距。
+  // **不能用 align-items:baseline**：标题换行成两行时，Chromium 会拿**最后一行**的
+  // 基线当行的公共基线，徽章被拉到第二行去（实测差 26px）。start 则永远对齐行首，
+  // 徽章再靠 2px 上边距落在标题**首行**的视觉中线上（首行行盒 20px，胶囊高 16px，
+  // (20-16)/2 = 2px）。这 2px 是算出来的，不是随手值。
+  // 复选框没有文字基线，单独 start；它自己的 margin-top 也是 2px。
+  + '.dsh-wb-task,.dsh-wb-planhead,.dsh-wb-focus{display:grid;align-items:start;}'
+  + '.dsh-wb-task input,.dsh-wb-focus input{align-self:start;}'
+  + '.dsh-wb-caret,.dsh-wb-planid,.dsh-wb-deleg,.dsh-wb-warn,.dsh-wb-behind,.dsh-wb-evid,'
+  + '.dsh-wb-unverif,.dsh-wb-pri,.dsh-wb-taskdue,.dsh-wb-planq,.dsh-wb-planpct,.dsh-wb-path'
+  + '{align-self:start;margin-top:var(--wb-sp-1);}'
+  + '.dsh-wb-task input,.dsh-wb-focus input{grid-column:var(--wb-i-cb);}'
+  + '.dsh-wb-caret{grid-column:var(--wb-i-caret);}'
+  + '.dsh-wb-planid{grid-column:var(--wb-i-id);}'
+  + '.dsh-wb-tasktitle,.dsh-wb-plantitle{grid-column:var(--wb-i-title);}'
+  + '.dsh-wb-path{grid-column:var(--wb-i-path);}'
+  + '.dsh-wb-deleg{grid-column:var(--wb-i-deleg);}'
+  + '.dsh-wb-warn{grid-column:var(--wb-i-warn);}'
+  + '.dsh-wb-behind{grid-column:var(--wb-i-behind);}'
+  + '.dsh-wb-evid,.dsh-wb-unverif{grid-column:var(--wb-i-evid);}'
+  + '.dsh-wb-pri{grid-column:var(--wb-i-pri);}'
+  + '.dsh-wb-taskdue{grid-column:var(--wb-i-due);}'
+  + '.dsh-wb-planq{grid-column:var(--wb-i-q);}'
+  + '.dsh-wb-planpct{grid-column:var(--wb-i-pct);}'
+  + '.dsh-wb-act-move,.dsh-wb-act-add{grid-column:var(--wb-i-a1);}'
+  + '.dsh-wb-act-plan,.dsh-wb-act-demote{grid-column:var(--wb-i-a2);}'
+  + '.dsh-wb-act-del{grid-column:var(--wb-i-a3);}'
+  // 徽章按内容贴左（默认的 stretch 会把胶囊拉满整条轨道，那就变成表格单元格了）。
+  + '.dsh-wb-deleg,.dsh-wb-warn,.dsh-wb-behind,.dsh-wb-evid,.dsh-wb-unverif,.dsh-wb-pri,'
+  + '.dsh-wb-taskdue,.dsh-wb-planq,.dsh-wb-planpct,.dsh-wb-path{justify-self:start;}'
+  // 固定轨道里的内容必须能被截断，否则会把轨道撑开、列又乱了。
+  // grid-row:1 是防一种很隐蔽的失败：**只声明了列、没声明行的元素，会按 DOM 顺序
+  // 用自动排列落位，而自动排列的游标只能往前走**。于是只要 DOM 顺序与列号顺序不一致
+  // （比如先把 pri 渲染在 evid 前面），后出现的那个元素就会被甩到**第二行**——
+  // 行高从 24px 变成 48px，列还看着没错，非常难查。显式钉死在第 1 行就没有这个缝。
+  + '.dsh-wb-task>*,.dsh-wb-planhead>*,.dsh-wb-focus>*{min-width:0;grid-row:1;}'
+  + '.dsh-wb-deleg,.dsh-wb-warn,.dsh-wb-behind,.dsh-wb-evid,.dsh-wb-unverif,.dsh-wb-pri,'
+  + '.dsh-wb-taskdue,.dsh-wb-planq,.dsh-wb-planpct,.dsh-wb-path{overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}'
+  + '}',
   // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
   // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
@@ -709,17 +790,17 @@ function apply(ctx) {
         priBadge(node),
         dueSpan(node),
         h('button', {
-          className: 'dsh-wb-act',
+          className: 'dsh-wb-act dsh-wb-act-move',
           title: '归位到某个计划下',
           onClick: (e) => { e.stopPropagation(); store.set({ moving: state.moving === node.id ? null : node.id }) },
         }, '↳'),
         h('button', {
-          className: 'dsh-wb-act',
+          className: 'dsh-wb-act dsh-wb-act-plan',
           title: '提升为计划（之后可以继续往下拆）',
           onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'plan') },
         }, '⇧'),
         h('button', {
-          className: 'dsh-wb-act',
+          className: 'dsh-wb-act dsh-wb-act-del',
           title: '删除',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
@@ -757,7 +838,7 @@ function apply(ctx) {
         q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
         h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
         h('button', {
-          className: 'dsh-wb-act',
+          className: 'dsh-wb-act dsh-wb-act-add',
           title: '在这个计划下加一项',
           // 往收着的计划里加子项要顺手展开：不展开的话新加的东西立刻不可见，
           // 看起来就像「加了但没加上」。
@@ -766,12 +847,12 @@ function apply(ctx) {
         // 降回待办只在空计划上出现：有子节点的计划降级会让孩子们变成孤儿，
         // host 会拒绝。与其让用户点了再看到报错，不如不给这个按钮。
         childrenOf(node).length === 0 ? h('button', {
-          className: 'dsh-wb-act',
+          className: 'dsh-wb-act dsh-wb-act-demote',
           title: '降回待办（这是一个空计划）',
           onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'todo') },
         }, '⇩') : null,
         h('button', {
-          className: 'dsh-wb-act',
+          className: 'dsh-wb-act dsh-wb-act-del',
           title: '删除这个计划（连同子项）',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
@@ -938,7 +1019,7 @@ function apply(ctx) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
         h('div', null, '这个工作区还没有计划。'),
         h('div', null, '点下面的「＋ 新建顶层计划」开始，或在对话里对 agent 说：'),
-        h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
+        h('div', { style: { marginTop: '6px', color: 'var(--wb-fg)' } },
           '「帮我把这个季度的工作计划拆成计划和子计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } }, '计划会落在 ' + (state.dir || '<工作区>/plan')),
       ))

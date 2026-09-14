@@ -164,16 +164,7 @@ let dir = ''
 
 /** 用**真 host 半身**建一份计划，并调 plan_show 拿真 payload。 */
 async function buildRealPlan(root) {
-  const tools = new Map()
-  const serverCtx = { webServer: { register: () => () => {} }, get: () => undefined }
-  hostApply({
-    tools: { register: (t) => { tools.set(t.name, t); return () => {} } },
-    inject: (deps, fn) => { if (deps.includes('webServer')) fn(serverCtx) },
-    effect: (fn) => { fn() },
-  })
-  const call = (name, args) => tools.get(name).execute(args ?? {}, {
-    agent: { session: { header: { cwd: root } } },
-  })
+  const call = hostCall(root)
   await call('plan_node_add', { title: '工作主线', type: 'plan' })
   await call('plan_node_add', { title: '子计划', type: 'plan', parent: '工作主线' })
   await call('plan_node_add', { title: '深层待办', type: 'todo', parent: '子计划' })
@@ -181,6 +172,25 @@ async function buildRealPlan(root) {
   await call('plan_node_add', { title: '收件箱一条', type: 'todo' })
   const shown = await call('plan_show')
   return shown.plan
+}
+
+/**
+ * 真 host 的工具上下文：工具定义、参数校验、落盘全是真的，只是没有 webServer。
+ * 抽出来是为了让需要自带 fixture 的用例能建**自己的**工作区，而不是往共享的
+ * planPayload 上加字段——共享 fixture 一改，别的用例就跟着变，表现是「毫不相干的
+ * 用例挂了」。
+ */
+function hostCall(root) {
+  const tools = new Map()
+  const serverCtx = { webServer: { register: () => () => {} }, get: () => undefined }
+  hostApply({
+    tools: { register: (t) => { tools.set(t.name, t); return () => {} } },
+    inject: (deps, fn) => { if (deps.includes('webServer')) fn(serverCtx) },
+    effect: (fn) => { fn() },
+  })
+  return (name, args) => tools.get(name).execute(args ?? {}, {
+    agent: { session: { header: { cwd: root } } },
+  })
 }
 
 before(async () => {
@@ -303,6 +313,62 @@ function idOf(title) {
 }
 
 // ============================================================ 渲染冒烟
+
+/**
+ * 宽容器下待办行/计划头是**固定列的 grid**（见 src/client/index.js 的 @container 块）。
+ * 元素落在哪一列由 class 指定（CSS 里的常量），而**顺序**由渲染代码决定，两边必须
+ * 一致——不一致的后果很难查：只声明了列、没声明行的元素会按 DOM 顺序参与自动排列，
+ * 而自动排列的游标**只能往前走**。于是只要 DOM 顺序与列号顺序相反（例如把 pri 排
+ * 在 evid 前面），后出现的那个就会被甩到**第二行**：列看着没错，行高从 24px 翻到 48px。
+ * CSS 里用 grid-row:1 兜了底，但顺序本身也得钉住，否则将来改列号就会静默错位。
+ * 这条断言跑的是**真构建产物里的真组件**，是唯一能挡住它的地方。
+ */
+test('待办行的元信息顺序与 grid 列号一致，且三个动作按钮各占一列', async () => {
+  const keep = planPayload
+  const tmp = await mkdtemp(join(tmpdir(), 'dsh-wb-grid-'))
+  try {
+    const call = hostCall(tmp)
+    await call('plan_node_add', { title: '主线', type: 'plan' })
+    // 一条「满徽章」的待办：委派 + 证据 + 重要程度 + 逾期日期，一次覆盖 4 个槽位。
+    await call('plan_node_add', { title: '满徽章待办', type: 'todo', parent: '主线', due: '2000-01-01' })
+    await call('plan_priority_set', { node: '满徽章待办', priority: 'high' })
+    await call('plan_delegate_set', { node: '满徽章待办', to: '张三', expectAt: '2000-01-02' })
+    await call('plan_todo_set', {
+      todo: '满徽章待办', status: 'done', evidenceKind: 'file', evidenceRef: '交付物.md',
+    })
+    planPayload = (await call('plan_show')).plan
+
+    const { view } = await mount()
+    const row = byText(view, 'dsh-wb-task', '满徽章待办')
+    assert.ok(row !== null, '找不到「满徽章待办」那一行')
+
+    // 先钉住 fixture 真的带上了徽章：否则下面的顺序断言会退化成「什么都没验」。
+    const present = row.children.map((c) => classesOf(c)[0])
+    for (const cls of ['dsh-wb-deleg', 'dsh-wb-evid', 'dsh-wb-pri', 'dsh-wb-taskdue']) {
+      assert.ok(present.includes(cls), 'fixture 没带上 ' + cls + '，断言会变空')
+    }
+
+    // 元信息的相对顺序必须与 CSS 的列号顺序（deleg 3 → warn 4 → behind 5 →
+    // evid 6 → pri 7 → due 8）一致。unverif 与 evid 共用 evid 那一列。
+    const SLOT = {
+      'dsh-wb-deleg': 3, 'dsh-wb-warn': 4, 'dsh-wb-behind': 5,
+      'dsh-wb-evid': 6, 'dsh-wb-unverif': 6, 'dsh-wb-pri': 7, 'dsh-wb-taskdue': 8,
+    }
+    const slots = present.filter((c) => SLOT[c] !== undefined).map((c) => SLOT[c])
+    assert.deepEqual(slots, [...slots].sort((a, b) => a - b),
+      '元信息的渲染顺序与 grid 列号顺序不一致（会被自动排列甩到第二行）')
+
+    // 三个动作按钮靠修饰类各占一列；少一个就会错列、并与徽章重叠。
+    const acts = row.children.filter((c) => classesOf(c).includes('dsh-wb-act'))
+    assert.deepEqual(
+      acts.map((a) => classesOf(a).filter((x) => x !== 'dsh-wb-act')),
+      [['dsh-wb-act-move'], ['dsh-wb-act-plan'], ['dsh-wb-act-del']],
+    )
+  } finally {
+    planPayload = keep
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
 
 test('面板渲染出计划树、收件箱与新建入口（不白屏）', async () => {
   const { view } = await mount()
