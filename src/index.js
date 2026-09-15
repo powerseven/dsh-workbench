@@ -52,6 +52,7 @@ import {
   fileWarnings,
   inboxOf,
   isDueWithin,
+  clearFields,
   isOverdue,
   isUnverified,
   makeNode,
@@ -62,10 +63,12 @@ import {
   planNodes,
   planProgress,
   priorityOf,
+  removeEvidence,
   removeFile,
   removeNode,
   resolveNode,
   setDelegate,
+  setDelegateExpectAt,
   setNodeType,
   setPriority,
   setReceipt,
@@ -979,9 +982,13 @@ export function apply(ctx) {
       const node = makeNode(plan, {
         type: body.type,
         title: body.title,
+        owner: body.owner,
         due: body.due,
+        start: body.start,
+        end: body.end,
         priority: body.priority,
         note: body.note,
+        metric: body.metric,
       })
       appendChild(plan, node, body.parent)
       await store.save(plan, { reason: typeOf(node) + '-add' })
@@ -1015,13 +1022,45 @@ export function apply(ctx) {
         setStatus(found.node, body.status)
         reasons.push(typeOf(found.node) + '-' + found.node.status)
       }
+      // ---- 表单语义：详情编辑页整块提交的部分（写入 / 清空 / 删证据）。
+      // 写入与清空分两条通路：`applyFields` 是「不传就不动」（agent 的增量语义），
+      // 而表单是「所见即所得」，把负责人清空就是要删掉它。混在一条通路里，
+      // 要么清不掉，要么 agent 少传一个参数就把数据抹了。
+      const patch = {}
+      if (typeof body.owner === 'string') patch.owner = body.owner
+      if (typeof body.start === 'string') patch.start = body.start
+      if (typeof body.end === 'string') patch.end = body.end
+      if (typeof body.due === 'string') patch.due = body.due
+      if (body.metric !== null && body.metric !== undefined && typeof body.metric === 'object') {
+        patch.metric = body.metric
+      }
+      if (Object.keys(patch).length > 0) {
+        applyFields(found.node, patch)
+        reasons.push('node-edit')
+      }
+      if (Array.isArray(body.clear) && body.clear.length > 0) {
+        // 返回实际清掉的条数：没改动就不记这一条 reason，避免留一版空快照。
+        if (clearFields(found.node, body.clear) > 0) reasons.push('node-clear')
+      }
+      if (optStr(body.evidenceRemove) !== undefined) {
+        if (removeEvidence(found.node, body.evidenceRemove, body.evidenceKind)) reasons.push('evidence-rm')
+      }
+      // 委派：换人 → setDelegate（回执作废）；只是挪期望时间 → 保留回执。
+      // 不区分的话，每次保存表单都会把对方「已接受」打回「待接受」。
+      if (optStr(body.to) !== undefined) {
+        const d = found.node.delegate
+        const cur = d !== null && d !== undefined && typeof d === 'object' ? d : {}
+        if (body.to !== cur.to) {
+          setDelegate(found.node, { to: body.to, expectAt: body.expectAt, note: body.note })
+          reasons.push('delegate-set')
+        } else if (optStr(body.expectAt) !== cur.expectAt) {
+          setDelegateExpectAt(found.node, body.expectAt)
+          reasons.push('delegate-expect')
+        }
+      }
       if (optStr(body.receipt) !== undefined) {
         setReceipt(found.node, body.receipt, { expectAt: body.expectAt, note: body.note })
         reasons.push('delegate-' + found.node.delegate.status)
-      }
-      if (optStr(body.to) !== undefined) {
-        setDelegate(found.node, { to: body.to, expectAt: body.expectAt, note: body.note })
-        reasons.push('delegate-set')
       }
       const evidence = evidenceInputOf(body)
       if (evidence !== undefined) {
@@ -1035,7 +1074,7 @@ export function apply(ctx) {
         reasons.push('file' + (file.op === 'remove' ? '-rm' : ''))
       }
       if (reasons.length === 0) {
-        throw new Error('没有要改的属性：可传 type / priority / status / title / receipt / to / evidenceRef')
+        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef')
       }
       await store.save(plan, { reason: reasons.join('+') })
       json(res, {

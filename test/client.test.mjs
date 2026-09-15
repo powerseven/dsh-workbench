@@ -828,7 +828,7 @@ test('没有内容点解析：不发请求，只提示', async () => {
   assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /说点什么|图片/)
 })
 
-test('解析结果渲染成草稿，每条带候选；点建议即写入并带 parent', async () => {
+test('解析结果渲染成草稿；点建议**不直接落库**，而是填进详情表单等确认', async () => {
   withAi()
   aiReply = {
     tasks: [{
@@ -859,17 +859,28 @@ test('解析结果渲染成草稿，每条带候选；点建议即写入并带 p
   chipsOf(drafted, 0)[0].props.onClick(ev())
   await settle()
 
+  // AI 给的是草稿，不是决定：点建议只把内容填进表单，一条写入都不该发生。
+  assert.equal(requests.length, 0, '采纳建议不该直接建节点')
+  assert.ok(firstByClass(render(), 'dsh-wb-formhead') !== null, '应打开详情表单')
+  const inputs = byClass(render(), 'dsh-wb-inp')
+  assert.equal(inputs[0].props.value, '补台区台账', '标题预填')
+  assert.equal(inputs[0].props.value, '补台区台账')
+
+  // 点保存才真的写：parent / due / priority 都要跟草稿一致。
+  requests = []
+  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '保存').props.onClick(ev())
+  await settle()
+
   const add = requests.filter((r) => r.path === '/api/workbench/node-add')
   assert.equal(add.length, 1)
   assert.equal(add[0].body.title, '补台区台账')
   assert.equal(add[0].body.type, 'todo')
-  assert.equal(add[0].body.parent, idOf('子计划'), '采纳建议 = 直接建到那个计划下')
+  assert.equal(add[0].body.parent, idOf('子计划'), '采纳建议 = 建到那个计划下')
   assert.equal(add[0].body.due, '2026-10-01')
   assert.equal(add[0].body.priority, 'high')
-  assert.equal(firstByClass(render(), 'dsh-wb-aitask'), null, '采纳后这条草稿消失')
 })
 
-test('选「收件箱」= 建一个不带 parent 的顶层待办', async () => {
+test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', async () => {
   withAi()
   aiReply = {
     tasks: [{
@@ -888,13 +899,20 @@ test('选「收件箱」= 建一个不带 parent 的顶层待办', async () => {
   requests = []
   chipsOf(render(), 0).find((c) => textOf(c) === '收件箱').props.onClick(ev())
   await settle()
+
+  const place = firstByClass(render(), 'dsh-wb-fadd')
+  assert.equal(place.children[0].props.value, '', '放在收件箱（顶层）')
+
+  requests = []
+  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '保存').props.onClick(ev())
+  await settle()
   const add = requests.find((r) => r.path === '/api/workbench/node-add')
   assert.equal(add.body.title, '先记一条')
   assert.equal('parent' in add.body, false, '收件箱 = 顶层待办，不带 parent')
   assert.equal('due' in add.body, false, '没给截止日期就不要传空串')
 })
 
-test('选「新建计划」= 两步写入：先建计划，再把待办挂到它的 id 下', async () => {
+test('选「新建计划」= 先建容器（一次写入），待办仍等人在表单里确认', async () => {
   withAi()
   aiReply = {
     tasks: [{
@@ -920,19 +938,28 @@ test('选「新建计划」= 两步写入：先建计划，再把待办挂到它
   input.props.onChange({ target: { value: '线损治理专项' } })
 
   requests = []
-  const echo = (body) => (body.type === 'plan'
+  nodeEcho = (body) => (body.type === 'plan'
     ? { id: 'newplan', type: 'plan', title: body.title }
     : { id: 'newtodo', type: 'todo', title: body.title })
-  nodeEcho = echo
   chipsOf(render(), 0).find((c) => textOf(c) === '＋建计划').props.onClick(ev())
   await settle()
 
+  // 第一步：建容器。它必须立刻发生——不先建出来，草稿就没地方挂。
+  const first = requests.filter((r) => r.path === '/api/workbench/node-add')
+  assert.equal(first.length, 1, '只建计划，待办等人确认')
+  assert.equal(first[0].body.type, 'plan')
+  assert.equal(first[0].body.title, '线损治理专项', '用改过的名字，不是模型的原话')
+  assert.ok(firstByClass(render(), 'dsh-wb-formhead') !== null, '接着打开待办的表单')
+
+  // 第二步：人点保存才建待办，parent 用第一步返回的新计划 id。
+  requests = []
+  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '保存').props.onClick(ev())
+  await settle()
   const add = requests.filter((r) => r.path === '/api/workbench/node-add')
-  assert.equal(add.length, 2, '建计划 + 挂待办，两次写入')
-  assert.equal(add[0].body.type, 'plan')
-  assert.equal(add[0].body.title, '线损治理专项', '用改过的名字，不是模型的原话')
-  assert.equal(add[1].body.type, 'todo')
-  assert.equal(add[1].body.parent, 'newplan', 'parent 用第一步返回的新计划 id')
+  assert.equal(add.length, 1)
+  assert.equal(add[0].body.type, 'todo')
+  assert.equal(add[0].body.title, '线损排查')
+  assert.equal(add[0].body.parent, 'newplan', 'parent 用第一步返回的新计划 id')
 })
 
 test('新建计划没名字就先不动：不建空壳计划，也不建待办', async () => {
@@ -1212,4 +1239,165 @@ test('看板视图同样渲染 vault 配置块', async () => {
   byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
   const board = render()
   assert.ok(byClass(board, 'dsh-wb-vault')[0] !== undefined, '看板视图也应渲染 vault 配置块')
+})
+
+// ---------------------------------------------------------------- 详情编辑页
+
+const taskRow = (view, title) => byClass(view, 'dsh-wb-task').find((r) => textOf(r).includes(title)) ?? null
+const planRow = (view, title) => byClass(view, 'dsh-wb-planhead').find((r) => textOf(r).includes(title)) ?? null
+const actOf = (row, label) => byClass(row, 'dsh-wb-act').find((b) => textOf(b) === label) ?? null
+const inpByPh = (view, ph) => byClass(view, 'dsh-wb-inp').find((i) => i.props.placeholder === ph) ?? null
+const segBtn = (view, label) => byClass(view, 'dsh-wb-seg')
+  .flatMap((s) => s.children)
+  .find((b) => textOf(b) === label) ?? null
+const btnByText = (view, label) => byClass(view, 'dsh-wb-aibtn').find((b) => textOf(b) === label) ?? null
+
+test('✎ 打开详情编辑页，字段按节点预填；改标题保存走 node-set', async () => {
+  const { render, view } = await mount()
+  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+  await settle()
+
+  const form = render()
+  assert.ok(firstByClass(form, 'dsh-wb-formhead') !== null, '整块面板换成详情页')
+  assert.equal(firstByClass(form, 'dsh-wb-form'), firstByClass(form, 'dsh-wb-form'))
+  assert.equal(inpByPh(form, '要做什么').props.value, '表层待办', '标题预填')
+  assert.equal(firstByClass(form, 'dsh-wb-task'), null, '详情页里不再渲染树')
+
+  inpByPh(render(), '要做什么').props.onChange({ target: { value: '改过的待办' } })
+  inpByPh(render(), '谁负责（可空）').props.onChange({ target: { value: '我' } })
+  requests = []
+  btnByText(render(), '保存').props.onClick(ev())
+  await settle()
+
+  const set = requests.filter((r) => r.path === '/api/workbench/node-set')
+  assert.equal(set.length, 1, '一次保存 = 一次写入，不是每字段一次')
+  assert.equal(set[0].body.title, '改过的待办')
+  assert.equal(set[0].body.owner, '我')
+  assert.equal(set[0].body.node, idOf('表层待办'))
+  assert.equal(firstByClass(render(), 'dsh-wb-formhead'), null, '保存完回到列表')
+})
+
+test('表单里清空字段 = 提交 clear，而不是「什么都没传」', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  const node = planPayload.nodes[0].children.find((n) => n.title === '表层待办')
+    || planPayload.nodes.find((n) => n.title === '表层待办')
+  node.owner = '原负责人'
+  node.note = '原备注'
+  try {
+    const { render, view } = await mount()
+    actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+    await settle()
+    assert.equal(inpByPh(render(), '谁负责（可空）').props.value, '原负责人')
+    inpByPh(render(), '谁负责（可空）').props.onChange({ target: { value: '' } })
+    requests = []
+    btnByText(render(), '保存').props.onClick(ev())
+    await settle()
+    const body = requests.find((r) => r.path === '/api/workbench/node-set').body
+    assert.ok(body.clear.includes('owner'), '清空要走 clear 数组')
+    assert.equal('owner' in body, false)
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('标题空时保存按钮禁用并说明原因，不会写出空标题', async () => {
+  const { render, view } = await mount()
+  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+  await settle()
+  inpByPh(render(), '要做什么').props.onChange({ target: { value: '  ' } })
+  const page = render()
+  assert.equal(btnByText(page, '保存').props.disabled, true)
+  assert.match(textOf(firstByClass(page, 'dsh-wb-formerr')), /标题不能为空/)
+  requests = []
+  btnByText(page, '保存').props.onClick(ev())
+  await settle()
+  assert.equal(requests.length, 0, '禁用之外还要真拦住（禁用了也可能被绕）')
+})
+
+test('有子节点的计划：类型「待办」按钮禁用并说明原因', async () => {
+  const { render, view } = await mount()
+  actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
+  await settle()
+  const page = render()
+  assert.equal(segBtn(page, '待办').props.disabled, true, '有子节点的计划不能降级')
+  assert.match(segBtn(page, '待办').props.title, /子节点/)
+  // 空计划没有这个限制（子计划下面现在没有子项）。
+  assert.equal(segBtn(page, '计划').props.disabled, false)
+})
+
+test('换型时状态跟着归一：计划的 active 切成待办后变成 todo', async () => {
+  const { render, view } = await mount()
+  actOf(planRow(view, '子计划'), '✎').props.onClick(ev())
+  await settle()
+  // 类型段是「进行中(active)」；切到待办后状态要归一到该类型的第一个合法值
+  // （todo），于是状态段的高亮从「进行中」跳到「待办」。
+  const segs = byClass(render(), 'dsh-wb-seg')
+  const onOf = (seg) => seg.children.find((b) => b.props.className === 'on')
+  assert.equal(textOf(onOf(segs[1])), '进行中')
+  segs[0].children.find((b) => textOf(b) === '待办').props.onClick(ev())
+  const after = byClass(render(), 'dsh-wb-seg')
+  assert.equal(textOf(onOf(after[1])), '待办', 'active 对计划才合法，换型后状态跟着归一')
+  requests = []
+  btnByText(render(), '保存').props.onClick(ev())
+  await settle()
+  const body = requests.find((r) => r.path === '/api/workbench/node-set').body
+  assert.equal(body.type, 'todo')
+  assert.equal(body.status, 'todo', 'active 对计划才合法，换型后必须归一')
+})
+
+test('表头「＋ 新建」打开新建表单，保存走 node-add 且带上位置', async () => {
+  const { render, view } = await mount()
+  byClass(view, 'dsh-wb-icon').find((b) => textOf(b) === '＋ 新建').props.onClick(ev())
+  await settle()
+  const page = render()
+  assert.equal(textOf(firstByClass(page, 'dsh-wb-formtitle')), '新建待办')
+
+  inpByPh(page, '要做什么').props.onChange({ target: { value: '表单里新建的一条' } })
+  // 放在：选到「工作主线」下
+  const place = firstByClass(render(), 'dsh-wb-fadd')
+  place.children[0].props.onChange({ target: { value: idOf('工作主线') } })
+  requests = []
+  btnByText(render(), '保存').props.onClick(ev())
+  await settle()
+
+  const add = requests.find((r) => r.path === '/api/workbench/node-add')
+  assert.equal(add.body.title, '表单里新建的一条')
+  assert.equal(add.body.type, 'todo')
+  assert.equal(add.body.parent, idOf('工作主线'), '表单里选的位置要传出去')
+})
+
+test('详情页能删一条完成证据（面板此前只能加不能删）', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  const todo = planPayload.nodes.find((n) => n.title === '表层待办')
+    || planPayload.nodes[0].children.find((n) => n.title === '表层待办')
+  todo.evidence = [{ kind: 'file', ref: 'a.md', at: '2026-09-01T00:00:00.000Z' }]
+  try {
+    const { render, view } = await mount()
+    actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+    await settle()
+    const row = byClass(render(), 'dsh-wb-formrow').find((r) => textOf(r).includes('a.md'))
+    assert.ok(row !== undefined, '证据要在详情页里列出来')
+    requests = []
+    byClass(row, 'dsh-wb-fbtn').find((b) => textOf(b) === '×').props.onClick(ev())
+    await settle()
+    const body = requests.find((r) => r.path === '/api/workbench/node-set').body
+    assert.equal(body.evidenceRemove, 'a.md')
+    assert.equal(body.evidenceKind, 'file')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('返回 / 取消 = 放弃改动，不发任何写入', async () => {
+  const { render, view } = await mount()
+  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+  await settle()
+  inpByPh(render(), '要做什么').props.onChange({ target: { value: '改了但不保存' } })
+  requests = []
+  btnByText(render(), '取消').props.onClick(ev())
+  await settle()
+  assert.equal(requests.length, 0)
+  assert.ok(firstByClass(render(), 'dsh-wb-formhead') === null, '取消后回到列表')
 })

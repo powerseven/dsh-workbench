@@ -21,6 +21,7 @@ const {
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
   bytesToBase64, pickImages, AI_MAX_IMAGES,
   FILE_KINDS, fileLabel, filesList, obsidianLink,
+  STATUS_LIST, PRIORITIES, statusListOf, formDraftOf, emptyDraft, formRequest, formErrors,
 } = require('../src/client/logic.cjs')
 
 test('pct 四舍五入并夹取到 0..100', () => {
@@ -801,4 +802,95 @@ test('pickImages 只挑「还装得下」的几张，并报出丢了几张', () 
   assert.deepEqual(pickImages(files, ['x', 'y', 'z', 'w']), { picked: [], dropped: 3 })
   assert.deepEqual(pickImages([], []), { picked: [], dropped: 0 })
   assert.equal(AI_MAX_IMAGES, 4)
+})
+
+// ---------------------------------------------------------------- 详情表单
+
+test('statusListOf 与 store.js 的口径一致（跨半身一致性）', () => {
+  // host 是 ESM、client 是 CJS，两份状态清单只能各写一份。不一致的表现是
+  // 「表单里选得到的状态，服务端说非法」——保存直接失败且看不懂为什么。
+  assert.deepEqual(statusListOf('plan'), ['active', 'done', 'dropped'])
+  assert.deepEqual(statusListOf('todo'), ['todo', 'doing', 'done', 'dropped'])
+  assert.deepEqual(STATUS_LIST.plan, ['active', 'done', 'dropped'])
+  assert.deepEqual(STATUS_LIST.todo, ['todo', 'doing', 'done', 'dropped'])
+  assert.deepEqual(PRIORITIES, ['high', 'normal', 'low'])
+})
+
+test('formDraftOf 把节点摊平成标量，脏数据落回合法值', () => {
+  const d = formDraftOf({
+    id: 'n1', type: 'plan', title: '主线', status: 'active', priority: 'high',
+    owner: '我', start: '2026-01-01', end: '2026-12-31',
+    metric: { target: 12, current: 3, unit: '个' },
+    delegate: { to: '小李', expectAt: '2026-09-01' },
+  })
+  assert.equal(d.title, '主线')
+  assert.equal(d.type, 'plan')
+  assert.equal(d.status, 'active')
+  assert.equal(d.owner, '我')
+  assert.equal(d.target, '12')
+  assert.equal(d.current, '3')
+  assert.equal(d.unit, '个')
+  assert.equal(d.to, '小李')
+  assert.equal(d.expectAt, '2026-09-01')
+
+  // 非法状态 / 缺省档位：不让它以原样进表单，否则保存时会被服务端拒绝。
+  const bad = formDraftOf({ type: 'todo', status: 'active' })
+  assert.equal(bad.status, 'todo', 'active 对计划才合法，待办落回 todo')
+  assert.equal(bad.priority, 'normal', '缺 priority 按中档')
+  assert.equal(formDraftOf({}).type, 'todo')
+  assert.equal(formDraftOf(null).title, '')
+})
+
+test('formRequest：编辑时留空 = 清空（clear），新建时不产生 clear', () => {
+  const original = {
+    id: 'n1', type: 'todo', title: '旧标题', status: 'done', priority: 'high',
+    owner: '我', due: '2026-06-01', note: '备注',
+    metric: { target: 5, current: 1, unit: '个' },
+    delegate: { to: '小李', status: 'pending' },
+  }
+  const draft = Object.assign(formDraftOf(original), {
+    title: '新标题', owner: '', note: '', target: '', current: '', unit: '', to: '',
+  })
+  const req = formRequest(draft, original)
+  assert.equal(req.method, 'node-set')
+  assert.equal(req.body.node, 'n1')
+  assert.equal(req.body.title, '新标题')
+  // 周期与截止一并进 clear：写入不按类型分叉（计划用周期、待办用截止只是渲染
+  // 与警告的口径），清空的空转由服务端 clearFields 按「本来就是空的」跳过。
+  assert.deepEqual(req.body.clear.sort(), ['delegate', 'end', 'metric', 'note', 'owner', 'start'])
+  assert.equal(req.body.due, '2026-06-01', '没清掉的照旧写入')
+  assert.equal('owner' in req.body, false, '清空的字段不出现在写入里，只出现在 clear 里')
+
+  // 没改状态的「已完成」不能被顺手改掉：状态每次都由表单显式提交。
+  assert.equal(req.body.status, 'done')
+
+  const fresh = formRequest(Object.assign(formDraftOf({ type: 'todo' }), { title: '新的' }), null)
+  assert.equal(fresh.method, 'node-add')
+  assert.equal(fresh.body.type, 'todo')
+  assert.equal(fresh.body.title, '新的')
+  assert.equal('clear' in fresh.body, false, '新建没什么可清的')
+  assert.equal('node' in fresh.body, false)
+})
+
+test('formRequest：指标部分填写也要能提交（target/current/unit 各自独立）', () => {
+  const original = { id: 'n1', type: 'todo', title: 't', status: 'todo', metric: { target: 10, current: 2, unit: '个' } }
+  const draft = Object.assign(formDraftOf(original), { target: '20', current: '', unit: '篇' })
+  const req = formRequest(draft, original)
+  assert.deepEqual(req.body.metric, { target: 20, unit: '篇' }, '只传填了的，不传空串')
+  assert.ok(!(req.body.clear || []).includes('metric'))
+})
+
+test('formErrors 只拦「写下去一定是错的」那几种', () => {
+  assert.deepEqual(formErrors({ title: '有标题', start: '2026-01-01', end: '2026-12-31' }), [])
+  assert.deepEqual(formErrors({ title: '   ' }), ['标题不能为空'])
+  assert.deepEqual(formErrors({ title: 'x', start: '2026-06-01', end: '2026-01-01' }), ['结束日期早于开始日期'])
+  // 缺负责人 / 缺截止这类是**建议**，不是错误——硬拦会让人干脆不记。
+  assert.deepEqual(formErrors({ title: 'x', owner: '', due: '' }), [])
+})
+
+test('emptyDraft 带父节点，且默认待办', () => {
+  assert.equal(emptyDraft('todo', 'p1').parent, 'p1')
+  assert.equal(emptyDraft('plan').type, 'plan')
+  assert.equal(emptyDraft('plan').parent, '')
+  assert.equal(emptyDraft().type, 'todo')
 })

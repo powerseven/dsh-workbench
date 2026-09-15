@@ -168,7 +168,7 @@ const CSS = [
   // 行内动作按钮：以前 opacity:0 只在 hover 现身，键盘与触屏完全够不到。
   // 现在键盘用 :focus-within 揭示，触屏用 @media (hover:none) 常驻。
   '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act{opacity:1;}',
+  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act,.dsh-wb-card:hover .dsh-wb-act,.dsh-wb-card:focus-within .dsh-wb-act,.dsh-wb-focus:hover .dsh-wb-act,.dsh-wb-focus:focus-within .dsh-wb-act{opacity:1;}',
   '.dsh-wb-act:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── 重要程度徽章 ────────────────────────────────────────────────────────
   '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);cursor:pointer;border:1px solid transparent;user-select:none;}',
@@ -315,6 +315,34 @@ const CSS = [
   '.dsh-wb-vaulthead .dsh-wb-vpath{flex:1;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;}',
   '.dsh-wb-vault .dsh-wb-add{margin:0;}',
   '.dsh-wb-vaultempty{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
+  // ── 详情编辑页 ────────────────────────────────────────────────────────
+  // 面板整体换成一张表单：节点字段有十几个，塞进抽屉或行内都放不下，
+  // 而「所有信息都能改」这件事一旦要靠滚动+折叠去找，就等于没做。
+  '.dsh-wb-formhead{display:flex;align-items:center;gap:var(--wb-sp-3);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
+  '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-formhead .dsh-wb-formsub{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-form{flex:1;min-height:0;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);display:flex;flex-direction:column;}',
+  '.dsh-wb-field{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-bottom:var(--wb-sp-4);}',
+  '.dsh-wb-label{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-inp{width:100%;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-inp:focus{border-color:var(--wb-accent);}',
+  '.dsh-wb-inp::placeholder{color:var(--wb-fg-2);}',
+  '.dsh-wb-inp[type=date]{width:auto;}',
+  '.dsh-wb-seg{display:inline-flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);overflow:hidden;align-self:flex-start;}',
+  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-seg button.on{background:var(--wb-active);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-seg button:disabled{opacity:.4;cursor:default;}',
+  '.dsh-wb-grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--wb-sp-4);}',
+  '.dsh-wb-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--wb-sp-4);}',
+  '.dsh-wb-formnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
+  '.dsh-wb-formerr{font:var(--dsw-font-xxxs-11);color:var(--wb-danger);line-height:1.6;}',
+  '.dsh-wb-formactions{display:flex;align-items:center;gap:var(--wb-sp-2);margin-top:var(--wb-sp-2);padding-bottom:var(--wb-sp-4);}',
+  '.dsh-wb-formactions .spacer{margin-left:auto;}',
+  '.dsh-wb-formlist{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-top:var(--wb-sp-2);}',
+  '.dsh-wb-formrow{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);}',
+  '.dsh-wb-formrow:hover{background:var(--wb-hover);}',
+  '.dsh-wb-formrow .dsh-wb-fref{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-formrow .dsh-wb-fmeta{flex:none;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);}',
 ].join('')
 
 /**
@@ -446,6 +474,21 @@ function apply(ctx) {
     // vault 配置的内联编辑态（vaultPath 是机器相关配置，存 plan.json 顶层）。
     const [vaultEditing, setVaultEditing] = React.useState(false)
     const [vaultDraft, setVaultDraft] = React.useState('')
+    // 详情编辑页：整个面板换成这一个节点/新建项的表单。
+    // `{ mode: 'edit' | 'new', id?, draft }`——打开期间树与看板都不渲染，
+    // 所以「有未保存改动」这件事不可能悄悄发生，也不用再挂一层脏检查。
+    const [form, setForm] = React.useState(null)
+    const [formSaving, setFormSaving] = React.useState(false)
+    // 详情页里「加一条证据 / 加一个关联」的输入行。单独一份状态而不是复用
+    // 行内的 linking/linkRef——那三个是绑在树上的（按节点 id 展开），
+    // 详情页不在树里，复用会出现「从详情页加的关联，回到树上看不到输入框」。
+    const [formEvKind, setFormEvKind] = React.useState('file')
+    const [formEvRef, setFormEvRef] = React.useState('')
+    const [formFileKind, setFormFileKind] = React.useState('file')
+    const [formFileRef, setFormFileRef] = React.useState('')
+    const [formParent, setFormParent] = React.useState('')
+    // AI 草稿队列：「全部采纳」时不直接落库，而是逐条填进表单让人过一遍。
+    const [aiQueue, setAiQueue] = React.useState([])
     // 单击「切换完成」与双击「改名」抢的是同一个元素，单击因此必须延后执行。
     const clickTimer = React.useRef(null)
     React.useEffect(() => () => {
@@ -594,39 +637,62 @@ function apply(ctx) {
         })
     }
 
-    /** 采纳一条：把草稿落成真节点。choice 直接来自候选列表，不加中间层。 */
+    /**
+     * 采纳一条：**不直接落库**，把 AI 草稿填进表单让人过一遍再存。
+     * AI 给的是草稿——标题可能不对、归属可能猜错，「AI 帮我记」不等于
+     * 「AI 替我决定」。
+     */
     const aiApply = async (task, choice) => {
-      const args = { title: task.title, type: 'todo' }
-      if (typeof task.due === 'string' && task.due !== '') args.due = task.due
-      if (typeof task.priority === 'string' && task.priority !== '') args.priority = task.priority
-      if (typeof task.note === 'string' && task.note !== '') args.note = task.note
+      let parent = ''
       let where = '收件箱'
       if (choice.kind === 'plan') {
-        args.parent = choice.id
+        parent = choice.id
         where = choice.title
       } else if (choice.kind === 'new') {
         const title = String(choice.title === undefined ? '' : choice.title).trim()
         // 名字是空的就先别动：拿任务标题去当计划名会造出一堆同名的空壳计划，
         // 那比不建更糟（它还会进完成度统计）。
         if (title === '') { flash('给新计划起个名字再建'); return }
+        // 这一步建的是「容器」而不是任务本体：草稿还没定稿，但计划得先存在
+        // 才能挂在它下面。任务本身仍然等人点保存。
         const res = await write('node-add', { title, type: 'plan' })
         if (res === null || res === undefined || res.node === null || res.node === undefined) return
-        args.parent = res.node.id
+        parent = res.node.id
         where = title
       }
-      const res = await write('node-add', args)
-      if (res === null || res === undefined) return
       setAiTasks((prev) => prev.filter((t) => t.key !== task.key))
-      flash('已加入「' + where + '」')
+      setAiQueue([])
+      openDraft(aiDraftOf(task, parent))
+      flash('AI 草稿已填进表单（将放进「' + where + '」），改完点保存')
     }
 
-    /** 全部按首选建议采纳。逐个 await：每步都要拿回新计划才能渲染下一步。 */
+    /**
+     * 全部按首选建议**逐条过一遍表单**，而不是一键全存。
+     * 逐个 await：建新计划那一步要拿回 id 才能挂下一条。
+     */
     const aiApplyAll = async () => {
+      const queue = []
       for (const task of aiTasks) {
         const pick = Array.isArray(task.candidates) && task.candidates.length > 0
           ? task.candidates[0] : { kind: 'inbox' }
-        await aiApply(task, pick)
+        let parent = ''
+        if (pick.kind === 'plan') {
+          parent = pick.id
+        } else if (pick.kind === 'new') {
+          const title = String(pick.title === undefined ? '' : pick.title).trim()
+          if (title === '') continue
+          const res = await write('node-add', { title, type: 'plan' })
+          if (res === null || res === undefined || res.node === null || res.node === undefined) continue
+          parent = res.node.id
+        }
+        queue.push(aiDraftOf(task, parent))
       }
+      setAiTasks([])
+      setAiOpen(false)
+      if (queue.length === 0) return
+      setAiQueue(queue.slice(1))
+      openDraft(queue[0])
+      flash('逐条确认 AI 草稿（共 ' + queue.length + ' 条），改完点保存')
     }
 
     /** 改某条草稿的新建计划名。用函数式更新，避免连着改几条时互相覆盖。 */
@@ -876,6 +942,98 @@ function apply(ctx) {
         .then(() => flash('已留档一个版本'))
         .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
     }, [sessionId])
+
+    // ============================================================ 详情编辑页
+    //
+    // 「任务和计划的所有信息都要能编辑」的落点。它**没有新增工具也没有新增路由**：
+    // 表单把节点摊平成一屏标量，保存时合成一次 /node-set（新建是 /node-add），
+    // 字段清单由 logic.cjs 的 formRequest 统一产出——新建与编辑共用一份，
+    // 否则迟早出现「新建支持某字段、编辑不支持」。
+    const openEdit = (node) => {
+      setEditing(null)                 // 关掉就地改名，两个编辑器不能同时开着
+      setFormEvRef('')
+      setFormFileRef('')
+      setFormParent('')
+      setForm({ mode: 'edit', id: node.id, draft: formDraftOf(node) })
+    }
+    /** 关掉表单。顺手清掉 AI 队列——否则取消之后它会在下一次保存时突然冒出来。 */
+    const closeForm = () => { setForm(null); setAiQueue([]) }
+    /** 用一份现成的草稿打开新建表单（AI 草稿走这里）。 */
+    const openDraft = (draft) => {
+      setFormEvRef('')
+      setFormFileRef('')
+      setFormParent(draft.parent === undefined ? '' : draft.parent)
+      setForm({ mode: 'new', id: null, draft })
+    }
+    /**
+     * AI 草稿 → 表单草稿。**不直接落库**：AI 给的是草稿，标题可能不对、
+     * 归属可能猜错，先让人看一眼再存，才是「AI 帮我记」而不是「AI 替我决定」。
+     */
+    const aiDraftOf = (task, parent) => {
+      const d = emptyDraft('todo', parent === null || parent === undefined ? '' : parent)
+      d.title = typeof task.title === 'string' ? task.title : ''
+      if (typeof task.due === 'string' && task.due !== '') d.due = task.due
+      if (typeof task.priority === 'string' && task.priority !== '') d.priority = task.priority
+      if (typeof task.note === 'string' && task.note !== '') d.note = task.note
+      return d
+    }
+    const openNew = (type, parent) => {
+      const p = parent === null || parent === undefined ? '' : parent
+      openDraft(emptyDraft(type, p))
+    }
+    const patchForm = (key, value) => {
+      setForm((prev) => {
+        if (prev === null) return prev
+        const draft = Object.assign({}, prev.draft)
+        draft[key] = value
+        // 换型时状态必须归一：`active` 只对计划合法、`todo`/`doing` 只对待办合法。
+        // 不归一就会提交一个对该类型非法的状态，而服务端会直接拒绝——与其让它
+        // 变成一条看不懂的报错，不如在这里把选项换掉。
+        if (key === 'type') {
+          const list = statusListOf(value)
+          if (list.indexOf(draft.status) < 0) draft.status = list[0]
+        }
+        return Object.assign({}, prev, { draft })
+      })
+    }
+    const nodeById = (id) => {
+      const flat = flattenNodes(plan)
+      for (const item of flat) if (String(item.node.id) === String(id)) return item.node
+      return null
+    }
+    const saveForm = () => {
+      if (form === null || formSaving) return
+      const errs = formErrors(form.draft)
+      if (errs.length > 0) { store.set({ error: errs.join('；') }); return }
+      const original = form.mode === 'edit' ? nodeById(form.id) : null
+      const req = formRequest(form.draft, original)
+      setFormSaving(true)
+      write(req.method, req.body).then((r) => {
+        setFormSaving(false)
+        // write 出错时 resolve null（错误已进 store.error），此时**保留表单**——
+        // 把人填了半天的东西丢掉，是比报错本身更糟的体验。
+        if (r === null) return
+        // 队列里还有 AI 草稿：保存完接着看下一条，直到过完为止。
+        if (aiQueue.length > 0) {
+          const next = aiQueue[0]
+          setAiQueue(aiQueue.slice(1))
+          openDraft(next)
+          flash('已保存，接着看下一条 AI 草稿（还剩 ' + (aiQueue.length - 1) + ' 条）')
+          return
+        }
+        setForm(null)
+        flash(form.mode === 'new' ? '已新建' : '已保存')
+      })
+    }
+    /** 证据增删即时生效：追加式列表不适合攒到「保存」再一起发。 */
+    const addEvidenceTo = (node, kind, ref, note) => {
+      const r = (ref || '').trim()
+      if (r === '') return
+      write('node-set', { node: node.id, evidenceKind: kind, evidenceRef: r, evidenceNote: note }, () => flash('已加一条证据'))
+    }
+    const removeEvidenceFrom = (node, ref, kind) => {
+      write('node-set', { node: node.id, evidenceRemove: ref, evidenceKind: kind }, () => flash('已删除证据'))
+    }
 
     const plan = state.plan
     const sum = summarize(plan)
@@ -1303,6 +1461,11 @@ function apply(ctx) {
         dueSpan(node),
         h('button', {
           className: 'dsh-wb-act',
+          title: '编辑全部信息（负责人 / 截止 / 备注 / 证据 …）',
+          onClick: (e) => { e.stopPropagation(); openEdit(node) },
+        }, '✎'),
+        h('button', {
+          className: 'dsh-wb-act',
           title: '归位到某个计划下',
           onClick: (e) => { e.stopPropagation(); store.set({ moving: state.moving === node.id ? null : node.id }) },
         }, '↳'),
@@ -1350,6 +1513,11 @@ function apply(ctx) {
         priBadge(node),
         q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
         h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '编辑全部信息（负责人 / 周期 / 指标 / 备注 / 证据 …）',
+          onClick: (e) => { e.stopPropagation(); openEdit(node) },
+        }, '✎'),
         h('button', {
           className: 'dsh-wb-act',
           title: '在这个计划下加一项',
@@ -1455,6 +1623,14 @@ function apply(ctx) {
           evidChip(node),
           dueSpan(node),
         ),
+        // 看板卡片上也要能进详情：看板是「俯瞰」视图，但看到一条要改的时候
+        // 不该先切回树去找它。
+        h('button', {
+          className: 'dsh-wb-act',
+          key: 'edit',
+          title: '编辑全部信息',
+          onClick: () => openEdit(node),
+        }, '✎'),
       )
     }
 
@@ -1532,10 +1708,248 @@ function apply(ctx) {
       )
     }
 
+    // ============================================================ 详情编辑页（渲染）
+    //
+    // 打开时**整块替换**面板：树 / 看板 / 筛选都不渲染，只留这一张表单。
+    // 这样「有未保存改动」不可能悄悄发生（返回就是放弃），也用不着脏检查。
+    const detailPage = () => {
+      const d = form.draft
+      const node = form.mode === 'edit' ? nodeById(form.id) : null
+      const isNew = node === null
+      const isPlan = d.type === 'plan'
+      const errs = formErrors(d)
+      const kids = node === null ? 0 : childrenOf(node).length
+      const vaultPath = plan !== null && plan !== undefined ? plan.vaultPath : ''
+
+      const field = (key, label, opts) => h('div', { className: 'dsh-wb-field', key: 'f-' + key },
+        h('span', { className: 'dsh-wb-label' }, label),
+        h('input', Object.assign({
+          className: 'dsh-wb-inp',
+          value: d[key] === undefined || d[key] === null ? '' : d[key],
+          onChange: (e) => patchForm(key, e.target.value),
+        }, opts || {})),
+      )
+      const seg = (key, label, options) => h('div', { className: 'dsh-wb-field', key: 'f-' + key },
+        h('span', { className: 'dsh-wb-label' }, label),
+        h('div', { className: 'dsh-wb-seg' }, options.map((o) => h('button', {
+          key: o.value,
+          className: d[key] === o.value ? 'on' : '',
+          disabled: o.disabled === true,
+          title: o.title,
+          onClick: () => patchForm(key, o.value),
+        }, o.label))),
+      )
+
+      const body = []
+
+      body.push(h('div', { className: 'dsh-wb-field', key: 'title' },
+        h('span', { className: 'dsh-wb-label' }, '标题'),
+        h('input', {
+          className: 'dsh-wb-inp',
+          value: d.title,
+          placeholder: isPlan ? '这个计划要达成什么' : '要做什么',
+          onChange: (e) => patchForm('title', e.target.value),
+        })))
+
+      body.push(h('div', { className: 'dsh-wb-grid3', key: 'kinds' },
+        seg('type', '类型', [
+          { value: 'plan', label: '计划' },
+          // 有子节点的计划不能降级为待办：待办是叶子，孩子们会变成孤儿（不可逆）。
+          // 这里禁用并说明原因，而不是让人点了再收到一条报错。
+          {
+            value: 'todo',
+            label: '待办',
+            disabled: kids > 0,
+            title: kids > 0 ? '下面还有 ' + kids + ' 个子节点，先移走或删掉才能降为待办' : '改成叶子待办',
+          },
+        ]),
+        seg('status', '状态', statusListOf(d.type).map((s) => ({ value: s, label: statusLabel(s) }))),
+        seg('priority', '重要程度', PRIORITIES.map((p) => ({ value: p, label: priorityLabel(p) }))),
+      ))
+
+      body.push(h('div', { className: 'dsh-wb-grid2', key: 'when' },
+        field('owner', '负责人', { placeholder: '谁负责（可空）' }),
+        isPlan
+          ? h('div', { className: 'dsh-wb-field', key: 'f-period' },
+            h('span', { className: 'dsh-wb-label' }, '周期'),
+            h('div', { className: 'dsh-wb-seg' },
+              h('input', { className: 'dsh-wb-inp', type: 'date', value: d.start, onChange: (e) => patchForm('start', e.target.value) }),
+              h('input', { className: 'dsh-wb-inp', type: 'date', value: d.end, onChange: (e) => patchForm('end', e.target.value) })))
+          : field('due', '截止日期', { type: 'date' }),
+      ))
+
+      body.push(h('div', { className: 'dsh-wb-field', key: 'metric' },
+        h('span', { className: 'dsh-wb-label' }, '量化进度（可空：留空就按子项 / 状态算）'),
+        h('div', { className: 'dsh-wb-grid3' },
+          h('input', { className: 'dsh-wb-inp', type: 'number', placeholder: '目标', value: d.target, onChange: (e) => patchForm('target', e.target.value) }),
+          h('input', { className: 'dsh-wb-inp', type: 'number', placeholder: '当前', value: d.current, onChange: (e) => patchForm('current', e.target.value) }),
+          h('input', { className: 'dsh-wb-inp', placeholder: '单位，如 个 / 篇', value: d.unit, onChange: (e) => patchForm('unit', e.target.value) }))))
+
+      body.push(h('div', { className: 'dsh-wb-field', key: 'note' },
+        h('span', { className: 'dsh-wb-label' }, '备注'),
+        h('textarea', {
+          className: 'dsh-wb-inp',
+          rows: 3,
+          value: d.note,
+          onChange: (e) => patchForm('note', e.target.value),
+        })))
+
+      body.push(h('div', { className: 'dsh-wb-grid2', key: 'deleg' },
+        field('to', '委派给', { placeholder: '人名 / agent（可空）' }),
+        field('expectAt', '期望完成', { type: 'date' }),
+      ))
+
+      // ---- 以下三段（证据 / 关联资料 / 位置）只在编辑已有节点时出现：
+      // 新建时还没有 id，追加式列表无从挂起——先建、再回来补，比在表单里
+      // 攒一批「待创建」的草稿要简单，也不会出现「建了一半失败」的中间态。
+      // 位置（编辑）/ 放在哪（新建）：同一个选择器，两种后果——新建时它是
+      // 保存的一部分，编辑时它是即时的一次 node-move（移动不该等「保存」）。
+      {
+        const inboxOpt = { id: '', title: '收件箱（顶层）', depth: 0 }
+        const options = isNew
+          ? [inboxOpt].concat(flattenNodes(plan)
+            .filter((it) => it.type === 'plan')
+            .map((it) => ({ id: it.node.id, title: it.node.title, depth: it.depth })))
+          : [inboxOpt].concat(moveTargets(plan, node).map((t) => ({ id: t.id, title: t.title, depth: t.depth })))
+        body.push(h('div', { className: 'dsh-wb-field', key: 'move' },
+          h('span', { className: 'dsh-wb-label' }, isNew ? '放在' : '位置'),
+          h('div', { className: 'dsh-wb-fadd' },
+            h('select', {
+              value: formParent,
+              onChange: (e) => {
+                setFormParent(e.target.value)
+                if (isNew) patchForm('parent', e.target.value)
+              },
+            }, options.map((t) => h('option', { key: String(t.id), value: t.id }, '　'.repeat(t.depth) + String(t.title)))),
+            isNew
+              ? null
+              : h('button', { onClick: () => doMove(node.id, formParent === '' ? null : formParent) }, '移到此处'),
+          )))
+      }
+
+      // ---- 证据与关联资料只在编辑已有节点时出现：新建时还没有 id，
+      // 追加式列表无从挂起——先建、再回来补，比在表单里攒一批「待创建」的
+      // 草稿要简单，也不会出现「建了一半失败」的中间态。
+      if (!isNew) {
+        const evs = evidenceList(node)
+        body.push(h('div', { className: 'dsh-wb-field', key: 'ev' },
+          evs.length > 0
+            ? h('div', { className: 'dsh-wb-formlist' }, evs.map((e, i) => h('div', { className: 'dsh-wb-formrow', key: 'ev' + i },
+              h('span', { className: 'dsh-wb-fmeta' }, evidenceLabel(e.kind)),
+              h('span', { className: 'dsh-wb-fref', title: String(e.ref) }, String(e.ref)),
+              e.note ? h('span', { className: 'dsh-wb-fmeta', title: String(e.note) }, String(e.note)) : null,
+              h('button', {
+                className: 'dsh-wb-fbtn',
+                title: '删除这条证据',
+                onClick: () => removeEvidenceFrom(node, e.ref, e.kind),
+              }, '×'),
+            )))
+            : null,
+          h('div', { className: 'dsh-wb-fadd' },
+            h('select', { value: formEvKind, onChange: (e) => setFormEvKind(e.target.value) },
+              EVIDENCE_KINDS.map((k) => h('option', { key: k, value: k }, evidenceLabel(k)))),
+            h('input', {
+              type: 'text',
+              placeholder: '文件路径 / 会话 id / 命令 / 链接 / 说明',
+              value: formEvRef,
+              onChange: (e) => setFormEvRef(e.target.value),
+            }),
+            h('button', {
+              onClick: () => { addEvidenceTo(node, formEvKind, formEvRef); setFormEvRef('') },
+              disabled: formEvRef.trim() === '',
+            }, '添加'),
+          )))
+
+        const files = filesList(node)
+        body.push(h('div', { className: 'dsh-wb-field', key: 'files' },
+          h('span', { className: 'dsh-wb-label' }, '关联资料（' + files.length + '）'),
+          files.length > 0
+            ? h('div', { className: 'dsh-wb-formlist' }, files.map((f, i) => {
+              const href = obsidianLink(vaultPath, f.ref)
+              return h('div', { className: 'dsh-wb-formrow', key: 'fl' + i },
+                h('span', { className: 'dsh-wb-fmeta' }, fileLabel(f.kind)),
+                href !== null
+                  ? h('a', { className: 'dsh-wb-fref', href, title: '在 Obsidian 里打开' }, String(f.ref))
+                  : h('span', { className: 'dsh-wb-fref' }, String(f.ref)),
+                h('button', { className: 'dsh-wb-fbtn', title: '移除关联', onClick: () => unlinkFile(node, f.ref) }, '×'),
+              )
+            }))
+            : null,
+          h('div', { className: 'dsh-wb-fadd' },
+            h('select', { value: formFileKind, onChange: (e) => setFormFileKind(e.target.value) },
+              FILE_KINDS.map((k) => h('option', { key: k, value: k }, fileLabel(k)))),
+            h('input', {
+              type: 'text',
+              placeholder: '相对 vault 根的路径，如 项目A/周会.md',
+              value: formFileRef,
+              onChange: (e) => setFormFileRef(e.target.value),
+            }),
+            h('button', {
+              onClick: () => { linkFile(node, formFileRef, formFileKind); setFormFileRef('') },
+              disabled: formFileRef.trim() === '',
+            }, '关联'),
+          ),
+          vaultPath === '' || vaultPath === null || vaultPath === undefined
+            ? h('div', { className: 'dsh-wb-formnote' }, '还没配置 vault 路径，链接不会可点。')
+            : null))
+
+      }
+
+      const rows = []
+      rows.push(h('div', { className: 'dsh-wb-formhead', key: 'fh' },
+        h('button', { className: 'dsh-wb-icon', title: '返回（不保存）', onClick: closeForm }, '← 返回'),
+        h('span', { className: 'dsh-wb-formtitle' },
+          isNew ? (isPlan ? '新建计划' : '新建待办') : (isPlan ? '编辑计划' : '编辑待办')),
+        node !== null ? h('span', { className: 'dsh-wb-formsub' }, String(node.title)) : null,
+      ))
+      if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
+      if (state.error !== null && state.error !== undefined) {
+        rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
+      }
+      rows.push(h('div', { className: 'dsh-wb-form', key: 'form' },
+        body,
+        h('div', { className: 'dsh-wb-formactions', key: 'acts' },
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            disabled: formSaving || errs.length > 0,
+            title: errs.length > 0 ? errs.join('；') : '保存全部改动',
+            onClick: saveForm,
+          }, formSaving ? '保存中…' : '保存'),
+          h('button', { className: 'dsh-wb-aibtn', onClick: closeForm }, '取消'),
+          h('span', { className: 'spacer' }),
+          node !== null
+            ? h('button', {
+              className: 'dsh-wb-aibtn',
+              title: '删除这个节点',
+              onClick: () => {
+                const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
+                if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
+                write('node-remove', { node: node.id }, () => { flash('已删除'); closeForm() })
+              },
+            }, '删除')
+            : null,
+        ),
+        errs.length > 0 ? h('div', { className: 'dsh-wb-formerr', key: 'errs' }, errs.join('；')) : null,
+      ))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
+    }
+
+    // 详情编辑页优先：打开时它本身就是一屏，不必再往下走树 / 看板的组装。
+    if (form !== null) return detailPage()
+
     const rows = []
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
       h('span', { className: 'dsh-wb-title' }, '工作计划'),
       h('div', { className: 'dsh-wb-headright' },
+        // 「＋ 新建」打开完整表单（可一次填全负责人 / 周期 / 指标 / 备注）。
+        // 它**不取代**底部那行快速输入——「随手记一条」的成本必须趋近于零，
+        // 记的时候想不起来负责人是正常的，事后再补。
+        h('button', {
+          className: 'dsh-wb-icon',
+          key: 'new',
+          title: '新建计划或待办（打开完整表单）',
+          onClick: () => openNew('todo', null),
+        }, '＋ 新建'),
         // 视图切换：树形（默认）与看板各擅其场——节点一多，树越缩越深，
         // 看板把每个计划横向铺成一列、待办摊成卡片，俯瞰当前全貌更省力。
         h('div', { className: 'dsh-wb-viewtoggle', key: 'vt' },
@@ -1637,6 +2051,11 @@ function apply(ctx) {
           evidChip(node),
           priBadge(node),
           isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' }, node.end) : null),
+          h('button', {
+            className: 'dsh-wb-act',
+            title: '编辑全部信息',
+            onClick: () => openEdit(node),
+          }, '✎'),
         ))
       }
       rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
