@@ -69,6 +69,11 @@ const CSS = [
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
   + 'display:flex;flex-direction:column;height:100%;min-height:0;'
   + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
+  // 面板内统一按 border-box 算盒模型。缺了这条时，`width:100%` 且带 padding/border
+  // 的输入框（.dsh-wb-inp / .dsh-wb-atextarea）会**实打实多出** 12px padding + 2px
+  // 边框：详情页里每个字段都被撑出 14px，输入框还会越过面板右边界。宿主没有全局
+  // reset（实测 body 的 box-sizing 就是 content-box），所以这一层必须自己声明。
+  '.dsh-wb-wrap,.dsh-wb-wrap *,.dsh-wb-wrap *::before,.dsh-wb-wrap *::after{box-sizing:border-box;}',
   // 焦点环。此前全表没有一条 :focus-visible，键盘用户完全看不出停在哪。
   // outline 不参与布局，所以出现时行不会跳。
   '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
@@ -135,7 +140,7 @@ const CSS = [
   '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
   '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
-  '.dsh-wb-plan{margin-bottom:var(--wb-sp-4);}',
+  '.dsh-wb-plan{margin-bottom:var(--wb-sp-2);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
   '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
@@ -1552,11 +1557,19 @@ function apply(ctx) {
      * 与证据（📎）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
      * 无关，也不进「无证据的完成项」那条审查线。
      * vault 已配置时渲染可点的 obsidian:// 链接；host 算好的 fileWarnings 命中
-     * 则标红（文件可能被挪走了）。末尾一个「＋关联」按钮展开内联表单加一条。
+     * 则标红（文件可能被挪走了）。
+     * **没有关联时整块不渲染**——「加一条」的入口在行内的 .dsh-wb-act 组里，
+     * 不在这里；否则这个块会为每条待办留下一条看不见的 22px 空白。
      */
     const filesBlock = (node) => {
       const vaultPath = plan !== null && plan !== undefined ? plan.vaultPath : ''
       const files = filesList(node)
+      // 没有任何关联、也没在「添加关联」态时，整块不渲染：块里剩下的只是一个
+      // 悬停才可见的「＋关联」按钮（.dsh-wb-fbtn 是 opacity:0），而块本身实打实
+      // 占掉 18px + 4px 边距——于是每个待办、每个展开的计划下面都压着一条看不见
+      // 的空白，计划之间就被撑得很空。入口改挂在行内的 .dsh-wb-act 组（与 ✎/× 同级，
+      // 同样悬停才出现，但完全不占纵向空间）。
+      if (files.length === 0 && linking !== String(node.id)) return null
       // fileWarnings 是字符串数组（"文件不存在：<ref>"），从「：」后取出 ref 做匹配。
       const missing = Array.isArray(node.fileWarnings) ? node.fileWarnings : []
       const missingRefs = new Set(missing.map((w) => {
@@ -1611,13 +1624,6 @@ function apply(ctx) {
           h('button', { onClick: () => linkFile(node, linkRef, linkKind, ''), disabled: linkRef.trim() === '' }, '关联'),
           h('button', { onClick: () => { setLinking(null); setLinkRef('') } }, '取消'),
         ))
-      } else {
-        rows.push(h('button', {
-          key: 'fbtn',
-          className: 'dsh-wb-fbtn',
-          title: '关联一个 Obsidian 文件 / 文件夹',
-          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '＋关联'))
       }
       return h('div', { className: 'dsh-wb-files', key: 'files' }, rows)
     }
@@ -1725,6 +1731,11 @@ function apply(ctx) {
         }, '＋'),
         h('button', {
           className: 'dsh-wb-act',
+          title: '关联资料：Obsidian 文件 / 文件夹',
+          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
+        }, '🔗'),
+        h('button', {
+          className: 'dsh-wb-act',
           title: '删除',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
@@ -1803,6 +1814,11 @@ function apply(ctx) {
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, '＋'),
+        h('button', {
+          className: 'dsh-wb-act',
+          title: '关联资料：Obsidian 文件 / 文件夹',
+          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
+        }, '🔗'),
         h('button', {
           className: 'dsh-wb-act',
           title: '删除这个计划（连同子项）',

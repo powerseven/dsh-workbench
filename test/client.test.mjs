@@ -1156,12 +1156,14 @@ test('节点挂了文件关联：渲染出行，点 ✕ 写 node-set(fileRemove)
   }
 })
 
-test('点「＋关联」展开内联表单，填入并点「关联」写 node-set(fileRef+fileKind)', async () => {
+test('点行内「🔗」展开内联表单，填入并点「关联」写 node-set(fileRef+fileKind)', async () => {
   const { render, view } = await mount()
   const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('表层待办'))[0]
   assert.ok(row !== undefined, '应找到该待办行')
-  const addBtn = byClass(row, 'dsh-wb-fbtn')[0]
-  assert.ok(addBtn !== undefined, '应有「＋关联」按钮')
+  // 入口在行内的 .dsh-wb-act 组里（与 ✎/× 同级）：那里悬停才出现，且不占纵向空间。
+  // 早先它是一个独立的 .dsh-wb-files 块，块本身恒占 18px+4px，即使按钮 opacity:0。
+  const addBtn = byClass(row, 'dsh-wb-act').find((b) => textOf(b) === '🔗')
+  assert.ok(addBtn !== undefined, '行内应有「🔗 关联资料」按钮')
   addBtn.props.onClick(ev())
   const withForm = render()
   const fadd = byClass(withForm, 'dsh-wb-fadd')[0]
