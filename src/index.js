@@ -56,7 +56,10 @@ import {
   clearFields,
   collectNodes,
   addBlockedBy,
+  assertManualDoneAllowed,
+  autoCompleteAncestors,
   blockers,
+  reopenAncestors,
   removeBlockedBy,
   setStar,
   setRecur,
@@ -338,6 +341,33 @@ function applyDeps(plan, node, dep) {
 }
 
 /**
+ * 完成语义一体化的派生处理：完成向上级联（父的子项全完成 → 父自动完成，
+ * 一路到顶），撤回向上重开（自动完成的父链回到进行中）。
+ * 返回版本留档用的 reason 片段（'' = 祖先没有变化）。
+ */
+function propagateStatus(plan, node, before, today) {
+  const after = node.status
+  if (after === 'done' && before !== 'done') {
+    const changed = autoCompleteAncestors(plan, node, today)
+    return changed.length > 0 ? '+auto-done' : ''
+  }
+  if (before === 'done' && after !== 'done') {
+    const changed = reopenAncestors(plan, node, today)
+    return changed.length > 0 ? '+reopen' : ''
+  }
+  return ''
+}
+
+/**
+ * 手动把计划标成 done 的守门员：有未完成子项就拒绝（它的完成是派生的，
+ * 手动写只会造出「父已完成、子还开着」的矛盾）。面板的勾选框根本不出现、
+ * 详情页禁用按钮、agent 的写入在这里拦——三层同一个规则。
+ */
+function assertStatusAllowed(node, status) {
+  if (optStr(status) === 'done') assertManualDoneAllowed(node)
+}
+
+/**
  * 完成一条带 recur 的待办时克隆下一条。**只在「非 done → done」这一下触发**：
     * 状态已经是 done 再保存一次不该刷出克隆，否则每存一次多一条。
  */
@@ -597,7 +627,11 @@ export function apply(ctx) {
       // 先换型再写字段：状态校验依赖类型，顺序反了会用旧类型校验新状态。
       if (optStr(args?.type) !== undefined) setNodeType(node, args.type)
       applyFields(node, args)
+      // 有未完成子项的计划不能手动完成（它的完成由子项派生）。
+      assertStatusAllowed(node, args?.status)
       if (optStr(args?.status) !== undefined) setStatus(node, args.status)
+      // 完成 / 撤回的向上派生：父可能被自动完成或重新打开。
+      const autoReason = propagateStatus(plan, node, beforeStatus, todayStr())
       // 依赖 / 星标 / 重复：依赖要在状态之后（spawn 要知道最终状态）。
       const dep = depInputOf(args)
       const depReasons = applyDeps(plan, node, dep)
@@ -618,7 +652,8 @@ export function apply(ctx) {
           + (evidence !== undefined ? '+evidence' : '')
           + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '')
           + depReasons.map((r) => '+' + r).join('')
-          + (spawned !== null ? '+recur-spawn' : ''),
+          + (spawned !== null ? '+recur-spawn' : '')
+          + autoReason,
       })
       return {
         ok: true,
@@ -694,6 +729,8 @@ export function apply(ctx) {
       const found = resolveTodo(plan, args?.todo)
       const beforeStatus = found.node.status
       setStatus(found.node, args?.status)
+      // 完成 / 撤回的向上派生：父计划可能被自动完成或重新打开。
+      const autoReason = propagateStatus(plan, found.node, beforeStatus, todayStr())
       const note = optStr(args?.note)
       if (note !== undefined) found.node.note = note
       // 依赖 / 星标 / 重复：完成带 recur 的待办会自动克隆出下一条。
@@ -711,7 +748,8 @@ export function apply(ctx) {
         + (evidence !== undefined ? '+evidence' : '')
         + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '')
         + depReasons.map((r) => '+' + r).join('')
-        + (spawned !== null ? '+recur-spawn' : '') })
+        + (spawned !== null ? '+recur-spawn' : '')
+        + autoReason })
       return {
         ok: true,
         todo: found.node,
@@ -1242,6 +1280,8 @@ export function apply(ctx) {
       const found = resolveTodo(plan, body.todo)
       const beforeStatus = found.node.status
       setStatus(found.node, body.status)
+      // 完成 / 撤回的向上派生：父计划可能被自动完成或重新打开。
+      const autoReason = propagateStatus(plan, found.node, beforeStatus, todayStr())
       // 依赖 / 星标 / 重复（详情编辑页与执行清单走这里）。
       const dep = depInputOf(body)
       const depReasons = applyDeps(plan, found.node, dep)
@@ -1258,7 +1298,8 @@ export function apply(ctx) {
           + (evidence === undefined ? '' : '+evidence')
           + (file === undefined ? '' : '+file' + (file.op === 'remove' ? '-rm' : ''))
           + depReasons.map((r) => '+' + r).join('')
-          + (spawned !== null ? '+recur-spawn' : ''),
+          + (spawned !== null ? '+recur-spawn' : '')
+          + autoReason,
       })
       json(res, { ok: true, plan: withProgress(plan, store.root) })
     })
@@ -1300,6 +1341,8 @@ export function apply(ctx) {
         setNodeType(found.node, body.type)
         reasons.push(typeOf(found.node) + '-retype')
       }
+      // 有未完成子项的计划不能手动完成（它的完成由子项派生）。
+      assertStatusAllowed(found.node, body.status)
       if (optStr(body.title) !== undefined || optStr(body.note) !== undefined) {
         applyFields(found.node, { title: body.title, note: body.note })
         reasons.push('node-edit')
@@ -1312,6 +1355,9 @@ export function apply(ctx) {
         setStatus(found.node, body.status)
         reasons.push(typeOf(found.node) + '-' + found.node.status)
       }
+      // 完成 / 撤回的向上派生：父可能被自动完成或重新打开。
+      const autoReason = propagateStatus(plan, found.node, beforeStatus, todayStr())
+      if (autoReason !== '') reasons.push(autoReason)
       // ---- 表单语义：详情编辑页整块提交的部分（写入 / 清空 / 删证据）。
       // 写入与清空分两条通路：`applyFields` 是「不传就不动」（agent 的增量语义），
       // 而表单是「所见即所得」，把负责人清空就是要删掉它。混在一条通路里，

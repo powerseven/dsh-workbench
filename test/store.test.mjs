@@ -67,6 +67,10 @@ import {
   blockers,
   removeBlockedBy,
   RECUR_KIND,
+  assertManualDoneAllowed,
+  autoCompleteAncestors,
+  parentOf,
+  reopenAncestors,
   setDelegate,
   setDelegateExpectAt,
   setPriority,
@@ -1629,4 +1633,83 @@ test('重复：克隆的是「这件事本身」，不是「上一次」', () =>
   assert.equal('evidence' in c, false, '证据是上一次的，不继承')
   assert.equal('blockedBy' in c, false, '依赖是上一次的排程，不继承')
   assert.deepEqual(c.recur, { kind: 'week' }, '重复规则跟着走')
+})
+
+// ---------------------------------------------------------------- 完成语义一体化
+
+function cascadeFixture() {
+  const plan = emptyPlan()
+  const p = makeNode(plan, { type: 'plan', title: '主线' })
+  appendChild(plan, p)
+  const s = makeNode(plan, { type: 'plan', title: '子计划' })
+  appendChild(plan, s, p.id)
+  const t1 = makeNode(plan, { type: 'todo', title: '甲' })
+  appendChild(plan, t1, s.id)
+  const t2 = makeNode(plan, { type: 'todo', title: '乙' })
+  appendChild(plan, t2, s.id)
+  return { plan, p, s, t1, t2 }
+}
+
+test('完成向上级联：最后一个子项完成，父与祖父自动完成', () => {
+  const { plan, p, s, t1, t2 } = cascadeFixture()
+  setStatus(t1, 'done')
+  assert.equal(autoCompleteAncestors(plan, t1).length, 0, '还差一个，父不该完成')
+  assert.equal(s.status, 'active')
+  setStatus(t2, 'done')
+  const changed = autoCompleteAncestors(plan, t2)
+  assert.equal(changed.length, 2, '子计划与主线一层层点亮')
+  assert.equal(s.status, 'done')
+  assert.equal(p.status, 'done')
+  assert.ok(s.doneAt !== undefined && p.doneAt !== undefined, '自动完成也记完成时间')
+})
+
+test('撤回向上重开：撤回一个子项，自动完成的父链回到进行中', () => {
+  const { plan, p, s, t1, t2 } = cascadeFixture()
+  setStatus(t1, 'done')
+  setStatus(t2, 'done')
+  autoCompleteAncestors(plan, t2)
+  assert.equal(p.status, 'done')
+  setStatus(t2, 'todo')
+  const changed = reopenAncestors(plan, t2)
+  assert.equal(changed.length, 2, '整条链重新打开')
+  assert.equal(s.status, 'active')
+  assert.equal(p.status, 'active')
+  assert.equal('doneAt' in s, false, '重开要清掉完成时间，否则「本周完成」里还有它')
+})
+
+test('放弃的父不被顺手复活：dropped 的祖父停住级联，但 active 的父照常完成', () => {
+  const { plan, p, s, t1, t2 } = cascadeFixture()
+  setStatus(p, 'dropped')
+  setStatus(t1, 'done')
+  setStatus(t2, 'done')
+  const changed = autoCompleteAncestors(plan, t2)
+  assert.deepEqual(changed.map((n) => n.title), ['子计划'], 'active 且子项全完成的父照常完成')
+  assert.equal(s.status, 'done')
+  assert.equal(p.status, 'dropped', '放弃的主线不该被顺手复活')
+})
+
+test('顶层待办与叶子计划：级联对它们是无害的空操作', () => {
+  const plan = emptyPlan()
+  const top = makeNode(plan, { type: 'todo', title: '收件箱的一条' })
+  appendChild(plan, top)
+  setStatus(top, 'done')
+  assert.equal(autoCompleteAncestors(plan, top).length, 0, '顶层节点没有父，无事发生')
+  assert.equal(reopenAncestors(plan, top).length, 0)
+  // 叶子计划的完成由人手点（面板勾选 / agent 写 status），不归级联管。
+  const leaf = makeNode(plan, { type: 'plan', title: '空计划' })
+  appendChild(plan, leaf)
+  setStatus(leaf, 'done')
+  assert.equal(leaf.status, 'done')
+  assert.doesNotThrow(() => assertManualDoneAllowed(leaf), '叶子计划可以手动完成')
+})
+
+test('assertManualDoneAllowed：有未完成子项的计划不能手动完成', () => {
+  const { p, s, t1, t2 } = cascadeFixture()
+  assert.throws(() => assertManualDoneAllowed(p), /不能直接完成/)
+  assert.throws(() => assertManualDoneAllowed(s), /不能直接完成/)
+  // 子项全完成后父已自动 done——拦截只针对「还有未完成子项」的情形。
+  setStatus(t1, 'done')
+  setStatus(t2, 'done')
+  assert.doesNotThrow(() => assertManualDoneAllowed({ type: 'todo', title: '待办', status: 'todo' }))
+  assert.doesNotThrow(() => assertManualDoneAllowed({ type: 'plan', title: '空计划', status: 'active', children: [] }))
 })

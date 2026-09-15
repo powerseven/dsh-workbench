@@ -1367,3 +1367,56 @@ test('/ai-parse 能回 AI 动态清单：标题匹配回真实节点，对不上
   assert.equal(r.payload.list.items[1].ok, false, 'AI 指错了要让人看见')
   assert.equal(r.payload.list.items[1].id, null)
 })
+
+// ---------------------------------------------------------------- 完成语义一体化
+
+test('完成最后一个子项：父计划自动完成（级联），reason 记 auto-done', async () => {
+  const plan = await call('plan_node_add', { title: '级联主线', type: 'plan' })
+  const sub = await call('plan_node_add', { title: '级联子计划', type: 'plan', parent: plan.node.id })
+  const a = await call('plan_node_add', { title: '级联甲', type: 'todo', parent: sub.node.id })
+  const b = await call('plan_node_add', { title: '级联乙', type: 'todo', parent: sub.node.id })
+  await call('plan_todo_set', { todo: a.node.id, status: 'done' })
+  const mid = dig((await readPlan()).nodes, sub.node.id)
+  assert.equal(mid.status, 'active', '还差一个，父不完成')
+
+  // 工具返回体不带 reason（它在版本留档标签里），级联用计划状态本身断言。
+  await call('plan_todo_set', { todo: b.node.id, status: 'done' })
+  const planAfter = await readPlan()
+  assert.equal(dig(planAfter.nodes, sub.node.id).status, 'done', '子计划自动完成')
+  assert.equal(dig(planAfter.nodes, plan.node.id).status, 'done', '祖父也级联完成')
+})
+
+test('撤回子项：自动完成的父链重新打开', async () => {
+  const shown = await post('/get', { sessionId: SESSION_ID })
+  const main = shown.payload.plan.nodes.find((n) => n.title === '级联主线')
+  const sub = main.children.find((n) => n.title === '级联子计划')
+  const b = sub.children.find((n) => n.title === '级联乙')
+  // 上一条用例把乙标成 done 了；撤回它。
+  await call('plan_todo_set', { todo: b.id, status: 'todo' })
+  const plan = await readPlan()
+  assert.equal(dig(plan.nodes, sub.id).status, 'active', '子计划重新打开')
+  assert.equal(dig(plan.nodes, main.id).status, 'active', '祖父也重新打开')
+})
+
+test('有未完成子项的计划：手动标 done 被拒（工具与 HTTP 同一规则）', async () => {
+  const plan = await call('plan_node_add', { title: '拦截测试计划', type: 'plan' })
+  await call('plan_node_add', { title: '没做完的子项', type: 'todo', parent: plan.node.id })
+  await assert.rejects(
+    () => call('plan_node_set', { node: plan.node.id, status: 'done' }),
+    /不能直接完成/,
+  )
+  const http = await post('/node-set', { sessionId: SESSION_ID, node: plan.node.id, status: 'done' })
+  assert.equal(http.status, 500)
+  assert.match(http.payload.error, /不能直接完成/)
+
+  // dropped（放弃）不受影响：放弃整个分支是合法动作。
+  const drop = await call('plan_node_set', { node: plan.node.id, status: 'dropped' })
+  assert.equal(drop.ok, true)
+})
+
+test('叶子计划可以手动完成（面板勾选走的就是这条通路）', async () => {
+  const made = await call('plan_node_add', { title: '空计划也能完成', type: 'plan' })
+  const r = await call('plan_node_set', { node: made.node.id, status: 'done' })
+  assert.equal(r.ok, true)
+  assert.equal(dig((await readPlan()).nodes, made.node.id).status, 'done')
+})

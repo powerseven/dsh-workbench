@@ -1640,3 +1640,39 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   cv = firstByClass(page, 'dsh-wb-customview')
   assert.ok(cv !== null, '再点一下展开')
 })
+
+// ---------------------------------------------------------------- 完成语义一体化
+
+test('叶子计划有勾选框且走 /node-set；有子项的计划不出现勾选框', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  planPayload.nodes.push({ id: 'leafplan', type: 'plan', title: '叶子计划', status: 'active', children: [] })
+  try {
+    const { render, view } = await mount()
+    const leafHead = planRow(view, '叶子计划')
+    const leafCheck = findAll(leafHead, (el) => el.type === 'input' && el.props.type === 'checkbox')[0]
+    assert.ok(leafCheck !== undefined, '叶子计划 = 能做完的事，要能勾')
+    const withKids = planRow(view, '工作主线')
+    const kidCheck = findAll(withKids, (el) => el.type === 'input' && el.props.type === 'checkbox')
+    assert.equal(kidCheck.length, 0, '有子项的计划不能手点完成——它的完成由子项派生')
+
+    requests = []
+    leafCheck.props.onChange(ev())
+    await settle()
+    const call = requests.find((r) => r.path === '/api/workbench/node-set')
+    assert.equal(call.body.status, 'done')
+    assert.equal(call.body.node, 'leafplan')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('详情页：有未完成子项的计划，「已完成」按钮禁用并说明原因', async () => {
+  const { render, view } = await mount()
+  actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
+  await settle()
+  const segs = byClass(render(), 'dsh-wb-seg')
+  const doneBtn = segs[1].children.find((b) => textOf(b) === '已完成')
+  assert.equal(doneBtn.props.disabled, true, '子项没做完，不能手动完成')
+  assert.match(String(doneBtn.props.title), /自动完成/)
+})

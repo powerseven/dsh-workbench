@@ -122,6 +122,7 @@ const CSS = [
   '.dsh-wb-card:hover{background:var(--wb-hover);border-color:var(--wb-line);}',
   '.dsh-wb-card.done{opacity:.55;}',
   '.dsh-wb-cardtop{display:flex;align-items:flex-start;gap:var(--wb-sp-2);}',
+  '.dsh-wb-planhead input,.dsh-wb-focus input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-cardtop input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-cardtitle{flex:1;word-break:break-word;cursor:pointer;}',
   '.dsh-wb-cardtitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
@@ -1292,6 +1293,15 @@ function apply(ctx) {
     const setRecurOn = (node, kind) => write('node-set', { node: node.id, recur: kind })
     const addDepOn = (node, otherId) => write('node-set', { node: node.id, blockedAdd: otherId }, () => flash('已加依赖'))
     const removeDepOn = (node, otherId) => write('node-set', { node: node.id, blockedRemove: otherId }, () => flash('已移除依赖'))
+    /**
+     * 勾选完成一条**叶子计划**（下面没有子项的计划）。走 /node-set 的 status——
+     * 它是计划，不走 /todo-set（那限定了类型）。若它是整条链的最后一环，
+     * host 会级联把上面的父也自动完成。
+     */
+    const togglePlanDone = (node) => write(
+      'node-set',
+      { node: node.id, status: node.status === 'done' ? 'active' : 'done' },
+    )
     const inbox = inboxOf(plan)
     const roots = planNodes(plan)
     const isTopLevel = (id) => roots.some((n) => n.id === id)
@@ -1769,6 +1779,19 @@ function apply(ctx) {
         style: { marginLeft: (depth * 12) + 'px' },
       }, dragOnto(node, true)),
         caret(node),
+        // 完成语义一体化：**叶子计划**（下面没有子项的计划）也是一件能做完的事，
+        // 给勾选框——勾了走 /node-set 的 status done。有子项的计划不出现勾选框：
+        // 它的完成由子项派生（子项全完成时自动完成，host 侧级联），手点只会
+        // 造出「父已完成、子还开着」的矛盾。
+        kids.length === 0
+          ? h('input', {
+            type: 'checkbox',
+            key: 'check',
+            checked: node.status === 'done',
+            title: node.status === 'done' ? '已完成（点框重新打开）' : '点框完成这条计划',
+            onChange: () => togglePlanDone(node),
+          })
+          : null,
         h('span', { className: 'dsh-wb-planid' }, node.id),
         titleNode(node, 'dsh-wb-plantitle', { canToggle: false }),
         delegChip(node),
@@ -2045,6 +2068,10 @@ function apply(ctx) {
       const isPlan = d.type === 'plan'
       const errs = formErrors(d)
       const kids = node === null ? 0 : childrenOf(node).length
+      // 未完成的子项数：> 0 时计划不能手动标 done（它的完成由子项派生）。
+      const openKids = node === null
+        ? 0
+        : childrenOf(node).filter((c) => c.status !== 'done' && c.status !== 'dropped').length
       const vaultPath = plan !== null && plan !== undefined ? plan.vaultPath : ''
 
       const field = (key, label, opts) => h('div', { className: 'dsh-wb-field', key: 'f-' + key },
@@ -2089,7 +2116,16 @@ function apply(ctx) {
             title: kids > 0 ? '下面还有 ' + kids + ' 个子节点，先移走或删掉才能降为待办' : '改成叶子待办',
           },
         ]),
-        seg('status', '状态', statusListOf(d.type).map((s) => ({ value: s, label: statusLabel(s) }))),
+        seg('status', '状态', statusListOf(d.type).map((s) => ({
+          value: s,
+          label: statusLabel(s),
+          // 计划下面还有没做完的子项时，「已完成」点不了：完成是子项派生的，
+          // 做完它们它会自动完成。前端禁用 + 服务端拦截，同一个规则两层表达。
+          disabled: s === 'done' && isPlan && openKids > 0,
+          title: s === 'done' && isPlan && openKids > 0
+            ? '下面还有 ' + openKids + ' 个未完成的子项，做完它们它会自动完成'
+            : undefined,
+        }))),
         seg('priority', '重要程度', PRIORITIES.map((p) => ({ value: p, label: priorityLabel(p) }))),
       ))
 
@@ -2462,12 +2498,17 @@ function apply(ctx) {
       for (const item of items) {
         const node = item.node
         const isLeaf = item.type === 'todo'
+        // 完成语义一体化：叶子计划（无子项）也能勾选完成，只是通路不同
+        // （计划走 /node-set 的 status，待办走 /todo-set）。
+        const canCheck = isLeaf || childrenOf(node).length === 0
         body.push(h('div', { className: 'dsh-wb-focus', key: item.path },
-          isLeaf
+          canCheck
             ? h('input', {
               type: 'checkbox',
               checked: node.status === 'done',
-              onChange: () => setTodo(node.id, toggleStatus(node.status)),
+              onChange: () => (isLeaf
+                ? setTodo(node.id, toggleStatus(node.status))
+                : togglePlanDone(node)),
             })
             : null,
           titleNode(node, 'dsh-wb-tasktitle', { canToggle: isLeaf, draggable: false }),
