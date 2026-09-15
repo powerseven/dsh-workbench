@@ -28,7 +28,7 @@
 
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -1069,4 +1069,147 @@ test('视图偏好持久化到 localStorage，重新挂载后仍是看板', asyn
   const second = await mount()
   assert.ok(firstByClass(second.view, 'dsh-wb-board') !== null, '重新挂载后默认仍是看板')
   assert.ok(byText(second.view, 'dsh-wb-coltitle', '工作主线') !== null)
+})
+
+// ============================================================ 文件库关联（Obsidian）
+
+test('节点挂了文件关联：渲染出行，点 ✕ 写 node-set(fileRemove)', async () => {
+  const keep = planPayload
+  const id = idOf('表层待办')
+  planPayload = JSON.parse(JSON.stringify(keep))
+  const setFiles = (nodes) => {
+    for (const n of nodes) {
+      if (n.id === id) n.files = [{ kind: 'file', ref: 'a.md', note: '终版' }]
+      if (n.children) setFiles(n.children)
+    }
+  }
+  setFiles(planPayload.nodes)
+  try {
+    const { view } = await mount()
+    const fileRow = byClass(view, 'dsh-wb-file')[0]
+    assert.ok(fileRow !== undefined, '应渲染出文件关联行')
+    assert.match(textOf(fileRow), /终版/, '应显示关联说明')
+    requests = []
+    byClass(view, 'dsh-wb-fx')[0].props.onClick(ev())
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].path, '/api/workbench/todo-set')
+    assert.equal(requests[0].body.fileRemove, 'a.md')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('点「＋关联」展开内联表单，填入并点「关联」写 node-set(fileRef+fileKind)', async () => {
+  const { render, view } = await mount()
+  const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('表层待办'))[0]
+  assert.ok(row !== undefined, '应找到该待办行')
+  const addBtn = byClass(row, 'dsh-wb-fbtn')[0]
+  assert.ok(addBtn !== undefined, '应有「＋关联」按钮')
+  addBtn.props.onClick(ev())
+  const withForm = render()
+  const fadd = byClass(withForm, 'dsh-wb-fadd')[0]
+  assert.ok(fadd !== undefined, '展开后应有内联表单')
+
+  const input = inputOf(fadd)
+  input.props.onChange({ target: { value: '需求.md' } })
+  const select = fadd.children.find((c) => c.type === 'select')
+  select.props.onChange({ target: { value: 'folder' } })
+
+  const fadd2 = byClass(render(), 'dsh-wb-fadd')[0]
+  requests = []
+  const linkBtn = fadd2.children.find((c) => c.type === 'button' && textOf(c) === '关联')
+  assert.ok(linkBtn !== undefined)
+  linkBtn.props.onClick(ev())
+  assert.equal(requests.length, 1)
+  assert.equal(requests[0].path, '/api/workbench/todo-set')
+  assert.equal(requests[0].body.fileRef, '需求.md')
+  assert.equal(requests[0].body.fileKind, 'folder')
+})
+
+test('配置 vault 后文件渲染成可点 obsidian:// 链接；文件不存在标 missing 且不渲染链接', async () => {
+  const keep = planPayload
+  const call = hostCall(dir)
+  // 走真写入路径：配置 vault、给「表层待办」挂两条关联（一条存在、一条不存在），
+  // 再重新 plan_show 拿**真标注**的 payload——面板只读 payload，不自己算 fileWarnings。
+  await call('plan_config_set', { vaultPath: dir })
+  const id = idOf('表层待办')
+  await call('plan_node_set', { node: id, fileRef: 'real.md', fileKind: 'file' })
+  await call('plan_node_set', { node: id, fileRef: 'ghost.md', fileKind: 'file' })
+  await writeFile(join(dir, 'real.md'), 'hi')
+  const shown = await call('plan_show')
+  planPayload = shown.plan
+  try {
+    const { view } = await mount()
+    const rows = byClass(view, 'dsh-wb-file')
+    const present = rows.find((r) => textOf(r).includes('real.md'))
+    const missing = rows.find((r) => textOf(r).includes('ghost.md'))
+    assert.ok(present !== undefined && missing !== undefined, '两条关联都应渲染')
+
+    const link = present.children.find((c) => c.type === 'a')
+    assert.ok(link !== undefined, '文件存在应渲染 obsidian:// 链接')
+    assert.match(link.props.href, /^obsidian:\/\/open\?vault=/)
+    assert.equal(classesOf(present).includes('missing'), false, '存在的不该标 missing')
+
+    // 不存在的文件同样渲染链接（点开会跳进 vault），但标红提示「关联失效」。
+    assert.ok(missing.children.find((c) => c.type === 'a') !== undefined, '不存在的也渲染链接，供跳转')
+    assert.equal(classesOf(missing).includes('missing'), true, '不存在应标 missing')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('未配置 vault 时文件只显示路径（不渲染链接），且 vault 块给「配置」入口', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  delete planPayload.vaultPath
+  const setFiles = (nodes) => {
+    for (const n of nodes) {
+      if (n.title === '表层待办') n.files = [{ kind: 'file', ref: 'a.md' }]
+      if (n.children) setFiles(n.children)
+    }
+  }
+  setFiles(planPayload.nodes)
+  try {
+    const { view } = await mount()
+    const row = byClass(view, 'dsh-wb-file')[0]
+    assert.equal(row.children.find((c) => c.type === 'a'), undefined, '无 vault 不渲染链接')
+    const vault = byClass(view, 'dsh-wb-vault')[0]
+    assert.ok(vault !== undefined, '应渲染 vault 配置块')
+    const cfg = findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0]
+    assert.ok(cfg !== undefined, '未配置应有「配置 vault 路径」入口')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  delete planPayload.vaultPath
+  try {
+    const { render, view } = await mount()
+    const vault = byClass(view, 'dsh-wb-vault')[0]
+    findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0].props.onClick(ev())
+    const v = byClass(render(), 'dsh-wb-vault')[0]
+    const vAdd = findAll(v, (el) => classesOf(el).includes('dsh-wb-add'))[0]
+    const vinput = inputOf(vAdd)
+    assert.ok(vinput !== undefined, '展开后应有 vault 路径输入框')
+    vinput.props.onChange({ target: { value: '/tmp/my-vault' } })
+    requests = []
+    const save = findAll(byClass(render(), 'dsh-wb-vault')[0], (el) => el.type === 'button' && textOf(el) === '保存')[0]
+    assert.ok(save !== undefined)
+    save.props.onClick(ev())
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].path, '/api/workbench/config-set')
+    assert.equal(requests[0].body.vaultPath, '/tmp/my-vault')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('看板视图同样渲染 vault 配置块', async () => {
+  const { render, view } = await mount()
+  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+  const board = render()
+  assert.ok(byClass(board, 'dsh-wb-vault')[0] !== undefined, '看板视图也应渲染 vault 配置块')
 })

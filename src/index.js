@@ -24,17 +24,21 @@
  */
 
 import { randomUUID } from 'node:crypto'
+import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
+import { join, relative, resolve, sep } from 'node:path'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
 import {
   DELEGATE_STATUS,
   EVIDENCE_KIND,
+  FILE_KIND,
   NODE_TYPE,
   PRIORITY,
   PlanStore,
   TODO_STATUS,
   TYPE_LABEL,
   addEvidence,
+  addFile,
   appendChild,
   applyFields,
   behindList,
@@ -45,6 +49,7 @@ import {
   emptyPlan,
   evidenceOf,
   evidenceWarnings,
+  fileWarnings,
   inboxOf,
   isDueWithin,
   isOverdue,
@@ -57,6 +62,7 @@ import {
   planNodes,
   planProgress,
   priorityOf,
+  removeFile,
   removeNode,
   resolveNode,
   setDelegate,
@@ -145,7 +151,7 @@ function makeTool(name, description, parameters, execute) {
  * @param parentSuggestions 本节点的归位建议，由 withProgress 统一算好传进来
  *   （打分要看到整棵树，单个节点算不了）。
  */
-function annotate(node, today, root, parentSuggestions = []) {
+function annotate(node, today, root, parentSuggestions = [], vaultPath = '') {
   const type = typeOf(node)
   const progress = nodeProgress(node)
   const out = {
@@ -160,12 +166,13 @@ function annotate(node, today, root, parentSuggestions = []) {
     pace: paceOf(node, progress, today),
     unverified: isUnverified(node),
     evidenceWarnings: evidenceWarnings(node, root),
+    fileWarnings: fileWarnings(node, vaultPath),
     parentSuggestions,
   }
   out.behind = out.pace !== null && out.pace.behind === true
   // 子节点递归标注，覆盖掉 `...node` 带上来的原始 children。
-  // 建议只给顶层待办算，所以递归时不再往下传。
-  if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today, root))
+  // 建议只给顶层待办算，所以递归时不再往下传。vaultPath 是 plan 级配置，整棵共享。
+  if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today, root, [], vaultPath))
   return out
 }
 
@@ -188,7 +195,7 @@ function withProgress(plan, root) {
     behind: behindList(plan, today),
     unverified: unverifiedList(plan),
     nodes: planNodes(plan).map((node) => annotate(
-      node, today, root, suggestions.get(String(node.id ?? '')) ?? [],
+      node, today, root, suggestions.get(String(node.id ?? '')) ?? [], plan.vaultPath ?? '',
     )),
   }
 }
@@ -223,6 +230,101 @@ function evidenceInputOf(args) {
   const ref = optStr(args?.evidenceRef)
   if (ref === undefined) return undefined
   return { kind: args?.evidenceKind, ref, note: args?.evidenceNote }
+}
+
+/**
+ * 文件关联的参数组（plan_node_set / plan_todo_set 共用，HTTP 侧的 /node-set
+ * /todo-set 也读同样的字段）。
+ *
+ * 与证据**刻意分开**而不是塞进 evidence：文件关联是「做这件事要看的资料」，
+ * 文件夹也支持，且不与「无证据完成项」那条审查线绑定（见 docs/DESIGN.md
+ * 「文件库关联」章）。它复用 EVIDENCE_PARAMS 同款「平铺标量」写法——
+ * 工具的 JSON Schema 只声明标量最稳，且「一次挂一条、要挂多条就调多次」正好
+ * 契合关联的追加语义。
+ */
+const FILE_PARAMS = {
+  fileKind: {
+    type: 'string',
+    description: '可选：关联类型 ' + FILE_KIND.join(' / ')
+      + '（file=文件, folder=文件夹），不传按 file 记录',
+  },
+  fileRef: {
+    type: 'string',
+    description: '可选：关联路径，**相对 Obsidian vault 根**（非机器绝对路径）。'
+      + '给了就在这次调用里追加一条关联；节点上的 files 存的就是这个相对路径',
+  },
+  fileNote: { type: 'string', description: '可选：这条关联的说明（如「这是最终版」「草稿先放这」）' },
+  fileRemove: { type: 'string', description: '可选：传入要移除的关联 ref（文件或文件夹路径），即从该节点摘掉这条关联' },
+}
+
+/**
+ * 从入参里抽一条文件关联意图：给了 fileRemove 就摘；否则给了 fileRef 就加。
+ * 两个都不给返回 undefined（完全不动现有文件关联）。
+ */
+function fileInputOf(args) {
+  const remove = optStr(args?.fileRemove)
+  if (remove !== undefined) return { op: 'remove', ref: remove }
+  const ref = optStr(args?.fileRef)
+  if (ref === undefined) return undefined
+  return { op: 'add', kind: args?.fileKind, ref, note: args?.fileNote }
+}
+
+/**
+ * 把节点上「相对 vault 根」的 ref 解析成绝对路径，并做越界防护。
+ * ref 以 sep 开头视为绝对路径，否则 join(vaultPath, ref)；解析后必须落在
+ * vaultPath 内（以 resolve(vaultPath) + sep 开头，或正好等于它），不允许
+ * ../ 逃逸到 vault 外面去读别的目录。越界直接抛错，不让请求继续。
+ */
+function resolveRef(vaultPath, ref) {
+  const base = resolve(vaultPath)
+  const abs = (ref != null && ref.startsWith(sep)) ? resolve(ref) : join(base, ref ?? '')
+  if (abs !== base && !abs.startsWith(base + sep)) {
+    throw new Error('路径越界：ref 不能跳出 vault 根目录（' + base + '）')
+  }
+  return abs
+}
+
+/**
+ * 读 vault 内文件 / 列文件夹。返回 { exists, ref, abs, kind, ... }；
+ * 缺 vault 时返回 exists:false（不抛错，让 agent / 面板拿不到数据时平稳处理，
+ * 而不是中断）；**路径越界（../ 逃逸）仍抛错**——那是越权访问，必须拦下来。
+ * 工具（plan_file_read）与 HTTP 数据面（/file-read）共用同一份逻辑。
+ */
+function readVaultEntry(plan, ref, kind) {
+  const vaultPath = plan.vaultPath
+  if (!vaultPath) {
+    return { exists: false, vaultConfigured: false, ref, abs: '', kind: FILE_KIND.includes(kind) ? kind : 'file', vaultPath: '', content: '', entries: [] }
+  }
+  const raw = resolveRef(vaultPath, ref)
+  const k = FILE_KIND.includes(kind) ? kind : 'file'
+  const exists = existsSync(raw)
+  if (!exists) return { exists: false, ref, abs: raw, kind: k, vaultPath, content: '', entries: [] }
+  if (k === 'folder') {
+    if (!statSync(raw).isDirectory()) {
+      return { exists: true, isFileNotFolder: true, ref, abs: raw, kind: k, entries: [] }
+    }
+    const entries = readdirSync(raw).map((name) => {
+      const isDir = statSync(join(raw, name)).isDirectory()
+      return { name, kind: isDir ? 'folder' : 'file' }
+    })
+    return { exists: true, ref, abs: raw, kind: k, entries }
+  }
+  if (!statSync(raw).isFile()) {
+    return { exists: true, isFolderNotFile: true, ref, abs: raw, kind: k, content: '' }
+  }
+  const buf = readFileSync(raw)
+  const MAX = 200 * 1024
+  const tooBig = buf.length > MAX
+  const content = (tooBig ? buf.subarray(0, MAX) : buf).toString('utf8')
+  return {
+    exists: true,
+    ref,
+    abs: raw,
+    kind: k,
+    bytes: buf.length,
+    truncated: tooBig,
+    content: tooBig ? content + '\n\n…（已截断，原文 ' + buf.length + ' 字节）' : content,
+  }
 }
 
 /**
@@ -320,6 +422,7 @@ export function apply(ctx) {
       unit: { type: 'string', description: '可选：量化单位' },
       note: { type: 'string', description: '可选：备注' },
       ...EVIDENCE_PARAMS,
+      ...FILE_PARAMS,
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
@@ -332,8 +435,19 @@ export function apply(ctx) {
       // 证据在状态之后追加：先落成 done 再挂凭据，两者是同一次改变的原子结果。
       const evidence = evidenceInputOf(args)
       if (evidence !== undefined) addEvidence(node, evidence)
+      // 文件关联（与证据刻意分开）：资料是「做这件事要看的」，文件夹也行，
+      // 跟完没完成无关，不进「无证据完成项」那条审查线。
+      const file = fileInputOf(args)
+      if (file !== undefined) {
+        if (file.op === 'remove') removeFile(node, file.ref)
+        else addFile(node, file)
+      }
       const type = typeOf(node)
-      await store.save(plan, { reason: evidence === undefined ? type + '-set' : type + '-set+evidence' })
+      await store.save(plan, {
+        reason: type + '-set'
+          + (evidence !== undefined ? '+evidence' : '')
+          + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : ''),
+      })
       return {
         ok: true,
         node,
@@ -409,7 +523,14 @@ export function apply(ctx) {
       if (note !== undefined) found.node.note = note
       const evidence = evidenceInputOf(args)
       if (evidence !== undefined) addEvidence(found.node, evidence)
-      await store.save(plan, { reason: 'todo-' + found.node.status + (evidence === undefined ? '' : '+evidence') })
+      const file = fileInputOf(args)
+      if (file !== undefined) {
+        if (file.op === 'remove') removeFile(found.node, file.ref)
+        else addFile(found.node, file)
+      }
+      await store.save(plan, { reason: 'todo-' + found.node.status
+        + (evidence !== undefined ? '+evidence' : '')
+        + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '') })
       return {
         ok: true,
         todo: found.node,
@@ -418,6 +539,56 @@ export function apply(ctx) {
         unverified: isUnverified(found.node),
         plan: withProgress(plan, store.root),
       }
+    },
+  ))
+
+  // ------------------------------------------------- 文件库关联：vault 配置 + 读文件
+
+  ctx.tools.register(makeTool(
+    'plan_config_set',
+    '配置本工作区对接的 Obsidian vault 根目录（绝对路径）。这是**机器相关**配置——'
+      + '只存在本机 plan.json 顶层（vaultPath），节点上只记相对 vault 根的逻辑路径，'
+      + '换机器 / 换人也不会读到对不上的绝对路径。不传 vaultPath（或传空串）即清除配置。'
+      + '路径必须是真实存在的目录，否则会报错。配置好后，节点上的文件关联就能生成'
+      + 'obsidian:// 打开链接，agent 也能用 plan_file_read 直接读库里的笔记。',
+    {
+      vaultPath: { type: 'string', description: '可选：Obsidian vault 的绝对根目录（如 /Users/me/vault）；不传或传空即清除' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const raw = optStr(args?.vaultPath)
+      if (raw === undefined || raw === '') {
+        delete plan.vaultPath
+        await store.save(plan, { reason: 'config-vault-clear' })
+        return { ok: true, vaultPath: '', cleared: true, plan: withProgress(plan, store.root) }
+      }
+      const abs = resolve(raw)
+      if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+        throw new Error('vault 路径不存在或不是目录：' + abs + '（请确认 Obsidian vault 的绝对路径）')
+      }
+      plan.vaultPath = abs
+      await store.save(plan, { reason: 'config-vault' })
+      return { ok: true, vaultPath: abs, exists: true, plan: withProgress(plan, store.root) }
+    },
+  ))
+
+  ctx.tools.register(makeTool(
+    'plan_file_read',
+    '读 Obsidian vault 里的资料——这是「深度对接」的关键：agent 能直接看到节点关联的'
+      + '文件 / 文件夹内容，而不是只知道有个路径。ref 是**相对 vault 根**的逻辑路径'
+      + '（节点 files 上存的就是它）。kind=file 读文本正文（超大文件会被截断并标注）；'
+      + 'kind=folder 列出目录条目（每条标 file / folder）。路径越界（../ 逃逸 vault 根）会被拒绝。'
+      + '未配置 vault 或文件不存在都会明确返回 exists:false，不会报错中断。',
+    {
+      ref: { type: 'string', required: true, description: '相对 vault 根的路径（与节点 files[].ref 一致）；以 / 开头则视为绝对路径' },
+      kind: { type: 'string', description: '可选：' + FILE_KIND.join(' / ') + '（file=读文件, folder=列目录），不传按 file' },
+    },
+    async (args, exec) => {
+      const store = storeFor(cwdOf(exec))
+      const plan = await store.load()
+      const entry = readVaultEntry(plan, args?.ref, args?.kind)
+      return { ok: true, ...entry }
     },
   ))
 
@@ -787,7 +958,16 @@ export function apply(ctx) {
       setStatus(found.node, body.status)
       const evidence = evidenceInputOf(body)
       if (evidence !== undefined) addEvidence(found.node, evidence)
-      await store.save(plan, { reason: 'todo-' + found.node.status + (evidence === undefined ? '' : '+evidence') })
+      const file = fileInputOf(body)
+      if (file !== undefined) {
+        if (file.op === 'remove') removeFile(found.node, file.ref)
+        else addFile(found.node, file)
+      }
+      await store.save(plan, {
+        reason: 'todo-' + found.node.status
+          + (evidence === undefined ? '' : '+evidence')
+          + (file === undefined ? '' : '+file' + (file.op === 'remove' ? '-rm' : '')),
+      })
       json(res, { ok: true, plan: withProgress(plan, store.root) })
     })
 
@@ -848,6 +1028,12 @@ export function apply(ctx) {
         addEvidence(found.node, evidence)
         reasons.push('evidence')
       }
+      const file = fileInputOf(body)
+      if (file !== undefined) {
+        if (file.op === 'remove') removeFile(found.node, file.ref)
+        else addFile(found.node, file)
+        reasons.push('file' + (file.op === 'remove' ? '-rm' : ''))
+      }
       if (reasons.length === 0) {
         throw new Error('没有要改的属性：可传 type / priority / status / title / receipt / to / evidenceRef')
       }
@@ -902,6 +1088,47 @@ export function apply(ctx) {
       const body = await readBody(req)
       const store = storeFor(resolveCwd(body.sessionId))
       json(res, { ok: true, versions: await store.history(30) })
+    })
+
+    /**
+     * 配置 / 清除 vault 路径（与 plan_config_set 同语义，数据面入口）。
+     * 校验目录必须真实存在，否则返回 error 让面板提示。
+     */
+    route('/config-set', async (req, res) => {
+      const body = await readBody(req)
+      const store = storeFor(resolveCwd(body.sessionId))
+      const plan = await store.load()
+      const raw = optStr(body.vaultPath)
+      if (raw === undefined || raw === '') {
+        delete plan.vaultPath
+        await store.save(plan, { reason: 'config-vault-clear' })
+        json(res, { ok: true, vaultPath: '', cleared: true, plan: withProgress(plan, store.root) })
+        return
+      }
+      const abs = resolve(raw)
+      if (!existsSync(abs) || !statSync(abs).isDirectory()) {
+        json(res, { ok: false, error: 'vault 路径不存在或不是目录：' + abs })
+        return
+      }
+      plan.vaultPath = abs
+      await store.save(plan, { reason: 'config-vault' })
+      json(res, { ok: true, vaultPath: abs, exists: true, plan: withProgress(plan, store.root) })
+    })
+
+    /**
+     * 读 vault 内文件 / 列文件夹（与 plan_file_read 同语义，数据面入口）。
+     * 缺 vault / 越界 / 不存在都转成 JSON 返回，不抛 500。
+     */
+    route('/file-read', async (req, res) => {
+      const body = await readBody(req)
+      const store = storeFor(resolveCwd(body.sessionId))
+      const plan = await store.load()
+      try {
+        const entry = readVaultEntry(plan, body.ref, body.kind)
+        json(res, { ok: true, ...entry })
+      } catch (e) {
+        json(res, { ok: false, error: e.message })
+      }
     })
   })
 }

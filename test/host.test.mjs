@@ -12,7 +12,7 @@
 
 import { test, before, beforeEach, after } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, readdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, readdir, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
@@ -147,12 +147,13 @@ const flatNodes = (nodes) => (nodes ?? []).reduce((acc, n) => acc.concat([n], fl
 
 // ------------------------------------------------------------------ 注册面
 
-test('注册了完整的工具集（节点模型：增删改移 + 待办状态 + 委派 + 留档）', () => {
+test('注册了完整的工具集（节点模型：增删改移 + 待办状态 + 委派 + 留档 + 文件库关联）', () => {
   const expected = [
     'plan_show', 'plan_node_add', 'plan_node_set', 'plan_node_move', 'plan_node_remove',
     'plan_todo_set', 'plan_priority_set',
     'plan_delegate_set', 'plan_delegate_receipt', 'plan_delegated',
     'plan_snapshot', 'plan_history', 'plan_restore',
+    'plan_config_set', 'plan_file_read',
   ]
   assert.deepEqual([...tools.keys()].sort(), expected.slice().sort())
 })
@@ -161,7 +162,8 @@ test('注册了 HTTP 数据面路由', () => {
   // /ai-parse 是 AI 入口的解析口（只解析、不写入），写操作仍走 node-* / todo-set。
   assert.deepEqual(
     [...routes.keys()].sort(),
-    ['/api/workbench/ai-parse', '/api/workbench/get', '/api/workbench/history',
+    ['/api/workbench/ai-parse', '/api/workbench/config-set', '/api/workbench/file-read',
+      '/api/workbench/get', '/api/workbench/history',
       '/api/workbench/init', '/api/workbench/node-add', '/api/workbench/node-move',
       '/api/workbench/node-remove', '/api/workbench/node-set', '/api/workbench/snapshot',
       '/api/workbench/todo-set'].sort(),
@@ -961,4 +963,125 @@ test('/ai-parse 少 sessionId 时与其它路由一样报「找不到工作区�
   const r = await post('/ai-parse', { text: 'x' })
   assert.equal(r.payload.ok, false)
   assert.match(r.payload.error, /sessionId/)
+})
+
+// ------------------------------------------------------------------ 文件库关联（Obsidian）
+
+test('plan_config_set 配置 / 清除 vault 路径（机器相关配置存 plan.json 顶层）', async () => {
+  const vault = join(dir, 'vault')
+  await mkdir(vault, { recursive: true })
+  await writeFile(join(vault, 'keep.txt'), 'hi')
+  const r = await call('plan_config_set', { vaultPath: vault })
+  assert.equal(r.ok, true)
+  assert.equal(r.vaultPath, vault)
+  const plan = await readPlan()
+  assert.equal(plan.vaultPath, vault, 'vaultPath 应落在 plan.json 顶层')
+})
+
+test('plan_config_set 不传或传空即清除 vault 配置', async () => {
+  const vault = join(dir, 'vault')
+  await mkdir(vault, { recursive: true })
+  await call('plan_config_set', { vaultPath: vault })
+  const cleared = await call('plan_config_set', { vaultPath: '' })
+  assert.equal(cleared.cleared, true)
+  const plan = await readPlan()
+  assert.equal(plan.vaultPath, undefined)
+})
+
+test('plan_config_set 路径不存在时抛错而不是写半截', async () => {
+  await assert.rejects(
+    () => call('plan_config_set', { vaultPath: join(dir, 'no-such-vault') }),
+    /vault 路径不存在或不是目录/,
+  )
+})
+
+test('plan_node_set 可以挂 / 摘文件关联（与证据同款 file* 参数）', async () => {
+  const g = await call('plan_node_add', { title: '资料关联测试计划', type: 'plan' })
+  const id = g.node.id
+  const add = await call('plan_node_set', { node: id, fileRef: '需求.md', fileKind: 'file', fileNote: '终版' })
+  const node = dig(add.plan.nodes, id)
+  assert.equal(node.files.length, 1)
+  assert.equal(node.files[0].ref, '需求.md')
+  assert.equal(node.files[0].note, '终版')
+  // 再挂一个文件夹
+  const add2 = await call('plan_node_set', { node: id, fileRef: '设计稿', fileKind: 'folder' })
+  assert.equal(dig(add2.plan.nodes, id).files.length, 2)
+  // 摘掉文件
+  const rm = await call('plan_node_set', { node: id, fileRemove: '需求.md' })
+  const after = dig(rm.plan.nodes, id)
+  assert.equal(after.files.length, 1)
+  assert.equal(after.files[0].ref, '设计稿')
+})
+
+test('plan_todo_set 同样能挂 / 摘文件关联', async () => {
+  const t = await call('plan_node_add', { title: '关联待办', type: 'todo' })
+  const id = t.node.id
+  const add = await call('plan_todo_set', { todo: id, status: 'todo', fileRef: '备忘.md' })
+  assert.equal(dig(add.plan.nodes, id).files.length, 1)
+  const rm = await call('plan_todo_set', { todo: id, status: 'todo', fileRemove: '备忘.md' })
+  assert.equal(dig(rm.plan.nodes, id).files.length, 0)
+})
+
+test('plan_file_read 读文件内容、列文件夹，且越界路径被拒', async () => {
+  const vault = join(dir, 'vault-read')
+  await mkdir(vault, { recursive: true })
+  await writeFile(join(vault, 'note.md'), 'hello vault')
+  await writeFile(join(vault, 'sub.txt'), 'inner')
+  await call('plan_config_set', { vaultPath: vault })
+  // 读文件
+  const f = await call('plan_file_read', { ref: 'note.md', kind: 'file' })
+  assert.equal(f.exists, true)
+  assert.match(f.content, /hello vault/)
+  // 超大文件截断（造一个超过 200KB 的文件）
+  const big = 'x'.repeat(300 * 1024)
+  await writeFile(join(vault, 'big.md'), big)
+  const bf = await call('plan_file_read', { ref: 'big.md', kind: 'file' })
+  assert.equal(bf.truncated, true)
+  assert.equal(bf.content.length < big.length, true)
+  // 列根目录
+  const folder = await call('plan_file_read', { ref: '', kind: 'folder' })
+  assert.equal(folder.exists, true)
+  const names = folder.entries.map((e) => e.name)
+  assert.ok(names.includes('note.md'))
+  assert.ok(names.includes('sub.txt'))
+  // 越界：../ 逃离 vault 根
+  await assert.rejects(
+    () => call('plan_file_read', { ref: '../escape.md', kind: 'file' }),
+    /路径越界/,
+  )
+})
+
+test('plan_file_read 未配置 vault / 文件不存在都返回 exists:false 不中断', async () => {
+  await call('plan_config_set', { vaultPath: '' })
+  const missingVault = await call('plan_file_read', { ref: 'x.md' })
+  assert.equal(missingVault.exists, false)
+  const vault = join(dir, 'vault-read-empty')
+  await mkdir(vault, { recursive: true })
+  await call('plan_config_set', { vaultPath: vault })
+  const noFile = await call('plan_file_read', { ref: 'ghost.md' })
+  assert.equal(noFile.exists, false)
+})
+
+test('/config-set 与 /file-read 数据面：配置 vault、读文件、错误转 JSON', async () => {
+  const vault = join(dir, 'vault-route')
+  await mkdir(vault, { recursive: true })
+  await writeFile(join(vault, 'doc.md'), 'route read')
+  const set = await post('/config-set', { sessionId: SESSION_ID, vaultPath: vault })
+  assert.equal(set.payload.ok, true)
+  assert.equal(set.payload.vaultPath, vault)
+  const read = await post('/file-read', { sessionId: SESSION_ID, ref: 'doc.md', kind: 'file' })
+  assert.equal(read.payload.ok, true)
+  assert.match(read.payload.content, /route read/)
+  // 不存在的路径不 500，返回 exists:false
+  const miss = await post('/file-read', { sessionId: SESSION_ID, ref: 'nope.md' })
+  assert.equal(miss.payload.ok, true)
+  assert.equal(miss.payload.exists, false)
+  // 错误路径（越界）返回 ok:false 而不是崩溃
+  const bad = await post('/file-read', { sessionId: SESSION_ID, ref: '../x.md' })
+  assert.equal(bad.payload.ok, false)
+  assert.match(bad.payload.error, /路径越界/)
+  // 错误的 vault 路径返回 ok:false 而不是崩溃
+  const badSet = await post('/config-set', { sessionId: SESSION_ID, vaultPath: join(dir, 'nope') })
+  assert.equal(badSet.payload.ok, false)
+  assert.match(badSet.payload.error, /vault 路径不存在/)
 })

@@ -105,6 +105,13 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
   `file` / `session` / `command` / `link` / `note`，缺省按 `note`。同 `kind` + 同 `ref`
   视为同一条，不重复追加。只有 `file` 会被核验（查文件是否存在，相对工作区根解析），
   其余四种只记录、不假装能验。
+- `files`：`[{ kind, ref, note?, at }]`，**关联资料**，与 `evidence` 语义彻底分开——
+  evidence 是「做完了的凭证」（绑「无证据完成项」审查线），files 是「做这件事要看
+  的资料」（跟完没完成无关）。`kind` ∈ `file` / `folder`，`ref` 是**相对 vault 根**
+  的路径（不是相对工作区根！），同样追加式、同 `kind` + 同 `ref` 去重。核验（存在性）
+  与 obsidian:// 链接都按 `plan.vaultPath` 拼——所以 `fileWarnings` 在没配 vault 时
+  返回空（不假装能验），配了才逐条查。vaultPath 是**机器相关配置**，存 `plan.json`
+  顶层而非节点里（整个工作区共用一个 vault），换机器换人重配一次即可。
 
 **四个派生量不落盘**（与 `progress` 同理，避免两个真相源漂移）：
 
@@ -322,6 +329,15 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
     都算一遍。`test/build.test.mjs` 有断言守这条（注意断言里不能直接查
     `color:var(--wb-danger)`——`border-color:var(--wb-danger)` 含有同一子串，会误判）。
 
+23. **`files[].ref` 是相对 vault 根的，不是相对工作区根——两套基准别混。** `evidence`
+    的 file 类相对工作区根（坑 #11），`files` 相对 `plan.vaultPath`（Obsidian vault）。
+    混用的表现是「核验说不存在，Obsidian 里明明有」。另外三条纪律：①`vaultPath` 是
+    **机器相关配置**，存 `plan.json` 顶层而不是节点里，换机器重配；②`plan_file_read`
+    的 ref 必须过 `resolveRef` 的**越界防护**（resolve 后必须仍落在 vault 根内），
+    否则 `../` 能读到 vault 外任意文件——面板与工具共用 `readVaultEntry`，防护只写
+    一处；③没配 vault 时 `fileWarnings` 返回空而不是报错——没配是「还不知道」，
+    不是「关联失效」，报错会把整个面板的 ⚠ 变成噪音。
+
 ## 约定
 
 - **零构建期依赖**。`scripts/build.mjs` 只做拷贝 + 文本内联，不压缩不转译。
@@ -345,8 +361,8 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
   作用在任意节点上，`type` 决定它是计划还是待办。不要再按层级加
   `plan_goal_*` / `plan_kr_*` / `plan_task_*` 三套——三套 API 做同一件事，
   agent 每次都得先想「这东西算 goal 还是 kr」，而这些区分对人本就没有意义。
-- 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言（现在 13 个工具、
-  10 条 HTTP 路由）。
+- 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言（现在 15 个工具、
+  12 条 HTTP 路由）。
 - **跨半身重复的纯逻辑必须在测试里钉住一致性。** host 是 ESM、client 是 CJS，
   无法共享模块，像 `nextPriority` 这种映射只能各写一份——那就用断言把两份绑在一起
   （见 `test/logic.test.mjs`），否则改一侧忘另一侧，表现为「面板上点徽章跳到别的档」。

@@ -270,6 +270,42 @@ function evidenceList(node) {
   return Array.isArray(node.evidence) ? node.evidence : []
 }
 
+// -------------------------------------------------------- 文件库关联（Obsidian）
+
+/**
+ * 文件关联类型。必须与服务端 store.js 的 FILE_KIND 完全一致（顺序也一致）——
+ * 两个半身跨模块系统无法共享实现，靠 test/logic.test.mjs 的一条断言钉住。
+ * 文件夹也算关联——节点上记的是「做这件事要看的资料」，资料可以是整本笔记本。
+ */
+var FILE_KINDS = ['file', 'folder']
+
+/** 关联类型 → 中文标签。未知类型按「文件」兜底。 */
+function fileLabel(kind) {
+  if (kind === 'folder') return '文件夹'
+  return '文件'
+}
+
+/** 读关联列表（永远返回数组）。 */
+function filesList(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return []
+  return Array.isArray(node.files) ? node.files : []
+}
+
+/**
+ * 生成一条 obsidian:// 打开链接（深度对接 v1）。vault 名从 vaultPath 末段取，
+ * 路径按 vault 根相对编码。vaultPath 缺失时返回 null（面板据此只显示路径文本，
+ * 不渲染可点的链接）。链接形如 obsidian://open?vault=<名>&path=<相对路径>。
+ */
+function obsidianLink(vaultPath, ref) {
+  if (!vaultPath || typeof ref !== 'string' || ref === '') return null
+  var seg = vaultPath.split(/[\\/]/).filter(function (s) { return s !== '' })
+  var vault = seg.length > 0 ? seg[seg.length - 1] : ''
+  if (vault === '') return null
+  var p = ref
+  if (p.charAt(0) === '/') p = p.slice(1)
+  return 'obsidian://open?vault=' + encodeURIComponent(vault) + '&path=' + encodeURIComponent(p)
+}
+
 /**
  * 已完成但没有证据。优先读服务端标注；缺失时本地兜底——这条兜底不含任何
  * 阈值或日期运算，与服务端 `isUnverified` 逐字等价，所以不存在
@@ -746,6 +782,10 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     EVIDENCE_KINDS: EVIDENCE_KINDS,
     evidenceLabel: evidenceLabel,
     evidenceList: evidenceList,
+    FILE_KINDS: FILE_KINDS,
+    fileLabel: fileLabel,
+    filesList: filesList,
+    obsidianLink: obsidianLink,
     unverifiedOf: unverifiedOf,
     paceText: paceText,
     flattenNodes: flattenNodes,

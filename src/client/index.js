@@ -283,6 +283,38 @@ const CSS = [
   '@media (hover:none){.dsh-wb-act{opacity:1;}.dsh-wb-task,.dsh-wb-focus{padding:var(--wb-sp-3) var(--wb-sp-2);}}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
+  // ── 文件库关联（Obsidian）─────────────────────────────────────────────
+  // 节点上的「做这件事要看的资料」。与证据（📎）刻意区分：资料是文件夹也能挂的
+  // 开放式清单，不进「无证据完成项」那条审查线。
+  '.dsh-wb-files{display:flex;flex-direction:column;gap:var(--wb-sp-2);margin:var(--wb-sp-2) 0 0;padding-left:var(--wb-sp-3);}',
+  '.dsh-wb-file{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-file a{color:var(--wb-accent);text-decoration:none;word-break:break-word;}',
+  '.dsh-wb-file a:hover{text-decoration:underline;}',
+  '.dsh-wb-file .dsh-wb-fkind{flex:none;color:var(--wb-fg-2);}',
+  // 关联不存在时标红（host 已核验过 vault 内找不到了），提示用户文件可能被挪走。
+  '.dsh-wb-file.missing a,.dsh-wb-file.missing .dsh-wb-fref{color:var(--wb-danger);}',
+  '.dsh-wb-file .dsh-wb-fref{word-break:break-word;}',
+  '.dsh-wb-file .dsh-wb-fnote{flex:none;color:var(--wb-fg-2);font-style:italic;}',
+  '.dsh-wb-file .dsh-wb-fx{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.4;}',
+  '.dsh-wb-file .dsh-wb-fx:hover{background:var(--wb-hover);color:var(--wb-danger);}',
+  // 添加关联的内联表单：复用 .dsh-wb-add 的输入框观感，单独再写避免耦合。
+  '.dsh-wb-fadd{display:flex;gap:var(--wb-sp-2);align-items:center;margin:var(--wb-sp-2) 0 0;padding-left:var(--wb-sp-3);}',
+  '.dsh-wb-fadd input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);}',
+  '.dsh-wb-fadd input:focus{border-color:var(--wb-accent);}',
+  '.dsh-wb-fadd select{flex:none;font:inherit;padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);}',
+  '.dsh-wb-fadd button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-3);white-space:nowrap;}',
+  '.dsh-wb-fadd button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
+  '.dsh-wb-fadd button:disabled{opacity:.4;cursor:default;}',
+  // 「关联」按钮：平时藏起来，hover 整行时才出现，和行内动作（↳ × 等）一致。
+  '.dsh-wb-fbtn{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;}',
+  '.dsh-wb-task:hover .dsh-wb-fbtn,.dsh-wb-planhead:hover .dsh-wb-fbtn,.dsh-wb-task:focus-within .dsh-wb-fbtn,.dsh-wb-planhead:focus-within .dsh-wb-fbtn{opacity:1;}',
+  '.dsh-wb-fbtn:hover{background:var(--wb-hover);color:var(--wb-fg);}',
+  // ── vault 配置块 ──────────────────────────────────────────────────────
+  '.dsh-wb-vault{display:flex;flex-direction:column;gap:var(--wb-sp-2);padding:var(--wb-sp-4) var(--wb-sp-5);border-top:1px dashed var(--wb-line-2);flex:none;}',
+  '.dsh-wb-vaulthead{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-strong-12);}',
+  '.dsh-wb-vaulthead .dsh-wb-vpath{flex:1;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;}',
+  '.dsh-wb-vault .dsh-wb-add{margin:0;}',
+  '.dsh-wb-vaultempty{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
 ].join('')
 
 /**
@@ -406,6 +438,14 @@ function apply(ctx) {
     const [editDraft, setEditDraft] = React.useState('')
     const [dragId, setDragId] = React.useState(null)
     const [hint, setHint] = React.useState(null)         // { id, place } | null（id=null 表示落在空白处）
+    // 文件库关联的内联表单：正在关联哪个节点、填了一半的路径与类型。放进本地
+    // 状态——每次敲字都重渲整棵计划树太浪费，且输入框会丢焦点。
+    const [linking, setLinking] = React.useState(null)   // 正在加关联的节点 id | null
+    const [linkRef, setLinkRef] = React.useState('')
+    const [linkKind, setLinkKind] = React.useState('file')
+    // vault 配置的内联编辑态（vaultPath 是机器相关配置，存 plan.json 顶层）。
+    const [vaultEditing, setVaultEditing] = React.useState(false)
+    const [vaultDraft, setVaultDraft] = React.useState('')
     // 单击「切换完成」与双击「改名」抢的是同一个元素，单击因此必须延后执行。
     const clickTimer = React.useRef(null)
     React.useEffect(() => () => {
@@ -769,6 +809,41 @@ function apply(ctx) {
     ), [write])
     const addNode = React.useCallback((input, onOk) => write('node-add', input, onOk), [write])
 
+    // ============================================================ 文件库关联
+    //
+    // 把节点挂到 Obsidian vault 里的文件 / 文件夹。复用 node-set / todo-set 已有的
+    // fileRef / fileRemove 参数——**不新增路由**。计划走 node-set、待办走 todo-set
+    // （两条路由都接受同样的字段，host 按 node 类型定位）。面板读的是
+    // state.plan.vaultPath（host 在 /get 里原样带下来），决定要不要渲染可点的
+    // obsidian:// 链接、以及标不标「关联已失效」。
+    const fileMethod = (node) => (nodeType(node) === 'plan' ? 'node-set' : 'todo-set')
+    const linkFile = React.useCallback((node, ref, kind, note) => {
+      const path = (ref || '').trim()
+      if (path === '') return
+      write(fileMethod(node), { node: node.id, fileRef: path, fileKind: kind, fileNote: note }, () => {
+        flash('已关联' + (kind === 'folder' ? '文件夹' : '文件'))
+        setLinking(null)
+        setLinkRef('')
+        setLinkKind('file')
+      })
+    }, [write])
+    const unlinkFile = React.useCallback((node, ref) => write(
+      fileMethod(node),
+      { node: node.id, fileRemove: ref },
+      () => flash('已移除关联'),
+    ), [write])
+
+    /** 配置 / 清除 vault 路径（机器相关，存 plan.json 顶层）。 */
+    const setVault = React.useCallback((path) => {
+      return api('config-set', { sessionId, vaultPath: path })
+        .then((r) => {
+          store.set({ plan: r.plan, error: null })
+          flash(path === '' || path === null || path === undefined ? '已清除 vault 配置' : '已配置 vault')
+          return r
+        })
+        .catch((e) => { store.set({ error: e instanceof Error ? e.message : String(e) }); return null })
+    }, [sessionId])
+
     /**
      * 从一次写入的返回里取出「刚动的那个节点」——**要的是带派生字段的那份**。
      * 返回体里的 `node` 只有 { id, type, title }，而 `plan.nodes` 里那份带了
@@ -1072,7 +1147,82 @@ function apply(ctx) {
         className: 'dsh-wb-evid' + (bad.length > 0 ? ' bad' : ''),
         title: '证据 ' + list.length + ' 条\n' + lines.join('\n')
           + (bad.length > 0 ? '\n⚠ ' + bad.join('\n⚠ ') : ''),
-      }, (bad.length > 0 ? '⚠' : '📎') + list.length)
+      },       (bad.length > 0 ? '⚠' : '📎') + list.length)
+    }
+
+    /**
+     * 文件库关联块：列出节点挂到 Obsidian vault 的资料（文件 / 文件夹）。
+     * 与证据（📎）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
+     * 无关，也不进「无证据的完成项」那条审查线。
+     * vault 已配置时渲染可点的 obsidian:// 链接；host 算好的 fileWarnings 命中
+     * 则标红（文件可能被挪走了）。末尾一个「＋关联」按钮展开内联表单加一条。
+     */
+    const filesBlock = (node) => {
+      const vaultPath = plan !== null && plan !== undefined ? plan.vaultPath : ''
+      const files = filesList(node)
+      // fileWarnings 是字符串数组（"文件不存在：<ref>"），从「：」后取出 ref 做匹配。
+      const missing = Array.isArray(node.fileWarnings) ? node.fileWarnings : []
+      const missingRefs = new Set(missing.map((w) => {
+        const s = String(w)
+        const i = s.indexOf('：')
+        return i >= 0 ? s.slice(i + 1) : s
+      }))
+      const rows = []
+      for (const f of files) {
+        const ref = String(f.ref)
+        const isFolder = f.kind === 'folder'
+        const link = obsidianLink(vaultPath, ref)
+        const label = ref.split(/[\\/]/).pop() || ref
+        const inner = link !== null
+          ? h('a', {
+            href: link,
+            target: '_blank',
+            rel: 'noopener',
+            title: (isFolder ? '打开文件夹：' : '打开文件：') + ref,
+            onClick: (e) => e.stopPropagation(),
+          }, label)
+          : h('span', { className: 'dsh-wb-fref', title: (isFolder ? '文件夹：' : '文件：') + ref }, label)
+        rows.push(h('div', {
+          key: 'f-' + ref,
+          className: 'dsh-wb-file' + (missingRefs.has(ref) ? ' missing' : ''),
+        },
+          h('span', { className: 'dsh-wb-fkind' }, isFolder ? '📁' : '📄'),
+          inner,
+          f.note ? h('span', { className: 'dsh-wb-fnote', title: f.note }, '· ' + f.note) : null,
+          h('button', {
+            className: 'dsh-wb-fx',
+            title: '移除这条关联',
+            onClick: (e) => { e.stopPropagation(); unlinkFile(node, ref) },
+          }, '×'),
+        ))
+      }
+      // 内联「添加关联」表单：仅在该节点处于 linking 态时展开。
+      if (linking === String(node.id)) {
+        rows.push(h('div', { className: 'dsh-wb-fadd', key: 'fadd' },
+          h('input', {
+            type: 'text',
+            autoFocus: true,
+            placeholder: '相对 vault 根的路径，如 项目A/需求.md',
+            value: linkRef,
+            onChange: (e) => setLinkRef(e.target.value),
+            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); linkFile(node, linkRef, linkKind, '') } },
+          }),
+          h('select', { value: linkKind, onChange: (e) => setLinkKind(e.target.value) },
+            h('option', { value: 'file' }, '文件'),
+            h('option', { value: 'folder' }, '文件夹'),
+          ),
+          h('button', { onClick: () => linkFile(node, linkRef, linkKind, ''), disabled: linkRef.trim() === '' }, '关联'),
+          h('button', { onClick: () => { setLinking(null); setLinkRef('') } }, '取消'),
+        ))
+      } else {
+        rows.push(h('button', {
+          key: 'fbtn',
+          className: 'dsh-wb-fbtn',
+          title: '关联一个 Obsidian 文件 / 文件夹',
+          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
+        }, '＋关联'))
+      }
+      return h('div', { className: 'dsh-wb-files', key: 'files' }, rows)
     }
 
     const dueSpan = (node) => {
@@ -1168,6 +1318,7 @@ function apply(ctx) {
         }, '×'),
       )]
       if (state.moving === node.id) rows.push(movePick(node))
+      rows.push(filesBlock(node))
       return h('div', { className: 'dsh-wb-todowrap', key: node.id }, rows)
     }
 
@@ -1258,6 +1409,9 @@ function apply(ctx) {
         ))
       }
 
+      // 文件库关联：展开态才显示整块清单（和加子项、进度条一致，收起时只留标题行）。
+      if (open) body.push(filesBlock(node))
+
       if (open) {
         for (const kid of kids) {
           body.push(nodeType(kid) === 'plan' ? renderPlan(kid, depth + 1) : renderTodo(kid, depth + 1))
@@ -1336,6 +1490,48 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-body dsh-wb-board', key: 'body' }, colsView)
     }
 
+    /**
+     * vault 配置块：对接 Obsidian 的入口。vaultPath 是机器相关配置，存 plan.json
+     * 顶层（节点只记相对 vault 根的逻辑路径，换机器不读到对不上的绝对路径）。
+     * 没配置时给「配置」按钮；配了显示路径，可改 / 可清。配置态展开内联输入框。
+     */
+    const vaultBlock = () => {
+      const vaultPath = plan !== null && plan !== undefined ? plan.vaultPath : ''
+      if (vaultEditing) {
+        return h('div', { className: 'dsh-wb-vault', key: 'vault' },
+          h('div', { className: 'dsh-wb-vaulthead' }, '配置 Obsidian vault 路径'),
+          h('div', { className: 'dsh-wb-add' },
+            h('input', {
+              type: 'text',
+              autoFocus: true,
+              placeholder: 'vault 的绝对根目录，如 /Users/me/vault',
+              value: vaultDraft,
+              onChange: (e) => setVaultDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); setVault(vaultDraft); setVaultEditing(false) } },
+            }),
+            h('button', { onClick: () => { setVault(vaultDraft); setVaultEditing(false) }, disabled: vaultDraft.trim() === '' }, '保存'),
+            h('button', { onClick: () => { setVaultEditing(false); setVaultDraft('') } }, '取消'),
+          ),
+        )
+      }
+      return h('div', { className: 'dsh-wb-vault', key: 'vault' },
+        h('div', { className: 'dsh-wb-vaulthead' },
+          h('span', null, '📚 Obsidian'),
+          vaultPath
+            ? h('span', { className: 'dsh-wb-vpath', title: vaultPath }, vaultPath)
+            : h('span', { className: 'dsh-wb-vpath' }, '未配置'),
+        ),
+        vaultPath
+          ? h('div', { className: 'dsh-wb-vaultempty' },
+            h('button', { className: 'dsh-wb-aibtn', onClick: () => { setVaultDraft(vaultPath); setVaultEditing(true) } }, '更改'),
+            ' · ',
+            h('button', { className: 'dsh-wb-aibtn', onClick: () => setVault('') }, '清除配置'),
+          )
+          : h('button', { className: 'dsh-wb-aibtn primary', onClick: () => { setVaultDraft(''); setVaultEditing(true) } }, '配置 vault 路径'),
+        vaultPath ? h('div', { className: 'dsh-wb-vaultempty', key: 'hint' }, '文件关联会生成可点击的打开链接；AI 也能直接读库里的笔记。') : null,
+      )
+    }
+
     const rows = []
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
       h('span', { className: 'dsh-wb-title' }, '工作计划'),
@@ -1409,6 +1605,7 @@ function apply(ctx) {
 
     if (view === 'board') {
       rows.push(renderBoard())
+      rows.push(vaultBlock())
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
@@ -1443,6 +1640,7 @@ function apply(ctx) {
         ))
       }
       rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+      rows.push(vaultBlock())
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
@@ -1512,6 +1710,9 @@ function apply(ctx) {
     for (const node of roots) {
       if (nodeType(node) === 'plan') body.push(renderPlan(node, 0))
     }
+
+    // vault 配置块放在正文末尾（滚动区内、页脚之前），三种视图都看得到。
+    body.push(vaultBlock())
 
     // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，
     // 拖动适合挪到眼前的位置。接收器挂在 body 上，所以行内必须先 stopPropagation。
