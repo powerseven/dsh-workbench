@@ -312,15 +312,10 @@ function caretOf(root, title) {
   return head.children.find((c) => classesOf(c).includes('dsh-wb-caret'))
 }
 
-/**
- * 「＋ 新建顶层计划」展开后的那一行。它和收件箱输入框共用 `dsh-wb-add`，
- * 靠独有的「建计划」按钮区分——按 class 取第一个会拿到收件箱那个，
- * 于是测试往收件箱里打字，断言却指望它建计划。
- */
-const rootAddRow = (root) => byClass(root, 'dsh-wb-add')
-  .find((d) => d.children.some((c) => c.type === 'button' && textOf(c) === '建计划'))
-
 const inputOf = (row) => row.children.find((c) => c.type === 'input')
+
+/** 表头右侧的文字按钮（设置等），按文案定位。 */
+const headBtn = (root, label) => byClass(root, 'dsh-wb-icon').find((b) => textOf(b) === label) ?? null
 
 /** 造一个够用的合成事件：面板只用到这几个字段，`prevented` 记录是否被拦下。 */
 function ev(extra = {}) {
@@ -352,7 +347,7 @@ function idOf(title) {
 
 // ============================================================ 渲染冒烟
 
-test('面板渲染出计划树、收件箱与新建入口（不白屏）', async () => {
+test('面板渲染出计划树、收件箱与设置入口（不白屏）', async () => {
   const { view } = await mount()
   const body = textOf(view)
   assert.match(body, /收件箱/)
@@ -360,7 +355,7 @@ test('面板渲染出计划树、收件箱与新建入口（不白屏）', async
   assert.match(body, /子计划/)
   assert.match(body, /深层待办/)
   assert.match(body, /收件箱一条/)
-  assert.ok(firstByClass(view, 'dsh-wb-rootadd') !== null, '应有「＋ 新建顶层计划」入口')
+  assert.ok(headBtn(view, '设置') !== null, '应有「设置」入口')
 })
 
 test('tab 角标显示未完成数', async () => {
@@ -368,23 +363,24 @@ test('tab 角标显示未完成数', async () => {
   assert.equal(badge(), 3, '三条待办都还没完成')
 })
 
-test('空工作区时也能建第一个计划（不被迫去开对话）', async () => {
+test('空工作区也能记下第一件事（不被迫去开对话；它就是第一个节点）', async () => {
   const keep = planPayload
   planPayload = { schema: 2, version: 1, title: '空', nodes: [] }
   try {
     const { render, view } = await mount()
-    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /还没有计划/)
+    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /记下第一件事/)
 
-    firstByClass(view, 'dsh-wb-rootadd').props.onClick(ev())
-    inputOf(rootAddRow(render())).props.onChange({ target: { value: '新主线' } })
+    // 收件箱输入框常驻在顶部：空工作区的入口是它 + AI，不再有单独的「建计划」。
+    const addRow = byClass(render(), 'dsh-wb-add')[0]
+    inputOf(addRow).props.onChange({ target: { value: '新主线' } })
 
     requests = []
-    inputOf(rootAddRow(render())).props.onKeyDown(ev({ key: 'Enter' }))
+    inputOf(byClass(render(), 'dsh-wb-add')[0]).props.onKeyDown(ev({ key: 'Enter' }))
+    await settle()
     assert.equal(requests.length, 1)
     assert.equal(requests[0].path, '/api/workbench/node-add')
     assert.equal(requests[0].body.title, '新主线')
-    assert.equal(requests[0].body.type, 'plan')
-    assert.equal('parent' in requests[0].body, false, '顶层计划不该带 parent')
+    assert.equal('parent' in requests[0].body, false, '顶层待办不该带 parent')
   } finally {
     planPayload = keep
   }
@@ -1018,7 +1014,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
     arrayBuffer: async () => new Uint8Array([0x41, 0x42]).buffer,
   }
   const picker = byClass(render(), 'dsh-wb-aibtn').find(
-    (b) => b.type === 'label' && textOf(b).includes('🖼'),
+    (b) => b.type === 'label' && textOf(b) === '图片',
   )
   assert.ok(picker !== undefined, '应有选图入口')
   const input = findAll(picker, (el) => (el.props || {}).type === 'file')[0]
@@ -1231,11 +1227,13 @@ test('未配置 vault 时文件只显示路径（不渲染链接），且 vault 
   }
   setFiles(planPayload.nodes)
   try {
-    const { view } = await mount()
+    const { render, view } = await mount()
     const row = byClass(view, 'dsh-wb-file')[0]
     assert.equal(row.children.find((c) => c.type === 'a'), undefined, '无 vault 不渲染链接')
-    const vault = byClass(view, 'dsh-wb-vault')[0]
-    assert.ok(vault !== undefined, '应渲染 vault 配置块')
+    // vault 配置统一在「设置」页里。
+    headBtn(view, '设置').props.onClick(ev())
+    const vault = byClass(render(), 'dsh-wb-vault')[0]
+    assert.ok(vault !== undefined, '设置页应渲染 vault 配置块')
     const cfg = findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0]
     assert.ok(cfg !== undefined, '未配置应有「配置 vault 路径」入口')
   } finally {
@@ -1249,7 +1247,8 @@ test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async 
   delete planPayload.vaultPath
   try {
     const { render, view } = await mount()
-    const vault = byClass(view, 'dsh-wb-vault')[0]
+    headBtn(view, '设置').props.onClick(ev())
+    const vault = byClass(render(), 'dsh-wb-vault')[0]
     findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0].props.onClick(ev())
     const v = byClass(render(), 'dsh-wb-vault')[0]
     const vAdd = findAll(v, (el) => classesOf(el).includes('dsh-wb-add'))[0]
@@ -1268,11 +1267,15 @@ test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async 
   }
 })
 
-test('看板视图同样渲染 vault 配置块', async () => {
+test('设置页收拢 vault 与 AI 人设（与当前视图无关）', async () => {
   const { render, view } = await mount()
-  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
-  const board = render()
-  assert.ok(byClass(board, 'dsh-wb-vault')[0] !== undefined, '看板视图也应渲染 vault 配置块')
+  headBtn(view, '设置').props.onClick(ev())
+  const page = render()
+  assert.ok(byClass(page, 'dsh-wb-vault')[0] !== undefined, 'vault 配置在设置页里')
+  assert.ok(firstByClass(page, 'dsh-wb-atextarea') !== null, 'AI 人设也在设置页里')
+  // 返回后回到面板。
+  findAll(page, (el) => el.type === 'button' && textOf(el) === '← 返回')[0].props.onClick(ev())
+  assert.ok(firstByClass(render(), 'dsh-wb-vault') === null, '返回后不再显示设置内容')
 })
 
 // ---------------------------------------------------------------- 详情编辑页
@@ -1542,12 +1545,11 @@ test('点选项：把它的 patch 并进草稿再打开表单，不直接建', a
   assert.ok(dates.some((d) => d.props.value === '2026-09-21'), '选项给的 due 要落进表单')
 })
 
-test('人设：能看能改，保存走 /persona-set', async () => {
+test('人设：在设置页能看能改，保存走 /persona-set', async () => {
   withAi()
   const { render, view } = await mount()
-  aiEntry(view).props.onFocus(ev())
   requests = []
-  aiBtn(render(), '人设').props.onClick(ev())
+  headBtn(view, '设置').props.onClick(ev())
   await settle()
 
   const box = firstByClass(render(), 'dsh-wb-atextarea')
@@ -1650,7 +1652,7 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   aiBtn(render(), '存为视图').props.onClick(ev())
   await settle()
 
-  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺')
+  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺')
   assert.ok(chip !== undefined, '存完就出现在筛选条')
   // 存为视图时已经**自动激活**：不必再点，清单就在眼前。
   let page = render()
@@ -1659,9 +1661,9 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   assert.match(textOf(cv), /深层待办/)
   // chip 是开关：点一下收起，再点一下展开。**每次点击后要重新取按钮**——
   // 重渲会换新元素，旧元素上的闭包还是旧状态（真浏览器同理，只是替身更较真）。
-  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺').props.onClick(ev())
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺').props.onClick(ev())
   assert.ok(firstByClass(render(), 'dsh-wb-customview') === null, '再点一下收起')
-  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺').props.onClick(ev())
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺').props.onClick(ev())
   page = render()
   cv = firstByClass(page, 'dsh-wb-customview')
   assert.ok(cv !== null, '再点一下展开')
