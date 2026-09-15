@@ -1417,3 +1417,26 @@ test('叶子计划可以手动完成（面板勾选走的就是这条通路）',
   assert.equal(r.ok, true)
   assert.equal(dig((await readPlan()).nodes, made.node.id).status, 'done')
 })
+
+test('「纳入工作计划」：工具与 HTTP 面共用同一条写入，filed 随 payload 下发', async () => {
+  const made = await call('plan_node_add', { title: '独立事项' })
+  const id = made.node.id
+  const before = (await call('plan_show')).plan.counts
+  const inbox0 = before.inbox
+
+  // agent 侧：plan_node_set 的 filed 走 DEP_PARAMS，与 star / recur 同一条通道。
+  await call('plan_node_set', { node: id, filed: true })
+  const after = (await call('plan_show')).plan
+  assert.equal(after.counts.inbox, inbox0 - 1, '纳入后退出收件箱')
+  assert.equal(after.counts.filed, (before.filed ?? 0) + 1)
+  assert.equal(after.nodes.find((n) => n.id === id).filed, true, 'filed 随 payload 下发')
+  // 归位建议只给**还在收件箱**的待办算——纳入过的不再需要建议。
+  assert.deepEqual(after.nodes.find((n) => n.id === id).parentSuggestions, [])
+
+  // 面板侧：同一条通路（/node-set），退回收件箱。
+  const { payload } = await post('/node-set', { sessionId: SESSION_ID, node: id, filed: false })
+  assert.equal(payload.ok, true)
+  const back = (await post('/get', { sessionId: SESSION_ID })).payload.plan.counts
+  assert.equal(back.inbox, inbox0, '退回后回到收件箱')
+  assert.equal(back.filed, before.filed ?? 0)
+})

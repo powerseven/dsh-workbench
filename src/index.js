@@ -61,6 +61,7 @@ import {
   blockers,
   reopenAncestors,
   removeBlockedBy,
+  setFiled,
   setStar,
   setRecur,
   spawnRecurring,
@@ -299,6 +300,7 @@ const DEP_PARAMS = {
   blockedAdd: { type: 'string', description: '可选：加一条依赖——node 要等这个任务（任务 id）做完才能做；对方完成后自动解除' },
   blockedRemove: { type: 'string', description: '可选：移除一条依赖（任务 id）' },
   star: { type: 'boolean', description: '可选：星标（我正在做 / 接下来做），执行清单里置顶' },
+  filed: { type: 'boolean', description: '可选：纳入工作计划——不作为谁的子项，而是以独立条目出现在「工作计划」栏（true=纳入，false=退回收件箱）。只对顶层待办有意义' },
   recur: { type: 'string', description: '可选：重复周期 week / month（完成时自动克隆下一条并顺推截止），传 none 取消' },
 }
 
@@ -311,6 +313,7 @@ function depInputOf(args) {
   const rm = optStr(args.blockedRemove)
   if (rm !== undefined) out.blockedRemove = rm
   if (typeof args.star === 'boolean') out.star = args.star
+  if (typeof args.filed === 'boolean') out.filed = args.filed
   const recur = optStr(args.recur)
   if (recur !== undefined) out.recur = recur
   return Object.keys(out).length > 0 ? out : undefined
@@ -331,6 +334,10 @@ function applyDeps(plan, node, dep) {
   if (dep.star !== undefined) {
     setStar(node, dep.star)
     reasons.push(dep.star ? 'star' : 'unstar')
+  }
+  if (dep.filed !== undefined) {
+    setFiled(node, dep.filed)
+    reasons.push(dep.filed ? 'file' : 'unfile')
   }
   if (dep.recur !== undefined) {
     setRecur(node, dep.recur)
@@ -1404,7 +1411,7 @@ export function apply(ctx) {
       const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
       if (spawned !== null) reasons.push('recur-spawn')
       if (reasons.length === 0) {
-        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef')
+        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef / blockedAdd / blockedRemove / star / recur / filed')
       }
       await store.save(plan, { reason: reasons.join('+') })
       json(res, {

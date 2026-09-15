@@ -1569,7 +1569,7 @@ test('人设：在设置页能看能改，保存走 /persona-set', async () => {
 
 // ---------------------------------------------------------------- MLO 核心：执行清单 / 星标 / AI 清单卡
 
-test('「执行」视图：跨分支聚合现在能做的，星标置顶，被挡的单独折叠', async () => {
+test('「当前任务」视图：跨分支聚合现在能做的，星标置顶，被挡的单独折叠', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
   const main = planPayload.nodes.find((n) => n.title === '工作主线')
@@ -1581,7 +1581,7 @@ test('「执行」视图：跨分支聚合现在能做的，星标置顶，被�
   try {
     const { render, view } = await mount()
     const toggles = byClass(view, 'dsh-wb-viewtoggle')[0]
-    toggles.children.find((b) => textOf(b) === '执行').props.onClick(ev())
+    toggles.children.find((b) => textOf(b) === '当前任务').props.onClick(ev())
     const page = render()
     assert.match(textOf(firstByClass(page, 'dsh-wb-aihead')), /现在能做/)
     // 共享 fixture 里还有别的待办，这里只断言相对顺序：星标的「执行乙」在「执行甲」前。
@@ -1709,4 +1709,60 @@ test('详情页：有未完成子项的计划，「已完成」按钮禁用并�
   const doneBtn = statusSeg.children.find((b) => textOf(b) === '已完成')
   assert.equal(doneBtn.props.disabled, true, '子项没做完，不能手动完成')
   assert.match(String(doneBtn.props.title), /自动完成/)
+})
+
+// ---------------------------------------------------------------- 纳入工作计划
+
+test('收件箱行有常显的「纳入计划」按钮，点了写 node-set(filed:true)', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  planPayload.nodes.push({ id: 'w1', type: 'todo', title: '独立事项', status: 'todo' })
+  try {
+    const { view } = await mount()
+    const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('独立事项'))[0]
+    assert.ok(row !== undefined, '应有这条收件箱行')
+    const btn = byClass(row, 'dsh-wb-adopt')[0]
+    assert.ok(btn !== undefined, '收件箱行应有「纳入计划」按钮')
+    assert.equal(textOf(btn), '纳入计划')
+    requests = []
+    btn.props.onClick(ev())
+    await settle()
+    const req = requests.find((r) => r.path === '/api/workbench/node-set')
+    assert.ok(req !== undefined, '应走 /node-set（不新增通路）')
+    assert.equal(req.body.node, 'w1')
+    assert.equal(req.body.filed, true)
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('已纳入工作计划的叶子：进工作计划栏、有勾选框、可退回，且不再留在收件箱', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  planPayload.nodes.push({ id: 'w2', type: 'todo', title: '已纳入的事', status: 'todo', filed: true })
+  try {
+    const { render } = await mount()
+    const page = render()
+    assert.ok(byClass(page, 'dsh-wb-secttitle').map(textOf).includes('工作计划'),
+      '收件箱下方应有「工作计划」分栏标题')
+
+    const inbox = byClass(page, 'dsh-wb-inbox')[0]
+    assert.ok(!textOf(inbox).includes('已纳入的事'), '纳入之后就不该再留在收件箱')
+
+    const planRow = findAll(page, (el) => classesOf(el).includes('dsh-wb-plan') && textOf(el).includes('已纳入的事'))[0]
+    assert.ok(planRow !== undefined, '应以独立条目出现在工作计划栏')
+    // 它是叶子，所以必须还能勾完成（完成语义与形态脱钩）。
+    assert.ok(byClass(planRow, 'dsh-wb-plantitle')[0] !== undefined)
+
+    const back = byClass(planRow, 'dsh-wb-act').find((b) => textOf(b) === '↩')
+    assert.ok(back !== undefined, '纳入不该是单向门：要有退回入口')
+    requests = []
+    back.props.onClick(ev())
+    await settle()
+    const req = requests.find((r) => r.path === '/api/workbench/node-set')
+    assert.equal(req.body.filed, false)
+    assert.equal(req.body.node, 'w2')
+  } finally {
+    planPayload = keep
+  }
 })
