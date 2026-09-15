@@ -24,7 +24,29 @@
  *      中——不要替它编一个值出来（编出来的截止日期会直接进到逾期统计里）。
  */
 
-import { PRIORITY, collectNodes, suggestParent, todayStr } from './store.js'
+import {
+  PRIORITY,
+  collectNodes,
+  delegatedList,
+  evidenceOf,
+  filesOf,
+  historyHints,
+  isDueWithin,
+  isOverdue,
+  nodeProgress,
+  priorityOf,
+  suggestParent,
+  todayStr,
+  typeOf,
+  unverifiedList,
+} from './store.js'
+
+/** 取非空字符串（store 的 opt 没导出，这里只用它这一种形态）。 */
+function s(v) {
+  return typeof v === 'string' && v.trim() !== '' ? v.trim() : ''
+}
+
+const pct = (n) => String(Math.round((Number(n) || 0) * 100)) + '%'
 
 /** 一次最多解析出多少条。多了用户也不会逐条看，还会把面板撑长。 */
 export const MAX_TASKS = 20
@@ -38,6 +60,185 @@ function norm(text) {
 }
 
 const isStr = (v) => typeof v === 'string' && v.trim() !== ''
+
+/**
+ * 默认人设。它会被写进 `plan/agents.md`，之后由人在这份文件上持续改。
+ *
+ * 为什么人设要放在文件里而不是写死在提示词里：助手的「性格与专业」是**这个
+ * 工作区的事**——有人要它冷峻只报事实，有人要它像个催促进度的搭档。写死在
+ * 代码里，改一句话就得发一版；放在工作区文件里，改完立刻生效。
+ */
+export const DEFAULT_PERSONA = [
+  '# 内置 AI 助手的人设',
+  '',
+  '## 性格',
+  '- 直接、简短：先给结论，再给理由。不寒暄、不复述用户的话。',
+  '- 有判断就直说：发现重复、依赖、明显排不动，要指出来，不要为了不得罪人而含糊。',
+  '- 不确定就说不确定；绝不编造日期、进度，或引用不存在的文件。',
+  '',
+  '## 专业',
+  '- 你是工作计划管理专家：熟悉目标拆解、周期与截止的设定、优先级取舍、委派与回执、',
+  '  完成证据与复盘。用这套专业视角审视每一条新任务。',
+  '- 输出意见时必须交代**依据**：引用当前任务 / 历史相似任务 / 关联资料里的具体名字。',
+  '',
+  '## 边界',
+  '- 只建议、不擅自改数据：所有新增与修改都要由人点确认（插件本身也保证了这点）。',
+  '- 日期只在用户明确说了时间时才填；优先级只在明确说了重要 / 紧急时才填高。',
+  '',
+  '## 记住的事',
+  '- （在这里补充你的偏好，例如：周报只看三个方向、周五下午不排新活。）',
+].join('\n')
+
+/**
+ * 给模型看的**全量上下文**：不只是计划大纲，而是「当前 + 归纳」的全部信息。
+ *
+ * 为什么要单独构造一份：模型要能回答「我现在该做什么」「哪些逾期了」这类问题，
+ * 光给一个计划标题列表答不了；但把整个 plan.json 塞进去又太长、且全是 id 噪音。
+ * 所以按**人读得懂的方式**压成几段：方向 / 手上的活 / 逾期与本周 / 委派 /
+ * 最近完成 / 待核验 / 关联资料。
+ *
+ * **只给标题与状态，不给 id**：与 `planOutline` 同一个理由——模型看到 id 就会
+ * 复述 id，而我们无法校验它编的 id；需要定位时由 `matchPlan` 按标题反查。
+ */
+export function aiContext(plan, today = todayStr(), options = {}) {
+  const limit = Number(options.limit) > 0 ? Number(options.limit) : CONTEXT_LIMIT
+  const all = collectNodes(plan, 'any')
+  const open = all.filter((x) => x.node.status !== 'done' && x.node.status !== 'dropped')
+  const out = []
+
+  // ① 方向：顶层计划就是方向（不为此新增一个概念）。带进度与负责人，
+  //    模型回答「哪个方向没动」时才有依据。
+  const roots = planNodesOf(plan)
+  if (roots.length > 0) {
+    out.push('【方向 / 顶层计划】')
+    for (const n of roots.slice(0, limit)) {
+      if (typeOf(n) !== 'plan') continue
+      const bits = ['- ' + String(n.title ?? ''), '进度 ' + pct(nodeProgress(n))]
+      const owner = s(n.owner)
+      if (owner !== '') bits.push('负责人 ' + owner)
+      const period = [s(n.start), s(n.end)].filter((x) => x !== '').join('~')
+      if (period !== '') bits.push('周期 ' + period)
+      if (n.status === 'done') bits.push('已完成')
+      else if (n.status === 'dropped') bits.push('已放弃')
+      out.push(bits.join('，'))
+    }
+  }
+
+  // ② 手上的活：未完成的待办（叶子），带截止与重要程度。
+  const todos = open.filter((x) => typeOf(x.node) === 'todo')
+  if (todos.length > 0) {
+    out.push('')
+    out.push('【手上未完成的待办（共 ' + todos.length + ' 条）】')
+    for (const x of todos.slice(0, limit)) {
+      const bits = ['- ' + String(x.node.title ?? '')]
+      const due = s(x.node.due)
+      if (due !== '') bits.push('截止 ' + due)
+      if (priorityOf(x.node) === 'high') bits.push('重要度高')
+      if (x.node.status === 'doing') bits.push('进行中')
+      const parent = parentTitleOf(plan, x.node)
+      if (parent !== '') bits.push('属 ' + parent)
+      out.push(bits.join('，'))
+    }
+    if (todos.length > limit) out.push('- ……还有 ' + (todos.length - limit) + ' 条')
+  }
+
+  // ③ 逾期 / 本周到期：这两类是要被**主动提醒**的，单独成段才不会被淹没。
+  const overdue = open.filter((x) => isOverdue(x.node, today))
+  const week = open.filter((x) => isDueWithin(x.node, 7, today))
+  if (overdue.length > 0 || week.length > 0) {
+    out.push('')
+    if (overdue.length > 0) {
+      out.push('【已逾期（' + overdue.length + '）】')
+      for (const x of overdue.slice(0, limit)) out.push('- ' + String(x.node.title ?? ''))
+    }
+    if (week.length > 0) {
+      out.push('【本周内到期（' + week.length + '）】')
+      for (const x of week.slice(0, limit)) out.push('- ' + String(x.node.title ?? ''))
+    }
+  }
+
+  // ④ 委派：等别人交活也是「手上的事」，且「问一句」与「催进度」是两种动作。
+  const deleg = delegatedList(plan, today)
+  if (deleg.length > 0) {
+    out.push('')
+    out.push('【委派出去的】')
+    for (const d of deleg.slice(0, limit)) {
+      const bits = ['- ' + String(d.title ?? ''), '给 ' + String(d.to ?? '')]
+      if (d.overdueReceipt) bits.push('已逾期未回执')
+      else if (d.overdueWork) bits.push('已逾期未完成')
+      else bits.push(d.status === 'pending' ? '待接受' : '已接受')
+      out.push(bits.join('，'))
+    }
+  }
+
+  // ⑤ 最近完成：回答「最近在做什么」「上周干了啥」要靠它，也是「历史」的来源。
+  const done = all
+    .filter((x) => x.node.status === 'done' && s(x.node.doneAt) !== '')
+    .sort((a, b) => String(b.node.doneAt).localeCompare(String(a.node.doneAt)))
+  if (done.length > 0) {
+    out.push('')
+    out.push('【最近完成】')
+    for (const x of done.slice(0, limit)) {
+      const bits = ['- ' + String(x.node.title ?? ''), String(x.node.doneAt).slice(0, 10)]
+      if (evidenceOf(x.node).length > 0) bits.push('附了证据')
+      out.push(bits.join('，'))
+    }
+  }
+
+  // ⑥ 完成但没证据：本插件独有的审查线，助手该主动提。
+  const unver = unverifiedList(plan)
+  if (unver.length > 0) {
+    out.push('')
+    out.push('【已完成但没有证据（' + unver.length + '）】')
+    for (const u of unver.slice(0, limit)) out.push('- ' + String(u.title ?? ''))
+  }
+
+  // ⑦ 关联资料：告诉模型「这个计划挂了哪些文件」，它才说得出「去翻一下周会纪要」。
+  const withFiles = all.filter((x) => filesOf(x.node).length > 0)
+  if (withFiles.length > 0) {
+    out.push('')
+    out.push('【关联资料（Obsidian）】')
+    for (const x of withFiles.slice(0, limit)) {
+      const refs = filesOf(x.node).map((f) => String(f.ref ?? '')).join('、')
+      out.push('- ' + String(x.node.title ?? '') + '：' + refs)
+    }
+  }
+
+  return out.join('\n')
+}
+
+/** 上下文每段最多列多少条：再多 token 吃不消，也超过人能消化的量。 */
+export const CONTEXT_LIMIT = 20
+
+function planNodesOf(plan) {
+  return Array.isArray(plan?.nodes) ? plan.nodes : []
+}
+
+/** 找一个节点的父计划标题（拿不到就算了——它只是上下文里的补充信息）。 */
+function parentTitleOf(plan, node) {
+  for (const hit of collectNodes(plan, 'plan')) {
+    if (Array.isArray(hit.node.children) && hit.node.children.includes(node)) return String(hit.node.title ?? '')
+  }
+  return ''
+}
+
+/**
+ * 「历史上做过的类似的事」的文本形态。给 capture 用：新增一条任务时，
+ * AI 要能说「上次那条拖了 12 天」——没有这一段它只能凭空猜。
+ */
+export function historyText(plan, title, limit = 3) {
+  const hints = historyHints(plan, title, limit)
+  if (hints.length === 0) return ''
+  const lines = []
+  for (const h of hints) {
+    const bits = ['- ' + h.title, h.status === 'done' ? '已完成' : '已放弃']
+    if (h.doneAt !== null) bits.push(String(h.doneAt).slice(0, 10))
+    if (h.days !== null) bits.push('从开工到完成 ' + h.days + ' 天')
+    if (h.evidence > 0) bits.push('附了 ' + h.evidence + ' 条证据')
+    lines.push(bits.join('，') + '（' + h.why + '）')
+  }
+  return lines.join('\n')
+}
 
 /**
  * 给模型看的计划大纲：只列**计划**（不列待办，待办是叶子、不是容器），
@@ -76,30 +277,68 @@ export function planOutline(plan, limit = 40) {
 }
 
 /**
- * 解析用的系统提示词。要求**只回一个 JSON 对象**，并且把「没有把握就留空」
- * 写成明确指令——否则模型为了显得有用，会给每条都硬塞一个计划名和一个日期。
+ * 系统提示词。**一个模型、两种职责**：既能回答关于计划的问题，也能把说的事
+ * 拆成待办——用户一句话里常常两者都有（「把这三件事加进去，顺便告诉我哪些逾期」）。
+ *
+ * 关键取舍：
+ *   - **上下文给「当前 + 归纳」**（`aiContext`）而不是只给计划大纲，否则
+ *     「我现在该做什么」「哪个方向没动」这类问题根本答不了。
+ *   - **历史相似任务单独一段**：新增任务时要能说「上次那条拖了 12 天」，
+ *     没有这一段模型只能凭空猜。
+ *   - **专家意见与选项要带依据**：`advice` 必须引用上下文里的具体名字，
+ *     否则它会生成一段放之四海皆准的正确废话。
+ *   - **人设来自工作区文件**（`plan/agents.md`），不在代码里写死。
  */
-export function aiSystemPrompt(outline, today = todayStr()) {
+export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
+  const persona = typeof options.persona === 'string' && options.persona.trim() !== ''
+    ? options.persona.trim() : DEFAULT_PERSONA
+  const context = typeof options.context === 'string' ? options.context : ''
+  const history = typeof options.history === 'string' ? options.history : ''
   return [
-    '你是工作计划的录入助手。用户会给你一段口述转写文字、会议纪要，或一张截图（白板 / 清单 / 聊天记录）。',
-    '把它拆成一条条**待办**，并为每条判断该归到哪个计划下。',
+    '你是这个工作区的**内置工作计划助手**。你能做两件事，用户一句话里可能同时包含：',
+    '  1) 回答关于工作计划的问题（随时可问：进展 / 逾期 / 该做什么 / 某个计划有哪些资料）；',
+    '  2) 把用户说的事拆成待办（录入）。',
+    '',
+    '【你的人设（来自工作区 plan/agents.md）】',
+    persona,
     '',
     '今天是 ' + today + '。',
+    '',
+    // 答题靠 context，归位靠 outline：两者都要给，前者是「知道什么」、
+    // 后者是「能放到哪」的合法集合（标题路径，可被 matchPlan 反查）。
+    context === ''
+      ? '【当前全貌】这个工作区还没有任何计划与待办。'
+      : '【当前全貌】\n' + context,
+    '',
     outline === ''
-      ? '这个工作区目前还没有任何计划。'
-      : '现有计划如下（「父计划 / 子计划」表示层级）：\n' + outline,
+      ? '【可归入的计划】目前没有任何计划（新建的待办会先进收件箱）。'
+      : '【可归入的计划】（「父计划 / 子计划」表示层级，plan 字段要原样抄其中一个标题）\n' + outline,
+    history === '' ? '' : '\n【历史相似任务】（判断这次要多久、能不能排得动）\n' + history + '\n',
     '',
     '只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码围栏。格式：',
-    '{"tasks":[{"title":"待办标题","due":"YYYY-MM-DD 或留空","priority":"high|normal|low 或留空","note":"备注或留空","plan":"计划名或留空"}]}',
+    '{"reply":"给人看的一段话","tasks":[{"title":"待办标题","due":"YYYY-MM-DD 或留空",',
+    '"priority":"high|normal|low 或留空","note":"备注或留空","plan":"计划名或留空",',
+    '"advice":"计划专家意见或留空","options":[{"label":"选项名","why":"为什么",',
+    '"patch":{"due":"...","priority":"...","plan":"...","note":"..."}}]}]}',
     '',
     '规则：',
-    '1. title 必填，一句话说清要做什么，不要带序号、不要带「完成」这类状态词。',
-    '2. due 只有**明确说了时间**才填（「下周三」「9月20日前」都要换算成具体日期）；没说就留空字符串，不要猜。',
-    '3. priority 只有明确说了「重要/紧急/必须」才填 high，明确说了「有空再做」才填 low，其余留空。',
-    '4. plan 从上面现有计划里**原样抄一个标题**；如果确实都不合适，就填一个新计划的名字（要新建时用）；判断不了就留空。',
-    '5. 一条口述里含多件事就拆成多条；同一件事的补充说明合并进 note，不要单独成条。',
-    '6. 最多 ' + MAX_TASKS + ' 条，按原文顺序。',
-  ].join('\n')
+    '1. reply **必填**：回答用户的问题；如果用户只是在报事，就用一句话说明你拆出了什么、',
+    '   并指出最值得注意的一条风险（重复 / 依赖 / 排不动 / 与某个逾期项撞车）。控制在 3 句内。',
+    '2. title 必填（仅当有要记的事）：一句话说清要做什么，不带序号、不带「完成」这类状态词。',
+    '3. due 只有**明确说了时间**才填（「下周三」「9月20日前」都要换算成具体日期）；没说就留空。',
+    '4. priority 只有明确说了「重要/紧急/必须」才填 high，「有空再做」才填 low，其余留空。',
+    '5. plan 从上面【可归入的计划】里**原样抄一个标题**；都不合适就填一个新计划名；',
+    '   判断不了就留空（进收件箱）。',
+    '6. advice：**以计划专家的身份**给一条意见，必须引用【当前全貌】或【历史相似任务】里的',
+    '   具体名字（例如「与手上的「补台账」几乎重复」「历史上「台区排查」从开工到完成用了 12 天」）。',
+    '   没有依据就留空——不要写正确的废话。',
+    '7. options：2–3 个可选动作，每个都要有 label 与 why；patch 只可含 due / priority / plan / note',
+    '   四个键，值要合法（due 是 YYYY-MM-DD，priority 是 high|normal|low）。',
+    '   例如「今天就排上」（priority=high）、「排到下周」（due=下周一）、「并入某计划」（plan=计划名）。',
+    '8. 一条口述含多件事就拆成多条；同一件事的补充说明合并进 note，不要单独成条。',
+    '9. 最多 ' + MAX_TASKS + ' 条，按原文顺序。',
+    '10. 不要编造：上下文里没有的日期、文件、完成记录一律当作不存在。',
+  ].filter((x) => x !== '' && x !== undefined).join('\n')
 }
 
 /** 用户素材的包装：用显式分隔符把原文框起来，避免原文里的引号/括号破坏结构。 */
@@ -170,25 +409,80 @@ function normDue(v) {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : ''
 }
 
+/** 选项里允许出现的补丁字段（**不能**让它改别的——选项最终会进新建表单）。 */
+const PATCH_KEYS = ['due', 'priority', 'plan', 'note']
+
 /**
- * 解析模型回复，得到一组**字段已收敛**的待办。
- * 返回 { tasks, error }：一条都捞不出来时 error 是一句人话，由路由原样抛给面板。
+ * 收敛一个选项。label 没有就整条丢掉（没有名字的按钮没法点），
+ * patch 里只认四个键、值不合法就丢该键——模型越界给的东西一律不落进表单。
+ */
+function normOption(raw) {
+  if (raw === null || typeof raw !== 'object') return null
+  const label = isStr(raw.label) ? String(raw.label).trim().slice(0, 40) : ''
+  if (label === '') return null
+  const out = { label, why: isStr(raw.why) ? String(raw.why).trim().slice(0, 200) : '' }
+  const patch = {}
+  const src = (raw.patch !== null && typeof raw.patch === 'object') ? raw.patch : raw
+  for (const key of PATCH_KEYS) {
+    const v = src[key]
+    if (key === 'due') {
+      const d = normDue(v)
+      if (d !== '') patch.due = d
+    } else if (key === 'priority') {
+      const p = normPriority(v)
+      if (p !== '') patch.priority = p
+    } else if (isStr(v)) {
+      patch[key] = String(v).trim().slice(0, 200)
+    }
+  }
+  if (Object.keys(patch).length > 0) out.patch = patch
+  return out
+}
+
+/**
+ * 解析模型回复，得到**一句人话 + 一组字段已收敛的待办**。
+ *
+ * 返回 { reply, tasks, error }。与旧版只回 tasks 不同：现在「只提问不录入」也
+ * 是合法结果（tasks 为空、reply 非空），所以**不再**因为一条待办都没有就报错——
+ * 那会把「纯提问」判成失败。
  */
 export function parseAiReply(raw) {
   const parsed = extractJson(raw)
-  if (parsed === null) return { tasks: [], error: '模型没有给出能解析的 JSON：' + clip(String(raw ?? '')) }
-  const list = Array.isArray(parsed) ? parsed
-    : (parsed !== null && typeof parsed === 'object' && Array.isArray(parsed.tasks) ? parsed.tasks : null)
-  if (list === null) return { tasks: [], error: '模型给出的 JSON 里没有 tasks 数组' }
+  if (parsed === null) return { reply: '', tasks: [], error: '模型没有给出能解析的 JSON：' + clip(String(raw ?? '')) }
+  if (Array.isArray(parsed)) {
+    // 模型偶尔直接给一个数组（旧格式的习惯），按「只有 tasks」处理。
+    return { reply: '', tasks: tasksOf(parsed), error: '' }
+  }
+  if (parsed === null || typeof parsed !== 'object') {
+    return { reply: '', tasks: [], error: '模型给出的不是对象也不是数组' }
+  }
+  const list = Array.isArray(parsed.tasks) ? parsed.tasks : []
+  const reply = isStr(parsed.reply) ? String(parsed.reply).trim().slice(0, 2000) : ''
+  const tasks = tasksOf(list)
+  if (reply === '' && tasks.length === 0) {
+    return { reply: '', tasks: [], error: '模型既没有回答，也没有给出待办' }
+  }
+  return { reply, tasks, error: '' }
+}
 
+/** 把一组原始条目收敛成待办（含专家意见与选项）。 */
+function tasksOf(list) {
   const tasks = []
   for (const item of list) {
     if (item === null || typeof item !== 'object') continue
-    // 模型偶尔把整条塞进 { task: {...} } 或给 value/title 之外的键名，这里一并认。
+    // 模型偶尔把整条塞进 { task: {...} }，或给 value/name 之外的键名，这里一并认。
     const src = (item.task !== null && typeof item.task === 'object') ? item.task : item
     const title = isStr(src.title) ? String(src.title).trim()
       : (isStr(src.name) ? String(src.name).trim() : '')
     if (title === '') continue
+    const options = []
+    if (Array.isArray(src.options)) {
+      for (const o of src.options) {
+        const opt = normOption(o)
+        if (opt !== null) options.push(opt)
+        if (options.length >= MAX_OPTIONS) break
+      }
+    }
     tasks.push({
       title: title.slice(0, 200),
       due: normDue(src.due),
@@ -196,12 +490,16 @@ export function parseAiReply(raw) {
       note: isStr(src.note) ? String(src.note).trim().slice(0, 500) : '',
       // 模型点名的计划（名字，不是 id）——交给 matchPlan 去比对。
       plan: isStr(src.plan) ? String(src.plan).trim().slice(0, 100) : '',
+      advice: isStr(src.advice) ? String(src.advice).trim().slice(0, 500) : '',
+      options,
     })
     if (tasks.length >= MAX_TASKS) break
   }
-  if (tasks.length === 0) return { tasks: [], error: '模型没有给出任何待办标题' }
-  return { tasks, error: '' }
+  return tasks
 }
+
+/** 每条待办最多给几个选项。三个以上就变成菜单了，人反而不看。 */
+export const MAX_OPTIONS = 3
 
 function clip(s) {
   const t = s.replace(/\s+/g, ' ').trim()
@@ -279,7 +577,12 @@ export function attachSuggestions(plan, tasks, today = todayStr()) {
       title: named === null ? task.plan : '',
       why: named === null && task.plan !== '' ? '模型建议新建一个计划' : '新建一个计划再放进去',
     })
-    out.push(Object.assign({}, task, { candidates }))
+    // 历史相似任务：面板要拿它显示「上次那条用了 12 天」，光靠模型的 advice 不够
+    // ——模型的意见是自然语言，面板没法据此排序或展开。
+    out.push(Object.assign({}, task, {
+      candidates,
+      history: historyHints(plan, task.title, 2),
+    }))
   }
   return out
 }

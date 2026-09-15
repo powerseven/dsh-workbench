@@ -14,11 +14,16 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
 import {
+  CONTEXT_LIMIT,
+  DEFAULT_PERSONA,
+  MAX_OPTIONS,
   MAX_TASKS,
+  aiContext,
   aiSystemPrompt,
   aiUserText,
   attachSuggestions,
   collectText,
+  historyText,
   matchPlan,
   parseAiReply,
   planOutline,
@@ -110,10 +115,12 @@ test('parseAiReply 收敛非法字段：日期不合规丢弃、优先级认中�
   assert.equal(c.plan, '数据治理')
 })
 
-test('parseAiReply 丢掉没有标题的条目，一条都不剩时给出人话错误', () => {
+test('parseAiReply 丢掉没有标题的条目；连一句回复都没有才算失败', () => {
   const r = parseAiReply('{"tasks":[{"due":"2026-10-01"},{"title":"   "}]}')
   assert.equal(r.tasks.length, 0)
-  assert.match(r.error, /没有给出任何待办标题/)
+  // 「只提问不录入」现在是合法结果（reply 非空即可），所以不再因为没标题就报错。
+  assert.equal(r.error, '模型既没有回答，也没有给出待办')
+  assert.equal(parseAiReply('{"reply":"没有待办，只是在闲聊"}').error, '', '只回答不建任务也不算失败')
 
   // 完全没有 JSON 时也要说清，而不是抛 JSON.parse 的原始报错。
   const bad = parseAiReply('抱歉，我没看懂。')
@@ -210,4 +217,120 @@ test('collectText 把三种坏结局翻译成人话', async () => {
     /被长度上限截断/,
   )
   await assert.rejects(() => collectText(withFinish({ kind: 'aborted' }), {}), /模型调用失败/)
+})
+
+// ---------------------------------------------------------------- 助手：上下文 / 意见 / 选项
+
+const contextFixture = () => ({
+  schema: 2, version: 1, title: 't', createdAt: 'x', updatedAt: 'x',
+  nodes: [{
+    id: 'p1', type: 'plan', title: '工作主线', owner: '我', start: '2026-01-01', end: '2026-12-31',
+    status: 'active', children: [
+      { id: 't1', type: 'todo', title: '补台账', due: '2026-09-01', status: 'doing', priority: 'high' },
+      { id: 't2', type: 'todo', title: '写周报', due: '2026-09-16', status: 'todo' },
+      {
+        id: 't3', type: 'todo', title: '旧台账补录', status: 'done',
+        doneAt: '2026-08-01T00:00:00.000Z', startedAt: '2026-07-20T00:00:00.000Z',
+        evidence: [{ kind: 'file', ref: 'a.md', at: 'x' }],
+      },
+      // 完成但没证据：本插件独有的审查线，助手该主动提。
+      { id: 't4', type: 'todo', title: '口头确认过的事', status: 'done', doneAt: '2026-08-05T00:00:00.000Z' },
+    ],
+  }],
+})
+
+test('aiContext 给出「当前 + 归纳」：方向、手上的活、逾期、最近完成、待核验、资料', () => {
+  const ctx = aiContext(contextFixture(), '2026-09-15')
+  assert.match(ctx, /【方向 \/ 顶层计划】/, '顶层计划就是方向，不为此新增概念')
+  assert.match(ctx, /工作主线，进度/, '方向带进度，才能回答「哪个方向没动」')
+  assert.match(ctx, /【手上未完成的待办（共 2 条）】/)
+  assert.match(ctx, /补台账，截止 2026-09-01，重要度高，进行中/)
+  assert.match(ctx, /【已逾期（1）】/, '逾期单独成段，才不会被淹没')
+  assert.match(ctx, /【本周内到期（1）】/)
+  assert.match(ctx, /【最近完成】/)
+  assert.match(ctx, /旧台账补录，2026-08-01/)
+  assert.match(ctx, /【已完成但没有证据/, '这是本插件独有的审查线')
+  // 上下文里绝不出现 id：模型看到 id 就会复述 id，而我们无法校验它编的。
+  assert.equal(/\bp1\b|\bt1\b/.test(ctx), false, '上下文只给标题与状态，不给 id')
+  assert.equal(aiContext({ nodes: [] }, '2026-09-15').includes('【方向'), false, '空计划不产生空段落')
+})
+
+test('aiContext 每段最多 CONTEXT_LIMIT 条，超出要报还剩几条', () => {
+  const nodes = []
+  for (let i = 0; i < CONTEXT_LIMIT + 7; i++) nodes.push({ id: 'x' + i, type: 'todo', title: '活' + i, status: 'todo' })
+  const ctx = aiContext({ schema: 2, nodes }, '2026-09-15')
+  assert.match(ctx, /还有 7 条/, '截断时要说清还剩多少，而不是悄悄吃掉')
+})
+
+test('historyText 报出历史相似任务与「花了几天」', () => {
+  // 「旧台账补录」与新增的「补台账」在字面上重合，应当被找出来。
+  const h = historyText(contextFixture(), '补台账', 3)
+  assert.match(h, /旧台账补录/)
+  assert.match(h, /从开工到完成 12 天/, '判断这次排不排得动，靠的就是这个数')
+  assert.match(h, /附了 1 条证据/)
+  assert.equal(historyText(contextFixture(), '完全无关的一件事', 3), '', '没有相似的就别硬凑')
+})
+
+test('parseAiReply 取出 reply，以及每条的专家意见与选项', () => {
+  const r = parseAiReply(JSON.stringify({
+    reply: '本周有 1 件逾期：补台账。',
+    tasks: [{
+      title: '补台账', due: '2026-09-20', priority: 'high', plan: '工作主线',
+      advice: '与手上的「补台账」重复；历史上「旧台账补录」用了 12 天。',
+      options: [
+        { label: '今天就排上', why: '已逾期', patch: { priority: 'high' } },
+        { label: '排到下周', why: '手上还有 2 条', patch: { due: '2026-09-21' } },
+      ],
+    }],
+  }))
+  assert.equal(r.error, '')
+  assert.match(r.reply, /逾期/)
+  assert.equal(r.tasks[0].advice.includes('旧台账补录'), true)
+  assert.equal(r.tasks[0].options.length, 2)
+  assert.equal(r.tasks[0].options[0].label, '今天就排上')
+  assert.deepEqual(r.tasks[0].options[1].patch, { due: '2026-09-21' })
+})
+
+test('选项的 patch 只认四个键，值不合法就丢', () => {
+  const r = parseAiReply(JSON.stringify({
+    reply: 'x',
+    tasks: [{
+      title: 't',
+      options: [
+        { label: '乱来', why: '', patch: { due: '下周三', priority: 'urgent', owner: '别人', id: 'n9' } },
+        { label: '', why: '没有名字的选项' },
+      ],
+    }],
+  }))
+  assert.equal(r.tasks[0].options.length, 1, '没有 label 的选项整个丢掉')
+  assert.equal(r.tasks[0].options[0].patch, undefined, 'patch 全非法时不带这个键：留个空对象只会让表单以为有东西要填')
+  assert.equal(parseAiReply('{"reply":"x","tasks":[{"title":"t","options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"}]}]}')
+    .tasks[0].options.length, MAX_OPTIONS, '选项最多三个，再多就变菜单了')
+})
+
+test('系统提示词带上人设、全貌与历史；没有上下文也要能说清', () => {
+  const p = aiSystemPrompt('- 工作主线', '2026-09-15', {
+    persona: '## 性格\n- 简短',
+    context: '【当前全貌】\n- 工作主线，进度 50%',
+    history: '- 旧台账补录，已完成',
+  })
+  assert.match(p, /内置工作计划助手/)
+  assert.match(p, /## 性格\n- 简短/, '人设来自工作区文件，不写死在代码里')
+  assert.match(p, /【当前全貌】/)
+  assert.match(p, /【历史相似任务】/)
+  assert.match(p, /"reply"/)
+  assert.match(p, /"advice"/)
+  assert.match(p, /"options"/)
+  // 没有上下文时不能留一个空段落给模型自己脑补。
+  const empty = aiSystemPrompt('', '2026-09-15', {})
+  assert.match(empty, /还没有任何计划/)
+  assert.match(empty, DEFAULT_PERSONA.slice(0, 8) === '' ? /$/ : /内置默认|性格/, '没配人设时用默认人设')
+})
+
+test('默认人设里写明了性格、专业、边界与「记住的事」', () => {
+  assert.match(DEFAULT_PERSONA, /## 性格/)
+  assert.match(DEFAULT_PERSONA, /## 专业/)
+  assert.match(DEFAULT_PERSONA, /## 边界/)
+  assert.match(DEFAULT_PERSONA, /## 记住的事/, '持续改善要有个地方落笔')
+  assert.match(DEFAULT_PERSONA, /不擅自改数据/, '只建议不改数据，这条要明确写进人设')
 })

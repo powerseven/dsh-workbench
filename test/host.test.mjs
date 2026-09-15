@@ -159,14 +159,15 @@ test('注册了完整的工具集（节点模型：增删改移 + 待办状态 +
 })
 
 test('注册了 HTTP 数据面路由', () => {
-  // /ai-parse 是 AI 入口的解析口（只解析、不写入），写操作仍走 node-* / todo-set。
+  // /ai-parse 是 AI 入口（问答 + 录入，只出草稿、不写入）；写操作仍走 node-* / todo-set。
+  // /persona 与 /persona-set 读写助手人设（plan/agents.md）。
   assert.deepEqual(
     [...routes.keys()].sort(),
     ['/api/workbench/ai-parse', '/api/workbench/config-set', '/api/workbench/file-read',
       '/api/workbench/get', '/api/workbench/history',
       '/api/workbench/init', '/api/workbench/node-add', '/api/workbench/node-move',
       '/api/workbench/node-remove', '/api/workbench/node-set', '/api/workbench/snapshot',
-      '/api/workbench/todo-set'].sort(),
+      '/api/workbench/todo-set', '/api/workbench/persona', '/api/workbench/persona-set'].sort(),
   )
 })
 
@@ -1181,4 +1182,96 @@ test('HTTP /node-add 能一次带上负责人 / 周期 / 指标（新建表单�
   assert.equal(got.priority, 'high')
   assert.equal(got.note, '备注')
   assert.deepEqual(got.metric, { target: 10, current: 0, unit: '篇' })
+})
+
+// ---------------------------------------------------------------- AI 助手（问答 + 人设）
+
+test('/ai-parse 支持只提问：有 reply 就算成功，不必产出待办', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning('{"reply":"目前有 1 件逾期：补台账。","tasks":[]}')
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '我现在该做什么？' })
+  assert.equal(r.payload.ok, true)
+  assert.match(r.payload.reply, /逾期/)
+  assert.equal(r.payload.tasks.length, 0)
+})
+
+test('/ai-parse 把「当前 + 归纳」的全貌放进系统提示词', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning('{"reply":"好"}')
+  await post('/ai-parse', { sessionId: SESSION_ID, text: '总结一下' })
+  const sys = fakeLlm.calls[0].system
+  // 光有大纲答不了「我现在该做什么」，必须有全貌：方向、手上的活、逾期、最近完成。
+  assert.ok(sys.includes('【当前全貌】'), '要有全貌段落')
+  assert.ok(sys.includes('【可归入的计划】'), '归位仍要靠计划大纲（标题路径可被反查）')
+  assert.ok(sys.includes('内置工作计划助手'))
+  assert.ok(sys.includes('## 性格'), '没配人设时用默认人设')
+})
+
+test('/ai-parse 带上会话内的前几轮（接着聊），但限制轮数与长度', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning('{"reply":"接着说"}')
+  const history = [
+    { role: 'user', text: '哪些逾期了' },
+    { role: 'assistant', text: '补台账' },
+    { role: 'user', text: '它的截止呢' },
+  ]
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '那推到下周', history })
+  assert.equal(r.payload.ok, true)
+  assert.equal(r.payload.turns, 3, '回带了几轮要报出来（面板据此知道上下文接上了）')
+  const msgs = fakeLlm.calls[0].messages
+  assert.equal(msgs.length, 4, '三轮历史 + 当前这一轮')
+  assert.equal(msgs[0].role, 'user')
+  assert.equal(msgs[1].role, 'assistant')
+  assert.equal(msgs[3].content.some((b) => b.text.includes('那推到下周')), true)
+
+  // 上限：给 20 轮也只回带最近几轮，否则 token 全被历史吃掉。
+  const many = []
+  for (let i = 0; i < 20; i++) many.push({ role: 'user', text: '第' + i + '轮' })
+  const r2 = await post('/ai-parse', { sessionId: SESSION_ID, text: '现在呢', history: many })
+  assert.ok(r2.payload.turns <= 6, '历史最多回带 6 轮')
+})
+
+test('/ai-parse 问题里点到关联文件时，才把文件内容读进上下文', async () => {
+  await post('/config-set', { sessionId: SESSION_ID, vaultPath: dir })
+  await writeFile(join(dir, '周会.md'), '本周决定：周五前把台账补完。')
+  await call('plan_node_add', { title: '带资料的计划', type: 'plan' })
+  const shown = await post('/get', { sessionId: SESSION_ID })
+  const node = shown.payload.plan.nodes.find((n) => n.title === '带资料的计划')
+  await post('/node-set', { sessionId: SESSION_ID, node: node.id, fileRef: '周会.md', fileKind: 'file' })
+
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning('{"reply":"周会里说周五前补完"}')
+  const hit = await post('/ai-parse', { sessionId: SESSION_ID, text: '周会里说了什么？' })
+  assert.equal(hit.payload.ok, true)
+  assert.deepEqual(hit.payload.read, ['周会.md'], '读过的文件要报出来（面板据此告诉用户「它翻了哪些」）')
+  assert.ok(fakeLlm.calls[0].system.includes('周五前把台账补完'), '内容要真的进提示词')
+
+  // 没点到的文件不读：vault 里可能有几百篇，全读一遍既慢又撑爆上下文。
+  fakeLlm = llmReturning('{"reply":"好"}')
+  const miss = await post('/ai-parse', { sessionId: SESSION_ID, text: '今天天气不错' })
+  assert.deepEqual(miss.payload.read, [])
+  await post('/config-set', { sessionId: SESSION_ID, vaultPath: '' })
+})
+
+test('/persona 没配过就给默认人设；写入后能读回', async () => {
+  const first = await post('/persona', { sessionId: SESSION_ID })
+  assert.equal(first.payload.ok, true)
+  assert.match(first.payload.text, /## 性格/, '没配过 ≠ 没有性格')
+  assert.ok(first.payload.path.endsWith('agents.md'), '人设与 plan.json 同目录')
+
+  const written = await post('/persona-set', { sessionId: SESSION_ID, text: '## 性格\n- 只报事实' })
+  assert.equal(written.payload.ok, true)
+  const again = await post('/persona', { sessionId: SESSION_ID })
+  assert.equal(again.payload.text, '## 性格\n- 只报事实')
+})
+
+test('/persona-set 的 append 只往「记住的事」一节末尾加一条', async () => {
+  await post('/persona-set', { sessionId: SESSION_ID, text: '## 性格\n- 简短\n\n## 记住的事\n- 第一条\n' })
+  const r = await post('/persona-set', { sessionId: SESSION_ID, append: '记住：周五下午不排新活' })
+  const lines = r.payload.text.split('\n')
+  const at = lines.findIndex((l) => /^##\s*记住的事/.test(l))
+  assert.equal(lines[at + 1], '- 第一条', '原有内容保持不动')
+  assert.equal(lines[at + 2], '- 周五下午不排新活')
+  // 追加不能把「性格」一节改掉。
+  assert.ok(r.payload.text.includes('## 性格\n- 简短'))
 })

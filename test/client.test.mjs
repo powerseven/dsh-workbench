@@ -160,8 +160,10 @@ let aiStatus = { available: false }
  * 写入要拿第一步的 id 当第二步的 parent。
  */
 let nodeEcho = null
-/** /ai-parse 的假回复：{ tasks: [...] }。 */
+/** /ai-parse 的假回复：{ tasks: [...], reply? }。 */
 let aiReply = null
+/** /persona 的假回复（人设）。默认 null 时按 host 的默认人设回一份。 */
+let personaText = null
 
 globalThis.fetch = async (path, init) => {
   const body = init !== undefined && init.body !== undefined ? JSON.parse(init.body) : {}
@@ -169,6 +171,16 @@ globalThis.fetch = async (path, init) => {
   // 所有写入接口都回同一份计划：面板拿到后整体替换，重渲时树保持一致。
   const payload = { ok: true, cwd: planDir, dir: join(planDir, 'plan'), ai: aiStatus, plan: planPayload }
   if (String(path).endsWith('/ai-parse') && aiReply !== null) Object.assign(payload, aiReply)
+  if (String(path).endsWith('/persona')) {
+    Object.assign(payload, {
+      path: join(planDir, 'plan', 'agents.md'),
+      text: personaText === null ? '## 性格\n- 默认人设' : personaText,
+      default: '## 性格\n- 默认人设',
+    })
+  }
+  if (String(path).endsWith('/persona-set')) {
+    Object.assign(payload, { path: join(planDir, 'plan', 'agents.md'), text: String(body.text ?? '') })
+  }
   if (String(path).endsWith('/node-add') && nodeEcho !== null) {
     payload.node = typeof nodeEcho === 'function' ? nodeEcho(body) : nodeEcho
   }
@@ -231,6 +243,7 @@ beforeEach(() => {
   nodeEcho = null
   aiReply = null
   aiStatus = { available: false }
+  personaText = null
   delete globalThis.window.SpeechRecognition
   delete globalThis.window.webkitSpeechRecognition
 })
@@ -768,7 +781,9 @@ const settle = async () => {
 }
 
 /** 表头那颗「✨ AI」按钮。不可用时不该存在。 */
-const aiEntry = (view) => byClass(view, 'dsh-wb-icon').find((b) => textOf(b) === '✨ AI') ?? null
+// AI 现在是**常驻**的一行输入（第一入口），不再藏在 ✨ 按钮后面。
+const aiEntry = (view) => firstByClass(view, 'dsh-wb-aiinput')
+const aiBtn = (view, label) => byClass(view, 'dsh-wb-aibtn').find((b) => textOf(b) === label) ?? null
 
 /** 解析出的草稿里，第 i 条的候选芯片。 */
 const chipsOf = (view, i) => {
@@ -785,29 +800,30 @@ test('宿主没有模型服务时，AI 入口根本不渲染（不给点不亮�
   assert.equal(firstByClass(view, 'dsh-wb-ai'), null)
 })
 
-test('AI 可用时表头出现入口，点开才有输入框（默认收起，不占地方）', async () => {
+test('AI 可用时顶部**常驻**一行输入（第一入口，不用先点开）', async () => {
   withAi()
   const { render, view } = await mount()
   const entry = aiEntry(view)
-  assert.ok(entry !== null, '应出现 AI 入口')
-  assert.match(entry.props.title, /语音或图片/)
+  assert.ok(entry !== null, '打开面板就该看见输入框，而不是先找个按钮')
+  assert.match(String(entry.props.placeholder), /问一句|问一问|要做什么/)
+  assert.equal(firstByClass(render(), 'dsh-wb-aitask'), null, '还没解析，不该有草稿')
+})
 
-  entry.props.onClick(ev())
-  const opened = render()
-  assert.ok(firstByClass(opened, 'dsh-wb-aitext') !== null, '点开后应有文本域')
-  assert.equal(firstByClass(opened, 'dsh-wb-aitask'), null, '还没解析，不该有草稿')
+test('宿主没有模型服务时，AI 那一块整个不渲染', async () => {
+  const { render } = await mount()
+  assert.equal(aiEntry(render()), null, '点不亮的输入框不如不给')
 })
 
 test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
   withAi()
   aiReply = { tasks: [] }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
 
-  const box = firstByClass(render(), 'dsh-wb-aitext')
+  const box = aiEntry(render())
   box.props.onChange({ target: { value: '下周三前把台账补完' } })
   requests = []
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
 
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
@@ -820,12 +836,12 @@ test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
 test('没有内容点解析：不发请求，只提示', async () => {
   withAi()
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
   requests = []
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
   assert.equal(requests.length, 0, '空输入不该去问模型')
-  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /说点什么|图片/)
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|图片/)
 })
 
 test('解析结果渲染成草稿；点建议**不直接落库**，而是填进详情表单等确认', async () => {
@@ -842,11 +858,11 @@ test('解析结果渲染成草稿；点建议**不直接落库**，而是填进�
     }],
   }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
-  firstByClass(render(), 'dsh-wb-aitext').props.onChange({ target: { value: '一段口述' } })
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
 
   const drafted = render()
@@ -889,11 +905,11 @@ test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', a
     }],
   }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
-  firstByClass(render(), 'dsh-wb-aitext').props.onChange({ target: { value: '一段口述' } })
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
 
   requests = []
@@ -924,11 +940,11 @@ test('选「新建计划」= 先建容器（一次写入），待办仍等人在
     }],
   }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
-  firstByClass(render(), 'dsh-wb-aitext').props.onChange({ target: { value: '一段口述' } })
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
 
   // 新建计划的名字先由模型预填，用户还能改。
@@ -971,11 +987,11 @@ test('新建计划没名字就先不动：不建空壳计划，也不建待办',
     }],
   }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
-  firstByClass(render(), 'dsh-wb-aitext').props.onChange({ target: { value: '一段口述' } })
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
 
   requests = []
@@ -989,7 +1005,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
   withAi()
   aiReply = { tasks: [] }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
 
   const file = {
     name: '白板.png',
@@ -998,7 +1014,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
     arrayBuffer: async () => new Uint8Array([0x41, 0x42]).buffer,
   }
   const picker = byClass(render(), 'dsh-wb-aibtn').find(
-    (b) => b.type === 'label' && textOf(b).includes('图片'),
+    (b) => b.type === 'label' && textOf(b).includes('🖼'),
   )
   assert.ok(picker !== undefined, '应有选图入口')
   const input = findAll(picker, (el) => (el.props || {}).type === 'file')[0]
@@ -1007,7 +1023,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
   await settle()
 
   requests = []
-  byClass(render(), 'dsh-wb-aibtn').find((b) => textOf(b) === '解析').props.onClick(ev())
+  aiBtn(render(), '发送').props.onClick(ev())
   await settle()
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
   assert.deepEqual(call.body.images, [{ mediaType: 'image/png', data: 'QUI=', name: '白板.png' }])
@@ -1020,12 +1036,12 @@ test('语音按钮在 AI 输入框旁边，识别结果写进 AI 文本域', asy
     this.stop = () => { this.onend() }
   }
   const { render, view } = await mount()
-  aiEntry(view).props.onClick(ev())
+  aiEntry(view).props.onFocus(ev())
   const opened = render()
   const mic = firstByClass(opened, 'dsh-wb-mic')
   assert.ok(mic !== null, 'AI 文本域旁应有麦克风')
   mic.props.onClick(ev())
-  assert.equal(firstByClass(render(), 'dsh-wb-aitext').props.value, '下周三前把台账补完')
+  assert.equal(aiEntry(render()).props.value, '下周三前把台账补完')
 })
 
 // ============================================================ 看板视图
@@ -1400,4 +1416,123 @@ test('返回 / 取消 = 放弃改动，不发任何写入', async () => {
   await settle()
   assert.equal(requests.length, 0)
   assert.ok(firstByClass(render(), 'dsh-wb-formhead') === null, '取消后回到列表')
+})
+
+// ---------------------------------------------------------------- AI 助手：问答 / 意见 / 选项 / 人设
+
+test('只提问：回复渲染成对话，且下一轮带上历史（接着聊）', async () => {
+  withAi()
+  aiReply = { reply: '目前 1 件逾期：补台账。', tasks: [] }
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  aiEntry(render()).props.onChange({ target: { value: '哪些逾期了' } })
+  aiBtn(render(), '发送').props.onClick(ev())
+  await settle()
+
+  const msgs = byClass(render(), 'dsh-wb-msg')
+  assert.equal(msgs.length, 2, '一问一答两条')
+  assert.match(textOf(msgs[0]), /哪些逾期了/)
+  assert.match(textOf(msgs[1]), /补台账/, '助手的答复也要留在屏幕上')
+  assert.ok(classesOf(msgs[0]).includes('me') && classesOf(msgs[1]).includes('ai'), '靠位置区分谁说的')
+
+  // 第二轮要带上第一轮：否则「它的截止呢」这种追问接不上。
+  aiReply = { reply: '2026-10-01', tasks: [] }
+  requests = []
+  aiEntry(render()).props.onChange({ target: { value: '那它的截止呢' } })
+  aiBtn(render(), '发送').props.onClick(ev())
+  await settle()
+  const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
+  assert.equal(call.body.history.length, 2)
+  assert.equal(call.body.history[0].text, '哪些逾期了')
+  assert.equal(call.body.history[1].role, 'assistant')
+})
+
+test('快捷问法：点一下就把问题发出去（不用想怎么问）', async () => {
+  withAi()
+  aiReply = { reply: '该做：补台账', tasks: [] }
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  requests = []
+  const quick = byClass(render(), 'dsh-wb-quick')
+  assert.ok(quick.length > 0, '快捷问法要摆出来——「AI 能干什么」不演示一遍看不出来')
+  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '我今天该做什么')
+  assert.ok(chip !== undefined)
+  chip.props.onClick(ev())
+  await settle()
+  const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
+  assert.equal(call.body.text, '我今天该做什么')
+})
+
+test('草稿卡给出专家意见与历史依据（新增时要结合当前与历史）', async () => {
+  withAi()
+  aiReply = {
+    reply: '拆出 1 条',
+    tasks: [{
+      title: '补台账', due: '', priority: '', note: '', plan: '工作主线',
+      advice: '与手上的「深层待办」撞期；历史上「表层待办」用了 3 天。',
+      history: [{ title: '表层待办', status: 'done', days: 3, evidence: 1 }],
+      candidates: [{ kind: 'plan', id: idOf('工作主线'), title: '工作主线', why: '模型判断' }],
+    }],
+  }
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
+  aiBtn(render(), '发送').props.onClick(ev())
+  await settle()
+
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-advice')), /撞期/)
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-aihist')), /表层待办/)
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-aihist')), /用了 3 天/)
+})
+
+test('点选项：把它的 patch 并进草稿再打开表单，不直接建', async () => {
+  withAi()
+  aiReply = {
+    reply: 'ok',
+    tasks: [{
+      title: '补台账', due: '', priority: '', note: '', plan: '',
+      options: [
+        { label: '排到下周', why: '手上还有两条', patch: { due: '2026-09-21', priority: 'low' } },
+      ],
+      candidates: [{ kind: 'inbox', title: '收件箱', why: '先记下来' }],
+    }],
+  }
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
+  aiBtn(render(), '发送').props.onClick(ev())
+  await settle()
+
+  requests = []
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '排到下周').props.onClick(ev())
+  await settle()
+  assert.equal(requests.length, 0, '选项也只是预填，不直接写入')
+
+  const page = render()
+  assert.ok(firstByClass(page, 'dsh-wb-formhead') !== null, '应打开新建表单')
+  assert.equal(inpByPh(page, '要做什么').props.value, '补台账')
+  assert.equal(inpByPh(page, '谁负责（可空）') !== null, true)
+  const dates = byClass(page, 'dsh-wb-inp').filter((i) => i.props.type === 'date')
+  assert.ok(dates.some((d) => d.props.value === '2026-09-21'), '选项给的 due 要落进表单')
+})
+
+test('人设：能看能改，保存走 /persona-set', async () => {
+  withAi()
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  requests = []
+  aiBtn(render(), '人设').props.onClick(ev())
+  await settle()
+
+  const box = firstByClass(render(), 'dsh-wb-atextarea')
+  assert.ok(box !== null, '应能直接看到人设全文')
+  assert.equal(box.props.value, '## 性格\n- 默认人设')
+  assert.ok(requests.some((r) => r.path === '/api/workbench/persona'), '拉一次人设')
+
+  firstByClass(render(), 'dsh-wb-atextarea').props.onChange({ target: { value: '## 性格\n- 只报事实' } })
+  requests = []
+  aiBtn(render(), '保存').props.onClick(ev())
+  await settle()
+  const write = requests.find((r) => r.path === '/api/workbench/persona-set')
+  assert.equal(write.body.text, '## 性格\n- 只报事实', '人改的是整篇')
 })

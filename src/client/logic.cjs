@@ -415,6 +415,36 @@ function formErrors(draft) {
 }
 
 /**
+ * 按名字找一个计划（模型与 AI 选项给的也是**名字**而不是 id——与 host 同一条
+ * 纪律：模型复述的 id 无从校验，名字可以）。匹配不到返回 null，由调用方决定
+ * 退化成什么。三级：标题完全相等 → 互相包含（取最长的那个，避免「数据」命中一堆）。
+ */
+function planByName(plan, name) {
+  var want = normTitle(name)
+  if (want === '') return null
+  var flat = flattenNodes(plan).filter(function (it) { return it.type === 'plan' })
+  var i
+  for (i = 0; i < flat.length; i++) {
+    if (normTitle(flat[i].node.title) === want) return flat[i].node
+  }
+  var best = null
+  var bestLen = 0
+  for (i = 0; i < flat.length; i++) {
+    var t = normTitle(flat[i].node.title)
+    if (t === '') continue
+    if ((t.indexOf(want) >= 0 || want.indexOf(t) >= 0) && t.length > bestLen) {
+      best = flat[i].node
+      bestLen = t.length
+    }
+  }
+  return best
+}
+
+function normTitle(v) {
+  return String(v === null || v === undefined ? '' : v).replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
+}
+
+/**
  * 已完成但没有证据。优先读服务端标注；缺失时本地兜底——这条兜底不含任何
  * 阈值或日期运算，与服务端 `isUnverified` 逐字等价，所以不存在
  * 「两边算出不同答案」的风险（配速那种要算日期的就绝不在本地兜底）。
@@ -901,6 +931,7 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     emptyDraft: emptyDraft,
     formRequest: formRequest,
     formErrors: formErrors,
+    planByName: planByName,
     unverifiedOf: unverifiedOf,
     paceText: paceText,
     flattenNodes: flattenNodes,

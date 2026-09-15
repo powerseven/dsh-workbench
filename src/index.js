@@ -24,7 +24,7 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { existsSync, readFileSync, statSync, readdirSync } from 'node:fs'
+import { existsSync, mkdirSync, readFileSync, statSync, readdirSync, writeFileSync } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
@@ -50,9 +50,11 @@ import {
   evidenceOf,
   evidenceWarnings,
   fileWarnings,
+  filesOf,
   inboxOf,
   isDueWithin,
   clearFields,
+  collectNodes,
   isOverdue,
   isUnverified,
   makeNode,
@@ -80,11 +82,14 @@ import {
   unverifiedList,
 } from './store.js'
 import {
+  DEFAULT_PERSONA,
   MAX_IMAGES,
+  aiContext,
   aiSystemPrompt,
   aiUserText,
   attachSuggestions,
   collectText,
+  historyText,
   parseAiReply,
   planOutline,
 } from './ai.js'
@@ -286,6 +291,93 @@ function resolveRef(vaultPath, ref) {
   }
   return abs
 }
+
+/**
+ * 按需打开关联文件：只有当问题里**点到了**某个文件时才去读。
+ *
+ * 为什么不全读：vault 里可能有几百篇笔记，全塞进上下文既慢又撑爆 token，
+ * 而且绝大多数与这一问无关。命中规则很粗（文件名或路径出现在问题里），
+ * 但粗得有价值——用户问「周会纪要里说了什么」时，「周会」两个字必然会命中。
+ * 读不到就跳过：文件被挪走了不该让整个提问失败。
+ */
+function pickVaultFiles(plan, text, limit = 3) {
+  const ask = String(text ?? '')
+  if (ask.trim() === '') return []
+  const refs = new Set()
+  for (const hit of collectNodesSafe(plan)) {
+    for (const f of filesOf(hit.node)) {
+      const ref = String(f?.ref ?? '')
+      if (ref !== '') refs.add(ref)
+    }
+  }
+  const out = []
+  for (const ref of refs) {
+    if (out.length >= limit) break
+    const base = ref.split(/[\\/]/).pop() ?? ref
+    const stem = base.replace(/\.[^.]+$/, '')
+    const hit = (stem !== '' && ask.includes(stem)) || ask.includes(base) || ask.includes(ref)
+    if (!hit) continue
+    try {
+      const got = readVaultEntry(plan, ref, 'file')
+      if (got.exists !== true || typeof got.content !== 'string' || got.content === '') continue
+      // 单文件截到 8KB：一篇长笔记不值得把整次提问的预算吃掉。
+      out.push({ ref, content: got.content.slice(0, 8192) })
+    } catch (e) { /* 越界或读不了就跳过这一个 */ }
+  }
+  return out
+}
+
+/** 遍历节点（拿不到就算了，它只用于收集关联文件）。 */
+function collectNodesSafe(plan) {
+  try { return collectNodes(plan, 'any') } catch (e) { return [] }
+}
+
+// ------------------------------------------------------------- AI 助手人设
+
+/** 人设文件固定叫 agents.md，与 plan.json 同目录（都在被 git 忽略的 plan/ 下）。 */
+const PERSONA_FILE = 'agents.md'
+
+const personaFile = (dir) => join(dir, PERSONA_FILE)
+
+/** 读人设；文件不存在 / 读不了就用默认人设（没配过 ≠ 没有性格）。 */
+function readPersona(dir) {
+  try {
+    const file = personaFile(dir)
+    if (!existsSync(file)) return DEFAULT_PERSONA
+    const text = readFileSync(file, 'utf8')
+    return text.trim() === '' ? DEFAULT_PERSONA : text
+  } catch (e) {
+    return DEFAULT_PERSONA
+  }
+}
+
+/**
+ * 往人设的「记住的事」一节末尾追加一条（AI 被要求「记住：…」时用）。
+ * 没有这一节就补一节——人设是人手写的，章节顺序不该被假设。
+ */
+function appendToPersona(text, line) {
+  const body = text === '' ? DEFAULT_PERSONA : text
+  const item = '- ' + line.replace(/^记住[:：]\s*/, '').replace(/\s+/g, ' ').trim()
+  const lines = body.split('\n')
+  const at = lines.findIndex((l) => /^##\s*记住的事/.test(l))
+  if (at < 0) return body.replace(/\s*$/, '') + '\n\n## 记住的事\n' + item + '\n'
+  // 插到这一节的最后一条列表项之后（跳过紧随其后的空行）。
+  let i = at + 1
+  let last = at
+  while (i < lines.length && !/^##\s/.test(lines[i])) {
+    if (/^\s*-\s/.test(lines[i])) last = i
+    i += 1
+  }
+  lines.splice(last + 1, 0, item)
+  return lines.join('\n')
+}
+
+/**
+ * 一轮问答最多回带几轮历史，以及每轮截到多少字。
+ * 历史是「接着聊」用的，不是存档：太多轮会把 token 吃光，也让模型跟着旧话题跑。
+ */
+const MAX_HISTORY = 6
+const MAX_HISTORY_CHARS = 1500
 
 /**
  * 读 vault 内文件 / 列文件夹。返回 { exists, ref, abs, kind, ... }；
@@ -881,7 +973,7 @@ export function apply(ctx) {
       const sent = Array.isArray(body.images) ? body.images : []
       if (sent.length > MAX_IMAGES) throw new Error('一次最多 ' + MAX_IMAGES + ' 张图片')
       if (text === '' && sent.length === 0) {
-        throw new Error('没有可解析的内容：说点什么、贴一段文字，或选一张图片')
+        throw new Error('没有可解析的内容：问一句，或说点什么、贴一段文字、选一张图片')
       }
 
       const content = []
@@ -912,22 +1004,55 @@ export function apply(ctx) {
           content.push({ type: 'image', attachment: ref })
         }
       }
+      // ---- 上下文：模型要「掌握当前与归纳的全部信息」，才答得出「我现在该做什么」。
+      // 三块：全貌（aiContext）+ 历史相似任务（historyText）+ 按需读的 vault 文件。
+      // 文件只在**问题里点到了它**时才读——全读一遍既慢又撑爆上下文。
+      const today = todayStr()
+      const picked = pickVaultFiles(plan, text, 3)
+      const fileBlock = picked.length > 0
+        ? '【按需打开的关联文件】\n' + picked.map((f) => '### ' + f.ref + '\n' + f.content).join('\n\n')
+        : ''
+      const history = [historyText(plan, text, 3), fileBlock].filter((x) => x !== '').join('\n\n')
+      const persona = readPersona(store.dir)
+
+      // 会话内的前几轮：只取最近几轮、每轮截断，避免一次请求把 token 吃光。
+      const past = Array.isArray(body.history) ? body.history : []
+      const messages = []
+      let kept = 0
+      for (const turn of past.slice(-MAX_HISTORY)) {
+        if (turn === null || typeof turn !== 'object') continue
+        const role = turn.role === 'assistant' ? 'assistant' : 'user'
+        const t = String(turn.text ?? '').slice(0, MAX_HISTORY_CHARS)
+        if (t.trim() === '') continue
+        messages.push({
+          id: randomUUID(),
+          role,
+          content: [{ type: 'text', text: t }],
+          source: { kind: 'plugin', plugin: 'dsh-workbench' },
+        })
+        kept += 1
+        if (kept >= MAX_HISTORY) break
+      }
       // 文字块压在图片**之后**：先给模型看图，再让它按指令拆条，符合视觉模型的习惯。
       content.push({ type: 'text', text: aiUserText(text) })
-
-      const messages = [{
+      messages.push({
         id: randomUUID(),
         role: 'user',
         content,
         source: { kind: 'plugin', plugin: 'dsh-workbench' },
-      }]
+      })
+
       let raw = ''
       try {
         raw = await collectText(serverCtx.get('llm'), {
           provider: status.provider,
           model: status.model,
           messages,
-          system: aiSystemPrompt(planOutline(plan), todayStr()),
+          system: aiSystemPrompt(planOutline(plan), today, {
+            persona,
+            context: aiContext(plan, today),
+            history,
+          }),
           maxTokens: 2048,
           signal: AbortSignal.timeout(AI_TIMEOUT_MS),
         })
@@ -942,10 +1067,43 @@ export function apply(ctx) {
       if (parsed.error !== '') throw new Error(parsed.error)
       json(res, {
         ok: true,
-        tasks: attachSuggestions(plan, parsed.tasks, todayStr()),
+        // 问答与录入是同一次调用的两种产出：只提问时 tasks 为空，
+        // 只报事时 reply 是一句确认。面板两种都要能渲染。
+        reply: parsed.reply,
+        tasks: attachSuggestions(plan, parsed.tasks, today),
+        read: picked.map((f) => f.ref),
+        turns: kept,
         model: { provider: status.provider, model: status.model },
       })
     }, AI_MAX_BODY_BYTES)
+
+    /**
+     * 读人设（`plan/agents.md`）。文件不在就用内置的默认人设——
+     * 「没配过」不等于「没有人设」，助手从第一天起就该有稳定的性格与专业。
+     */
+    route('/persona', async (req, res) => {
+      const body = await readBody(req)
+      const store = storeFor(resolveCwd(body.sessionId))
+      json(res, { ok: true, path: personaFile(store.dir), text: readPersona(store.dir), default: DEFAULT_PERSONA })
+    })
+
+    /** 写人设。人改全文；AI 追加走 `append`（只往「记住的事」一节末尾加一条）。 */
+    route('/persona-set', async (req, res) => {
+      const body = await readBody(req)
+      const store = storeFor(resolveCwd(body.sessionId))
+      const file = personaFile(store.dir)
+      let text = typeof body.text === 'string' ? body.text : ''
+      if (body.append !== undefined && body.append !== null && String(body.append).trim() !== '') {
+        text = appendToPersona(readPersona(store.dir), String(body.append).trim())
+      }
+      try {
+        mkdirSync(store.dir, { recursive: true })
+        writeFileSync(file, text, 'utf8')
+      } catch (e) {
+        throw new Error('写不了人设文件（' + file + '）：' + (e instanceof Error ? e.message : String(e)))
+      }
+      json(res, { ok: true, path: file, text })
+    })
 
     /**
      * 勾选待办。与工具走同一条写入路径（含版本归档）。
