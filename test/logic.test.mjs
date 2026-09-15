@@ -57,9 +57,17 @@ test('statusLabel 覆盖待办四种状态与计划的 active，且对未知值�
 
 // ---------------------------------------------------------------- 树的读取
 
-test('nodeType 缺省当待办，与 host 的 typeOf 完全一致（跨半身约定）', async () => {
+test('nodeType 由结构派生，与 host 的 typeOf 完全一致（跨半身约定）', async () => {
   const host = await import('../src/store.js')
-  for (const node of [{ type: 'plan' }, { type: 'todo' }, {}, { type: 'x' }, null, undefined]) {
+  for (const node of [
+    { children: [{ title: 'x' }] },
+    { children: [] },
+    {},
+    { type: 'plan' },
+    { type: 'x' },
+    null,
+    undefined,
+  ]) {
     assert.equal(nodeType(node), host.typeOf(node), JSON.stringify(node))
   }
 })
@@ -534,9 +542,11 @@ test('boardColumns 尊重筛选器：只放命中筛选的待办进列', () => {
   assert.deepEqual(inbox.cards.map((c) => c.node.id), ['t9'])
 })
 
-test('boardColumns 没有任何待办的计划列被丢弃，纯空计划整棵看板为空', () => {
+test('boardColumns：无子项的节点按收件箱待办占列（类型派生后没有「空计划」）', () => {
   const plan = { nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
-  assert.deepEqual(boardColumns(plan, 'all'), [], '只有计划、没有任务时看板应为空')
+  const cols = boardColumns(plan, 'all')
+  assert.equal(cols.length, 1, '它是一条收件箱待办，占收件箱列')
+  assert.ok(cols[0].cards.some((c) => c.node.id === 'g1'))
 })
 
 test('boardColumns 对空计划与脏数据安全', () => {
@@ -819,13 +829,14 @@ test('statusListOf 与 store.js 的口径一致（跨半身一致性）', () => 
 
 test('formDraftOf 把节点摊平成标量，脏数据落回合法值', () => {
   const d = formDraftOf({
-    id: 'n1', type: 'plan', title: '主线', status: 'active', priority: 'high',
+    id: 'n1', title: '主线', status: 'active', priority: 'high',
     owner: '我', start: '2026-01-01', end: '2026-12-31',
     metric: { target: 12, current: 3, unit: '个' },
     delegate: { to: '小李', expectAt: '2026-09-01' },
+    children: [{ title: '子项', status: 'todo' }],
   })
   assert.equal(d.title, '主线')
-  assert.equal(d.type, 'plan')
+  assert.equal(d.type, 'plan', '有子项 → 计划')
   assert.equal(d.status, 'active')
   assert.equal(d.owner, '我')
   assert.equal(d.target, '12')
@@ -835,8 +846,8 @@ test('formDraftOf 把节点摊平成标量，脏数据落回合法值', () => {
   assert.equal(d.expectAt, '2026-09-01')
 
   // 非法状态 / 缺省档位：不让它以原样进表单，否则保存时会被服务端拒绝。
-  const bad = formDraftOf({ type: 'todo', status: 'active' })
-  assert.equal(bad.status, 'todo', 'active 对计划才合法，待办落回 todo')
+  const bad = formDraftOf({ status: 'active' })
+  assert.equal(bad.status, 'todo', '叶子（无子项）的 active 非法，落回 todo')
   assert.equal(bad.priority, 'normal', '缺 priority 按中档')
   assert.equal(formDraftOf({}).type, 'todo')
   assert.equal(formDraftOf(null).title, '')
@@ -889,11 +900,11 @@ test('formErrors 只拦「写下去一定是错的」那几种', () => {
   assert.deepEqual(formErrors({ title: 'x', owner: '', due: '' }), [])
 })
 
-test('emptyDraft 带父节点，且默认待办', () => {
+test('emptyDraft 一律新建叶子（待办），带父节点', () => {
   assert.equal(emptyDraft('todo', 'p1').parent, 'p1')
-  assert.equal(emptyDraft('plan').type, 'plan')
+  assert.equal(emptyDraft().type, 'todo', '新建没有「计划」选项：挂上子项它自然成为计划')
+  assert.equal(emptyDraft('plan').type, 'todo', 'type 参数被忽略')
   assert.equal(emptyDraft('plan').parent, '')
-  assert.equal(emptyDraft().type, 'todo')
 })
 
 // ---------------------------------------------------------------- 执行清单（MLO TODO 视图）

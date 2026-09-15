@@ -1746,9 +1746,9 @@ function apply(ctx) {
         }, '↳'),
         h('button', {
           className: 'dsh-wb-act',
-          title: '提升为计划（之后可以继续往下拆）',
-          onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'plan') },
-        }, '⇧'),
+          title: '加子项：往下拆，它会自动变成计划',
+          onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
+        }, '＋'),
         h('button', {
           className: 'dsh-wb-act',
           title: '删除',
@@ -1757,6 +1757,35 @@ function apply(ctx) {
       )]
       if (state.moving === node.id) rows.push(movePick(node))
       rows.push(filesBlock(node))
+      // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
+      if (state.adding === node.id) {
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+          h('input', {
+            type: 'text',
+            autoFocus: true,
+            placeholder: '加到「' + node.title + '」下…',
+            value: nodeDraft,
+            onChange: (e) => setNodeDraft(e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                const title = nodeDraft.trim()
+                if (title === '') return
+                addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办——它现在是一条计划了') })
+              }
+            },
+          }),
+          micButton(setNodeDraft, 'mic'),
+          h('button', {
+            disabled: nodeDraft.trim() === '',
+            onClick: () => {
+              const title = nodeDraft.trim()
+              if (title === '') return
+              addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办——它现在是一条计划了') })
+            },
+          }, '记作子项'),
+        ))
+      }
       return h('div', { className: 'dsh-wb-todowrap', key: node.id }, rows)
     }
 
@@ -1779,19 +1808,6 @@ function apply(ctx) {
         style: { marginLeft: (depth * 12) + 'px' },
       }, dragOnto(node, true)),
         caret(node),
-        // 完成语义一体化：**叶子计划**（下面没有子项的计划）也是一件能做完的事，
-        // 给勾选框——勾了走 /node-set 的 status done。有子项的计划不出现勾选框：
-        // 它的完成由子项派生（子项全完成时自动完成，host 侧级联），手点只会
-        // 造出「父已完成、子还开着」的矛盾。
-        kids.length === 0
-          ? h('input', {
-            type: 'checkbox',
-            key: 'check',
-            checked: node.status === 'done',
-            title: node.status === 'done' ? '已完成（点框重新打开）' : '点框完成这条计划',
-            onChange: () => togglePlanDone(node),
-          })
-          : null,
         h('span', { className: 'dsh-wb-planid' }, node.id),
         titleNode(node, 'dsh-wb-plantitle', { canToggle: false }),
         delegChip(node),
@@ -1813,13 +1829,6 @@ function apply(ctx) {
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, '＋'),
-        // 降回待办只在空计划上出现：有子节点的计划降级会让孩子们变成孤儿，
-        // host 会拒绝。与其让用户点了再看到报错，不如不给这个按钮。
-        childrenOf(node).length === 0 ? h('button', {
-          className: 'dsh-wb-act',
-          title: '降回待办（这是一个空计划）',
-          onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'todo') },
-        }, '⇩') : null,
         h('button', {
           className: 'dsh-wb-act',
           title: '删除这个计划（连同子项）',
@@ -1840,15 +1849,12 @@ function apply(ctx) {
           h('div', { style: { width: barWidth(progress) } })))
       }
 
-      // 加子项：两个提交按钮区分「待办」与「子计划」，不让用户猜默认值。
+      // 加子项：只记「待办」这一种——它下面要是再挂东西，它会自动成为计划。
       if (open && state.adding === node.id) {
-        const submit = (type) => {
+        const submit = () => {
           const title = nodeDraft.trim()
           if (title === '') return
-          addNode({ title, type, parent: node.id }, () => {
-            setNodeDraft('')
-            flash(type === 'plan' ? '已加子计划' : '已加待办')
-          })
+          addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
         body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
           h('input', {
@@ -1857,11 +1863,10 @@ function apply(ctx) {
             placeholder: '加到「' + node.title + '」下…',
             value: nodeDraft,
             onChange: (e) => setNodeDraft(e.target.value),
-            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit('todo') } },
+            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } },
           }),
           micButton(setNodeDraft, 'mic'),
-          h('button', { onClick: () => submit('todo'), disabled: nodeDraft.trim() === '' }, '记作待办'),
-          h('button', { onClick: () => submit('plan'), disabled: nodeDraft.trim() === '' }, '记作子计划'),
+          h('button', { onClick: () => submit(), disabled: nodeDraft.trim() === '' }, '记作待办'),
         ))
       }
 
@@ -2105,17 +2110,8 @@ function apply(ctx) {
         })))
 
       body.push(h('div', { className: 'dsh-wb-grid3', key: 'kinds' },
-        seg('type', '类型', [
-          { value: 'plan', label: '计划' },
-          // 有子节点的计划不能降级为待办：待办是叶子，孩子们会变成孤儿（不可逆）。
-          // 这里禁用并说明原因，而不是让人点了再收到一条报错。
-          {
-            value: 'todo',
-            label: '待办',
-            disabled: kids > 0,
-            title: kids > 0 ? '下面还有 ' + kids + ' 个子节点，先移走或删掉才能降为待办' : '改成叶子待办',
-          },
-        ]),
+        // 类型段没有了：类型由结构派生（有子项=计划、叶子=待办），不能也不必手选。
+        // 「往下拆」用行内的 ＋ 按钮，拆完空了它自己变回待办。
         seg('status', '状态', statusListOf(d.type).map((s) => ({
           value: s,
           label: statusLabel(s),

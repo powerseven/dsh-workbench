@@ -180,21 +180,22 @@ test('会话没有 cwd 时报可读错误，而不是写到别处', async () => 
 
 // ------------------------------------------------------------------ 建树
 
-test('plan_node_add 可以建计划、子计划、任意深度的待办', async () => {
-  const g = await call('plan_node_add', { title: '完成低电压治理攻坚', type: 'plan', owner: '张三', start: '2026-10-01', end: '2026-12-31' })
+test('plan_node_add 建树：挂上子项的节点自动成为计划', async () => {
+  const g = await call('plan_node_add', { title: '完成低电压治理攻坚', owner: '张三', start: '2026-10-01', end: '2026-12-31' })
   assert.equal(g.ok, true)
-  assert.equal(g.node.type, 'plan')
-
-  const k = await call('plan_node_add', { title: '建立治理台账', type: 'plan', parent: '完成低电压治理攻坚' })
-  assert.equal(k.node.type, 'plan')
+  // 新建的都是待办（叶子）；挂上子项后类型自动变成计划。
+  const k = await call('plan_node_add', { title: '建立治理台账', parent: '完成低电压治理攻坚' })
+  assert.equal(k.ok, true)
   // 子计划下再挂待办
   const t = await call('plan_node_add', { title: '收集基础数据', parent: k.node.id, due: '2026-11-01' })
-  assert.equal(t.node.type, 'todo', '不传 type 默认待办')
+  assert.equal(t.ok, true)
+  assert.equal(t.node.children, undefined, '新建的待办是叶子')
 
   const plan = await readPlan()
   assert.equal(plan.schema, 2)
   assert.equal(plan.nodes.length, 1)
   const root = plan.nodes[0]
+  assert.equal('type' in root, false, 'type 不落盘')
   assert.equal(root.children.length, 1)
   assert.equal(root.children[0].children.length, 1, '待办挂在第二层')
   assert.equal(root.children[0].children[0].title, '收集基础数据')
@@ -206,19 +207,20 @@ test('plan_node_add 不传 parent 就放在顶层（即收件箱）', async () =
   const plan = await readPlan()
   const top = plan.nodes[plan.nodes.length - 1]
   assert.equal(top.id, r.node.id, '顶层待办')
-  assert.equal(top.type, 'todo')
+  assert.equal(top.children, undefined)
 
   const shown = await call('plan_show')
   assert.equal(shown.plan.control.inboxOpen, 1)
 })
 
-test('plan_node_add 拒绝非法的 type / 空标题 / 挂到待办下', async () => {
-  await assert.rejects(() => call('plan_node_add', { title: 'x', type: '目标' }), /type 必须是 plan \/ todo/)
+test('plan_node_add 拒绝空标题；挂到待办下会把那个待办变成计划', async () => {
   await assert.rejects(() => call('plan_node_add', { title: '   ' }), /标题不能为空/)
-  await assert.rejects(
-    () => call('plan_node_add', { title: 'x', parent: '开会时记的一条' }),
-    /是待办，不能往里放子项/,
-  )
+  const r = await call('plan_node_add', { title: '拆出来的子项', parent: '开会时记的一条' })
+  assert.equal(r.ok, true)
+  const plan = await readPlan()
+  const holder = plan.nodes.find((n) => n.title === '开会时记的一条')
+  assert.equal(holder.children.length, 1, '子项挂上了')
+  assert.equal(holder.status, 'active', '挂上子项的待办自动变成计划（todo 归一成 active）')
 })
 
 test('plan_show 返回递归树与派生标注（进度、管控、委派清单）', async () => {
@@ -277,14 +279,12 @@ test('勾一条子计划下的待办，自动写 doneAt', async () => {
 })
 
 test('勾一条收件箱里的待办（顶层待办也要能定位到）', async () => {
-  const shown = await call('plan_show')
-  const top = shown.plan.nodes[shown.plan.nodes.length - 1]
-  const r = await call('plan_todo_set', { todo: top.id, status: 'done' })
+  const made = await call('plan_node_add', { title: '收件箱待勾的一条' })
+  const r = await call('plan_todo_set', { todo: made.node.id, status: 'done' })
   assert.equal(r.ok, true)
 
   const plan = await readPlan()
-  const last = plan.nodes[plan.nodes.length - 1]
-  assert.equal(last.status, 'done')
+  assert.equal(dig(plan.nodes, made.node.id).status, 'done')
 })
 
 test('plan_todo_set 只接受待办，误传计划时给出可读错误', async () => {
@@ -331,14 +331,11 @@ test('plan_node_move 拒绝把计划移到自己的子孙下面（否则成环�
     () => call('plan_node_move', { node: '建立治理台账', parent: '建立治理台账' }),
     /不能把一个节点移到它自己下面/,
   )
-  await assert.rejects(
-    () => call('plan_node_move', { node: '建立治理台账', parent: '待归位的待办' }),
-    /是待办，不能作为父节点/,
-  )
+  // 任何节点都能当父（挂上子项它就是计划），待归位的待办也可以有子项。
 })
 
 test('plan_node_remove 删计划会连带子树，并报告删了多少', async () => {
-  const added = await call('plan_node_add', { title: '待删除的子计划', type: 'plan', parent: '建立治理台账' })
+  const added = await call('plan_node_add', { title: '待删除的子计划', parent: '建立治理台账' })
   await call('plan_node_add', { title: '会被一起删掉', parent: added.node.id })
 
   const r = await call('plan_node_remove', { node: '待删除的子计划' })
@@ -353,8 +350,10 @@ test('plan_node_remove 删计划会连带子树，并报告删了多少', async 
 // ------------------------------------------------------- 重要程度与管控警告
 
 test('高重要度的计划缺周期与负责人时给出警告（而不是拦下）', async () => {
-  const r = await call('plan_node_add', { title: 'Q4 数据治理专项', type: 'plan', priority: 'high' })
-  assert.equal(r.node.type, 'plan')
+  const q4 = await call('plan_node_add', { title: 'Q4 数据治理专项', priority: 'high' })
+  // 先挂个子项让它成为计划（类型由结构派生）。
+  await call('plan_node_add', { title: '专项下的活', parent: q4.node.id })
+  const r = await call('plan_node_set', { node: q4.node.id, priority: 'high' })
   assert.equal(r.warnings.length, 2, '应同时缺周期与负责人：' + JSON.stringify(r.warnings))
   assert.match(r.warnings.join('；'), /周期/)
   assert.match(r.warnings.join('；'), /负责人/)
@@ -407,40 +406,32 @@ test('plan_node_set 能改标题、备注与量化进度', async () => {
   assert.equal(g.note, '重点专项')
 })
 
-test('plan_node_set 按类型校验状态取值', async () => {
+test('plan_node_set 按形态校验状态取值（叶子=待办、容器=计划）', async () => {
   await assert.rejects(() => call('plan_node_set', { node: '中等的没有截止', status: 'active' }), /待办的状态必须是/)
+  // Q4 已经挂了子项，是计划：doing 对它非法。
   await assert.rejects(() => call('plan_node_set', { node: 'Q4 数据治理专项', status: 'doing' }), /计划的状态必须是/)
 })
 
-test('plan_node_set 换型：待办提升为计划后就能往下拆', async () => {
-  // 场景：开会时随手记了一条，事后发现这事得拆开做。
+test('待办直接往下挂子项：不需要先「提升」，结构决定形态', async () => {
+  // 场景：开会时随手记了一条，事后发现这事得拆开做——直接挂，它自己变成计划。
   const made = await call('plan_node_add', { title: '事后发现要拆的一条' })
-  assert.equal(made.node.type, 'todo')
+  assert.equal(made.node.children, undefined)
 
-  const up = await call('plan_node_set', { node: made.node.id, type: 'plan' })
-  assert.equal(up.node.type, 'plan')
-  const plan = await readPlan()
-  assert.deepEqual(dig(plan.nodes, made.node.id).children, [], '计划恒带 children 数组')
-
-  // 提升之后才能往它下面挂东西——待办是叶子，之前会被拒。
   const kid = await call('plan_node_add', { title: '拆出来的第一步', parent: made.node.id })
-  assert.equal(kid.node.type, 'todo')
+  assert.equal(kid.ok, true)
+  const plan = await readPlan()
+  const holder = dig(plan.nodes, made.node.id)
+  assert.equal(holder.children.length, 1)
+  assert.equal(holder.status, 'active', 'todo 挂子后归一成 active')
 
-  // 空计划可以降回待办；有子节点的则必须被拒（孩子们会变成孤儿）。
-  const empty = await call('plan_node_add', { title: '其实不用拆的空计划', type: 'plan' })
-  const down = await call('plan_node_set', { node: empty.node.id, type: 'todo' })
-  assert.equal(down.node.type, 'todo')
-  assert.ok(!('children' in down.node), '降回待办不留空的 children 键')
-  await assert.rejects(
-    () => call('plan_node_set', { node: made.node.id, type: 'todo' }),
-    /还有 1 个子节点，不能降级为待办/,
-  )
-  await assert.rejects(() => call('plan_node_set', { node: '不存在的节点', type: 'plan' }), /找不到/)
-  await assert.rejects(() => call('plan_node_set', { node: made.node.id, type: '目标' }), /节点类型必须是/)
+  // 删光子项又自动变回待办（active 归一成 todo）。
+  await call('plan_node_remove', { node: kid.node.id })
+  const after = dig((await readPlan()).nodes, made.node.id)
+  assert.equal(after.children, undefined)
+  assert.equal(after.status, 'todo')
 
   // 收拾干净——后面的用例依赖树里的节点数量与委派/计数，别留残留。
   await call('plan_node_remove', { node: made.node.id })
-  await call('plan_node_remove', { node: empty.node.id })
 })
 
 // ---------------------------------------------------------------------- 委派
@@ -518,11 +509,16 @@ test('状态流转维护 doneAt / startedAt', async () => {
   assert.equal(back.todo.doneAt, undefined, '离开 done 要清掉 doneAt，否则周报会重复统计')
 })
 
-test('计划的完成也会写入 doneAt', async () => {
-  const r = await call('plan_node_set', { node: 'Q4 数据治理专项', status: 'done' })
-  assert.ok(r.node.doneAt)
-})
+test('叶子经 plan_node_set 标完成也记 doneAt（完成语义一体化）', async () => {
+  const made = await call('plan_node_add', { title: '叶子完成记录时间' })
+  const r = await call('plan_node_set', { node: made.node.id, status: 'done' })
+  assert.equal(r.ok, true)
+  assert.ok(r.node.doneAt, '完成时间写上了')
 
+  // 从 done 挪回 todo 时要清掉——否则周报会重复统计
+  const back = await call('plan_node_set', { node: made.node.id, status: 'todo' })
+  assert.equal('doneAt' in back.node, false)
+})
 // -------------------------------------------------- HTTP 面板写入路径
 
 test('HTTP /node-add 记一条到收件箱', async () => {
@@ -533,13 +529,16 @@ test('HTTP /node-add 记一条到收件箱', async () => {
   assert.ok(plan.nodes.some((t) => t.title === '面板记的一条'))
 })
 
-test('HTTP /node-add 能在指定计划下加子计划', async () => {
+test('HTTP /node-add 能在指定节点下加子项（挂上子项的那个节点自动成为计划）', async () => {
   const { payload } = await post('/node-add', {
-    sessionId: SESSION_ID, title: '面板加的子计划', type: 'plan', parent: '建立治理台账',
+    sessionId: SESSION_ID, title: '面板加的子计划', parent: '建立治理台账',
   })
-  assert.equal(payload.node.type, 'plan')
+  assert.equal(payload.ok, true)
   const plan = await readPlan()
-  assert.ok(plan.nodes[0].children[0].children.some((x) => x.type === 'plan' && x.title === '面板加的子计划'))
+  const holder = plan.nodes[0].children[0].children.find((x) => x.title === '面板加的子计划')
+  assert.ok(holder !== undefined)
+  // 面板加的子计划本身是叶子；「建立治理台账」因为有它这个子项而是计划。
+  assert.equal(holder.children, undefined)
 })
 
 test('HTTP /todo-set 能勾选深层待办（面板与 agent 共用一条写入路径）', async () => {
@@ -593,14 +592,14 @@ test('HTTP /node-move 带 index 能同层重排（面板拖拽走这条）', asy
 })
 
 test('HTTP /node-set 只传 title 就能改名（面板双击改名走这条）', async () => {
-  const made = await call('plan_node_add', { title: '改名测试计划', type: 'plan' })
+  const made = await call('plan_node_add', { title: '改名测试计划', parent: '建立治理台账' })
   const { payload } = await post('/node-set', { sessionId: SESSION_ID, node: made.node.id, title: '改过名字的计划' })
   assert.equal(payload.ok, true)
   const plan = await readPlan()
   assert.equal(dig(plan.nodes, made.node.id).title, '改过名字的计划')
   // 改名不该顺手改动别的字段——双击改名是最高频的就地编辑，误伤代价最大。
-  assert.equal(dig(plan.nodes, made.node.id).type, 'plan')
-  assert.equal(dig(plan.nodes, made.node.id).status, 'active')
+  assert.equal(dig(plan.nodes, made.node.id).children, undefined, '还是叶子（children 未动）')
+  assert.equal(dig(plan.nodes, made.node.id).status, 'todo')
 })
 
 test('HTTP /node-set 能改重要程度与记回执', async () => {
@@ -625,18 +624,14 @@ test('HTTP /node-set 没给任何属性时报错，不做空写入', async () =>
   assert.match(payload.error, /没有要改的属性/)
 })
 
-test('HTTP /node-set 能换型（面板的 ⇧/⇩ 走这条）', async () => {
-  const added = await post('/node-add', { sessionId: SESSION_ID, title: '面板上提升为计划', type: 'todo' })
+test('HTTP /node-set 忽略 type（类型由结构派生，不再可换型）', async () => {
+  const added = await post('/node-add', { sessionId: SESSION_ID, title: '面板上的一条' })
   const id = added.payload.node.id
 
-  const up = await post('/node-set', { sessionId: SESSION_ID, node: id, type: 'plan' })
-  assert.equal(up.payload.node.type, 'plan')
-
-  // 提升之后才挂得上子项；有子节点后再降级会被拒。
-  await post('/node-add', { sessionId: SESSION_ID, title: '提升后加的子项', parent: id })
-  const down = await post('/node-set', { sessionId: SESSION_ID, node: id, type: 'todo' })
-  assert.equal(down.status, 500)
-  assert.match(down.payload.error, /不能降级为待办/)
+  // 直接往下挂子项：它自动变成计划，不需要也不允许「换型」这一步。
+  await post('/node-add', { sessionId: SESSION_ID, title: '面板上拆的子项', parent: id })
+  const plan = await readPlan()
+  assert.ok(Array.isArray(dig(plan.nodes, id).children), '挂上子项即是计划')
 
   const { payload } = await post('/node-remove', { sessionId: SESSION_ID, node: id })
   assert.equal(payload.ok, true)
@@ -858,6 +853,8 @@ test('/get 下发 AI 可用性：有模型但没选默认模型时也是 false',
 test('/ai-parse 把模型回复变成待办 + 归位候选，且不写入任何数据', async () => {
   await call('plan_node_add', { title: 'AI解析用计划', type: 'plan' })
   await call('plan_node_add', { title: 'AI解析用子计划', type: 'plan', parent: 'AI解析用计划' })
+  // 有子项才是计划（类型由结构派生）：给子计划挂个占位子项。
+  await call('plan_node_add', { title: 'AI解析占位子项', parent: 'AI解析用子计划' })
   fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
   fakeLlm = llmReturning('```json\n{"tasks":[{"title":"补台账","due":"2026-10-01","priority":"高","plan":"AI解析用子计划"}]}\n```')
 

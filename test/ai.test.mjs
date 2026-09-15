@@ -42,7 +42,8 @@ function fixture() {
           { id: 'p2', type: 'plan', title: '台账补录', children: [{ id: 't1', type: 'todo', title: '补台区台账' }] },
         ],
       },
-      { id: 'p3', type: 'plan', title: '低电压治理攻坚' },
+      // 有子项才是计划：p3 挂一个子任务，否则派生成待办、进不了计划大纲。
+      { id: 'p3', type: 'plan', title: '低电压治理攻坚', children: [{ id: 't2', type: 'todo', title: '排查低电压台区' }] },
     ],
   }
 }
@@ -57,7 +58,9 @@ test('planOutline 用标题路径表达层级，并带上负责人', () => {
 
 test('planOutline 有上限，计划再多也不会把提示词撑爆', () => {
   const many = { nodes: [] }
-  for (let i = 0; i < 60; i++) many.nodes.push({ id: 'x' + i, type: 'plan', title: '计划' + i })
+  for (let i = 0; i < 60; i++) {
+    many.nodes.push({ id: 'x' + i, type: 'plan', title: '计划' + i, children: [{ id: 'c' + i, title: 'x', status: 'todo' }] })
+  }
   const lines = planOutline(many, 5).split('\n')
   assert.equal(lines.length, 5)
 })

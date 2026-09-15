@@ -41,8 +41,11 @@ function barWidth(n) {
  * 节点类型。缺省按「待办」兜底——与服务端 typeOf 同语义。
  * 跨模块系统无法共享实现，靠 test/logic.test.mjs 的断言钉住一致性。
  */
+// 类型由结构派生（与 store.js 的 typeOf 同一份口径，两边各写一份是硬约束，
+// 由测试钉住）：有子项 = 计划（容器），无子项 = 待办（叶子）。
 function nodeType(node) {
-  return node !== null && node !== undefined && node.type === 'plan' ? 'plan' : 'todo'
+  return node !== null && node !== undefined && typeof node === 'object'
+    && Array.isArray(node.children) && node.children.length > 0 ? 'plan' : 'todo'
 }
 
 /** 子节点数组（保证存在，便于无条件遍历）。 */

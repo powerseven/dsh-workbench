@@ -678,6 +678,10 @@ async function planWithSuggestion() {
   // 第二个**不相关**的计划不可省：只放一个计划时它同时就是建议目标，于是
   // 「建议排在最前」和「建议排在后面」渲染出来完全一样，断言形同虚设。
   await call('plan_node_add', { title: '低电压治理攻坚', type: 'plan' })
+  // 类型由结构派生：两个计划各挂一个占位子项，否则它们是叶子（待办），
+  // 进不了「可归位容器」的候选集。
+  await call('plan_node_add', { title: '占位子项甲', parent: '数据资产盘点' })
+  await call('plan_node_add', { title: '占位子项乙', parent: '低电压治理攻坚' })
   await call('plan_node_add', { title: '补充核心表的负责人与更新频率', type: 'todo' })
   const shown = await call('plan_show')
   return { tmp, plan: shown.plan }
@@ -1089,9 +1093,23 @@ test('看板尊重筛选器：切到「重要度高」只留高优先级卡片�
   assert.match(textOf(col), /\d+\/\d+/, '列头应显示 未完成/总数')
 })
 
-test('空看板（只有计划没有任务）显示空状态而非白屏', async () => {
+test('看板只看叶子：没有叶子时整棵看板为空（「空计划」即收件箱待办）', async () => {
   const keep = planPayload
+  // 类型派生后不存在「空计划」：无子项的节点就是收件箱里的一条待办。
   planPayload = { schema: 2, version: 1, title: 't', nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
+  try {
+    const { render } = await mount()
+    byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+    const board = render()
+    assert.ok(byClass(board, 'dsh-wb-col').length >= 1, '空计划 = 收件箱待办，会占一列')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('没有任何叶子时看板为空而非白屏', async () => {
+  const keep = planPayload
+  planPayload = { schema: 2, version: 1, title: 't', nodes: [] }
   try {
     const { render } = await mount()
     byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
@@ -1331,35 +1349,43 @@ test('标题空时保存按钮禁用并说明原因，不会写出空标题', as
   assert.equal(requests.length, 0, '禁用之外还要真拦住（禁用了也可能被绕）')
 })
 
-test('有子节点的计划：类型「待办」按钮禁用并说明原因', async () => {
+test('详情页没有「类型」段：类型由结构派生，不能也不必手选', async () => {
   const { render, view } = await mount()
   actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
   await settle()
   const page = render()
-  assert.equal(segBtn(page, '待办').props.disabled, true, '有子节点的计划不能降级')
-  assert.match(segBtn(page, '待办').props.title, /子节点/)
-  // 空计划没有这个限制（子计划下面现在没有子项）。
-  assert.equal(segBtn(page, '计划').props.disabled, false)
+  const labels = byClass(page, 'dsh-wb-label').map((l) => textOf(l))
+  assert.equal(labels.includes('类型'), false, '「往下拆」用行内 ＋ 按钮，拆完空了自动变回待办')
+  // 有子项的计划不能手动标 done（它的完成由子项派生）。
+  const statusSeg = byClass(page, 'dsh-wb-seg').find((g) => g.children.some((b) => textOf(b) === '已完成'))
+  const doneBtn = statusSeg.children.find((b) => textOf(b) === '已完成')
+  assert.equal(doneBtn.props.disabled, true)
+  assert.match(String(doneBtn.props.title), /自动完成/)
 })
 
-test('换型时状态跟着归一：计划的 active 切成待办后变成 todo', async () => {
+test('面板跟着形态走：有子项渲染成计划行，无子项渲染成待办行', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  // host 侧的归一已在 host 测试里覆盖；这里验证面板对两种形态的渲染。
+  const deep = (function find(nodes) {
+    for (const n of nodes) {
+      if (n.title === '深层待办') return n
+      if (Array.isArray(n.children)) { const hit = find(n.children); if (hit !== undefined) return hit }
+    }
+    return undefined
+  })(planPayload.nodes)
+  deep.children = [{ id: 'deepkid', title: '深层的孩子', status: 'todo' }]
+  deep.status = 'active'
   const { render, view } = await mount()
-  actOf(planRow(view, '子计划'), '✎').props.onClick(ev())
-  await settle()
-  // 类型段是「进行中(active)」；切到待办后状态要归一到该类型的第一个合法值
-  // （todo），于是状态段的高亮从「进行中」跳到「待办」。
-  const segs = byClass(render(), 'dsh-wb-seg')
-  const onOf = (seg) => seg.children.find((b) => b.props.className === 'on')
-  assert.equal(textOf(onOf(segs[1])), '进行中')
-  segs[0].children.find((b) => textOf(b) === '待办').props.onClick(ev())
-  const after = byClass(render(), 'dsh-wb-seg')
-  assert.equal(textOf(onOf(after[1])), '待办', 'active 对计划才合法，换型后状态跟着归一')
-  requests = []
-  btnByText(render(), '保存').props.onClick(ev())
-  await settle()
-  const body = requests.find((r) => r.path === '/api/workbench/node-set').body
-  assert.equal(body.type, 'todo')
-  assert.equal(body.status, 'todo', 'active 对计划才合法，换型后必须归一')
+  assert.ok(planRow(view, '深层待办') !== null, '有子项 → 计划行')
+  assert.ok(taskRow(view, '深层待办') === null, '不再渲染成待办行')
+
+  deep.children = undefined
+  deep.status = 'todo'
+  const view2 = render()
+  assert.ok(taskRow(view2, '深层待办') !== null, '删光子项 → 待办行')
+  assert.ok(planRow(view2, '深层待办') === null)
+  planPayload = keep
 })
 
 test('表头「＋ 新建」打开新建表单，保存走 node-add 且带上位置', async () => {
@@ -1643,25 +1669,28 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
 
 // ---------------------------------------------------------------- 完成语义一体化
 
-test('叶子计划有勾选框且走 /node-set；有子项的计划不出现勾选框', async () => {
+test('叶子（含原「空计划」）渲染成待办行、可勾选；容器没有勾选框', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
+  // 无子项的节点 = 待办：即便旧数据写着 type:'plan'，也按叶子渲染与操作。
   planPayload.nodes.push({ id: 'leafplan', type: 'plan', title: '叶子计划', status: 'active', children: [] })
   try {
     const { render, view } = await mount()
-    const leafHead = planRow(view, '叶子计划')
-    const leafCheck = findAll(leafHead, (el) => el.type === 'input' && el.props.type === 'checkbox')[0]
-    assert.ok(leafCheck !== undefined, '叶子计划 = 能做完的事，要能勾')
+    // 「叶子计划」现在是一条待办行（叶子），勾选走 /todo-set。
+    const leafRow = taskRow(view, '叶子计划')
+    assert.ok(leafRow !== null, '叶子按待办渲染')
+    const leafCheck = findAll(leafRow, (el) => el.type === 'input' && el.props.type === 'checkbox')[0]
+    assert.ok(leafCheck !== undefined, '叶子 = 能做完的事，要能勾')
     const withKids = planRow(view, '工作主线')
     const kidCheck = findAll(withKids, (el) => el.type === 'input' && el.props.type === 'checkbox')
-    assert.equal(kidCheck.length, 0, '有子项的计划不能手点完成——它的完成由子项派生')
+    assert.equal(kidCheck.length, 0, '容器（有子项）不能手点完成——它的完成由子项派生')
 
     requests = []
     leafCheck.props.onChange(ev())
     await settle()
-    const call = requests.find((r) => r.path === '/api/workbench/node-set')
+    const call = requests.find((r) => r.path === '/api/workbench/todo-set')
     assert.equal(call.body.status, 'done')
-    assert.equal(call.body.node, 'leafplan')
+    assert.equal(call.body.todo, 'leafplan')
   } finally {
     planPayload = keep
   }
@@ -1671,8 +1700,9 @@ test('详情页：有未完成子项的计划，「已完成」按钮禁用并�
   const { render, view } = await mount()
   actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
   await settle()
-  const segs = byClass(render(), 'dsh-wb-seg')
-  const doneBtn = segs[1].children.find((b) => textOf(b) === '已完成')
+  // 类型段删除后，状态段是第一个 seg；「已完成」在子项没做完时应被禁用。
+  const statusSeg = byClass(render(), 'dsh-wb-seg')[0]
+  const doneBtn = statusSeg.children.find((b) => textOf(b) === '已完成')
   assert.equal(doneBtn.props.disabled, true, '子项没做完，不能手动完成')
   assert.match(String(doneBtn.props.title), /自动完成/)
 })

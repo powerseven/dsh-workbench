@@ -74,8 +74,8 @@ import {
   setDelegate,
   setDelegateExpectAt,
   setPriority,
-  setNodeType,
   setRecur,
+  normalizeShape,
   setReceipt,
   setStar,
   setStatus,
@@ -183,12 +183,13 @@ async function withTemp(fn) {
 
 // ---------------------------------------------------------------- 类型判断
 
-test('typeOf 缺省当待办（叶子是更宽松的默认）', () => {
-  assert.equal(typeOf({ type: 'plan' }), 'plan')
-  assert.equal(typeOf({ type: 'todo' }), 'todo')
+test('typeOf 由结构派生：有子项是计划，无子项是待办', () => {
+  assert.equal(typeOf({ children: [{ title: 'x' }] }), 'plan')
+  assert.equal(typeOf({ children: [] }), 'todo', '空容器也是叶子——挂上子项它才成为计划')
+  assert.equal(typeOf({ type: 'plan' }), 'todo', '遗留的 type 字段被忽略：结构说了算')
   assert.equal(typeOf({}), 'todo')
   assert.equal(typeOf(null), 'todo')
-  assert.equal(isPlan({ type: 'plan' }), true)
+  assert.equal(isPlan({ children: [{}] }), true)
   assert.equal(isTodo({}), true)
 })
 
@@ -285,8 +286,9 @@ test('collectNodes 递归整棵树，带深度与路径', () => {
 
 test('collectNodes 的类型过滤不限制深度（任意层级的待办都能取到）', () => {
   const plan = samplePlan()
-  assert.equal(collectNodes(plan, 'plan').length, 3)
-  assert.equal(collectNodes(plan, 'todo').length, 3)
+  // k1（量化、无子项）派生成待办：计划只剩 g1 与 k2。
+  assert.equal(collectNodes(plan, 'plan').length, 2)
+  assert.equal(collectNodes(plan, 'todo').length, 4)
   // 待办挂在任意深度都要能找到
   const deep = emptyPlan()
   deep.nodes.push({ id: 'n1', type: 'plan', title: 'a', children: [{ id: 'n2', type: 'plan', title: 'b', children: [{ id: 'n3', type: 'todo', title: 'c', status: 'todo' }] }] })
@@ -309,7 +311,7 @@ test('childrenOf 对脏数据返回空数组', () => {
 
 test('nodeStats 统计整棵子树（删除前的提示要用）', () => {
   const plan = samplePlan()
-  assert.deepEqual(nodeStats(plan.nodes[0]), { plans: 3, todos: 3, total: 6 })
+  assert.deepEqual(nodeStats(plan.nodes[0]), { plans: 2, todos: 4, total: 6 })
   assert.deepEqual(nodeStats(plan.nodes[0].children[1]), { plans: 1, todos: 3, total: 4 })
 })
 
@@ -357,22 +359,19 @@ test('resolveNode 在有歧义或找不到时报错，而不是随便挑一个',
 
 // ------------------------------------------------------------- 增 / 移 / 删
 
-test('makeNode 默认造待办，可造计划（计划自动带 children）', () => {
+test('makeNode 默认造待办（叶子），不再接受 type', () => {
   const plan = emptyPlan()
   const todo = makeNode(plan, { title: '待办' })
-  assert.equal(todo.type, 'todo')
+  assert.equal('type' in todo, false, '类型不落盘')
   assert.equal(todo.status, 'todo')
   assert.equal(todo.children, undefined, '待办是叶子，不该有 children')
   assert.equal(todo.id, 'n1')
 
-  const sub = makeNode(plan, { title: '子计划', type: 'plan' })
-  assert.equal(sub.status, 'active')
-  assert.deepEqual(sub.children, [])
+  // 「计划」不再是建出来的一种节点：挂上子项它自然成为计划（见 normalizeShape）。
 })
 
-test('makeNode 校验类型与标题', () => {
+test('makeNode 校验标题', () => {
   const plan = emptyPlan()
-  assert.throws(() => makeNode(plan, { title: 'x', type: 'goal' }), /type 必须是 plan \/ todo/)
   assert.throws(() => makeNode(plan, { title: '   ' }), /标题不能为空/)
 })
 
@@ -411,12 +410,15 @@ test('appendChild 不传 parent 就放到顶层', () => {
   assert.deepEqual(inboxOf(plan).map((n) => n.id), [a.id])
 })
 
-test('appendChild 只接受计划作为父节点（待办是叶子）', () => {
+test('appendChild 挂到待办下：它自动变成计划', () => {
   const plan = samplePlan()
   const node = makeNode(plan, { title: '新待办' })
-  assert.throws(() => appendChild(plan, node, 't1'), /是待办，不能往里放子项/)
-  appendChild(plan, node, 'k2')
-  assert.equal(plan.nodes[0].children[1].children.length, 4)
+  // t1 是叶子（待办）；挂上子项它就是计划——「待办发现要拆，直接往下挂」。
+  appendChild(plan, node, 't1')
+  const t1 = plan.nodes[0].children[1].children[0]
+  assert.equal(typeOf(t1), 'plan', '挂上子项，t1 自动成为计划')
+  assert.equal(t1.status, 'done', 't1 本来就是 done：完成是人的决定，归一不改写')
+  assert.equal(t1.children.length, 1)
 })
 
 test('locate 给出父节点、兄弟数组与下标', () => {
@@ -467,11 +469,11 @@ test('moveNode 能在同一层里重排顺序', () => {
 test('moveNode 拒绝把节点移到它自己或它的子孙下面（否则成环）', () => {
   const plan = samplePlan()
   assert.throws(() => moveNode(plan, 'k2', 'k2'), /不能把一个节点移到它自己下面/)
-  assert.throws(() => moveNode(plan, 'k2', 't1'), /是待办，不能作为父节点/)
+  // 任何节点都能当父（挂上子项它就是计划），只剩自环要拦。
   // k2 不能移到 k2 的后代下——这里用「把 g1 移到 k2 下面」验证祖先检查方向
   assert.equal(isDescendantOf(plan, plan.nodes[0].children[1], plan.nodes[0]), true)
   const plan2 = samplePlan()
-  const deep = makeNode(plan2, { title: '深层子计划', type: 'plan' })
+  const deep = makeNode(plan2, { title: '深层子计划' })
   appendChild(plan2, deep, 'k2')
   assert.throws(() => moveNode(plan2, 'k2', deep.id), /不能把一个节点移到它自己的子孙下面/)
 })
@@ -481,8 +483,8 @@ test('removeNode 删计划会连带整棵子树，并报告删了多少', () => 
   const r = removeNode(plan, 'g1')
   assert.equal(plan.nodes.length, 0)
   assert.equal(r.removed.total, 6)
-  assert.equal(r.removed.plans, 3)
-  assert.equal(r.removed.todos, 3)
+  assert.equal(r.removed.plans, 2)
+  assert.equal(r.removed.todos, 4)
 })
 
 test('removeNode 删单条待办只影响它自己', () => {
@@ -494,7 +496,7 @@ test('removeNode 删单条待办只影响它自己', () => {
 
 // ------------------------------------------------------------------- 迁移
 
-test('迁移：goal/kr/task 映射成 plan/plan/todo，老 id 原样保留', () => {
+test('迁移：goal/kr/task 映射成树，老 id 原样保留；类型不再落盘', () => {
   const plan = migratePlan(legacyPlan())
   assert.equal(plan.schema, SCHEMA)
   assert.equal(plan.version, 7, '版本号必须带着走')
@@ -503,14 +505,13 @@ test('迁移：goal/kr/task 映射成 plan/plan/todo，老 id 原样保留', () 
 
   const g = plan.nodes[0]
   assert.equal(g.id, 'g1', '老 id 保留：历史会话与快照都还在引用它')
-  assert.equal(g.type, 'plan')
   assert.equal(g.owner, '张三')
   assert.equal(g.priority, 'high')
   assert.equal(g.children.length, 2)
 
   const k1 = g.children[0]
   assert.equal(k1.id, 'k1')
-  assert.equal(k1.type, 'plan')
+  assert.equal(typeOf(k1), 'todo', '量化 KR 没有子任务，派生成待办（按 metric 算进度）')
   assert.deepEqual(k1.metric, { target: 12, current: 3, unit: '个' }, 'target/current/unit 进 metric')
   assert.equal(k1.note, '备注')
 
@@ -520,7 +521,6 @@ test('迁移：goal/kr/task 映射成 plan/plan/todo，老 id 原样保留', () 
 
   const t1 = k2.children[0]
   assert.equal(t1.id, 't1')
-  assert.equal(t1.type, 'todo')
   assert.equal(t1.status, 'done')
   assert.equal(t1.doneAt, '2026-09-10T10:00:00.000Z', '完成时间戳不能丢——周报靠它')
   assert.equal(k2.children[1].startedAt, '2026-09-01T10:00:00.000Z')
@@ -531,7 +531,6 @@ test('迁移：inbox 变成顶层待办（即收件箱），排在计划之后',
   const plan = migratePlan(legacyPlan())
   assert.equal(plan.nodes.length, 2)
   assert.equal(plan.nodes[1].id, 't9')
-  assert.equal(plan.nodes[1].type, 'todo')
   assert.equal(plan.nodes[1].priority, 'high')
   assert.deepEqual(inboxOf(plan).map((n) => n.id), ['t9'])
   assert.deepEqual(topPlans(plan).map((n) => n.id), ['g1'])
@@ -572,12 +571,15 @@ test('renderMarkdown 用标题级别表达层级（递归树在 Markdown 里也�
   const md = renderMarkdown(samplePlan())
   assert.match(md, /# 测试计划/)
   assert.match(md, /## g1 · 完成低电压治理攻坚/)
-  assert.match(md, /### k1 · 完成 12 个台区改造/)
+  // k1（量化、无子项）派生成待办：在 Markdown 里是一层缩进的任务行，不再是标题，
+  // 但量化进度要跟着走（不能因为不再是标题行就丢了 3/12）。
+  assert.match(md, /^  - \[ \] k1 · 完成 12 个台区改造/m)
   assert.match(md, /3\/12 个/)
   assert.match(md, /^ {4}- \[x\] t1 · 收集基础数据/m, '待办缩进两层')
   assert.match(md, /截止 2026-11-01/)
   assert.match(md, /负责人：张三/)
-  assert.match(md, /- 计划：3 个；待办：共 3/)
+  // k1（量化、无子项）派生成待办：计划 2 个、待办 4 条。
+  assert.match(md, /- 计划：2 个；待办：共 4/)
 })
 
 test('renderMarkdown 标注 doing / dropped 与状态', () => {
@@ -834,9 +836,9 @@ test('待办不要求负责人（默认自己负责），否则警告会失去�
   assert.match(nodeWarnings({ type: 'todo', priority: 'high' }, 'todo').join('；'), /需要截止日期/)
 })
 
-test('nodeWarnings 不传 type 时按节点自身类型判断', () => {
-  assert.match(nodeWarnings({ type: 'todo', priority: 'high' }).join('；'), /需要截止日期/)
-  assert.match(nodeWarnings({ type: 'plan', priority: 'high' }).join('；'), /需要周期/)
+test('nodeWarnings 按派生形态判断（叶子要截止、容器要周期）', () => {
+  assert.match(nodeWarnings({ priority: 'high' }).join('；'), /需要截止日期/)
+  assert.match(nodeWarnings({ priority: 'high', children: [{ title: 'x' }] }).join('；'), /需要周期/)
 })
 
 test('中重要度缺截止时提示，低重要度完全不打扰', () => {
@@ -867,64 +869,51 @@ test('applyStatus 只在首次进入 doing 时记 startedAt', () => {
   assert.equal(task.startedAt, '2026-09-14T10:00:00.000Z')
 })
 
-test('setStatus 按类型校验取值（计划与待办的状态集合不同）', () => {
-  const todo = { type: 'todo' }
-  setStatus(todo, 'done')
-  assert.equal(todo.status, 'done')
-  assert.throws(() => setStatus({ type: 'todo' }, 'active'), /待办的状态必须是 todo \/ doing \/ done \/ dropped/)
-  assert.throws(() => setStatus({ type: 'plan' }, 'doing'), /计划的状态必须是 active \/ done \/ dropped/)
-  assert.throws(() => setStatus({ type: 'plan' }, '  '), /计划的状态必须是/)
+test('setStatus 按形态校验取值（有子=计划、无子=待办，状态集合不同）', () => {
+  setStatus({ status: 'todo' }, 'done')
+  assert.throws(() => setStatus({ status: 'todo' }, 'active'), /待办的状态必须是 todo \/ doing \/ done \/ dropped/)
+  assert.throws(() => setStatus({ status: 'active', children: [{ title: 'x' }] }, 'doing'), /计划的状态必须是 active \/ done \/ dropped/)
+  assert.throws(() => setStatus({ status: 'active', children: [{ title: 'x' }] }, '  '), /计划的状态必须是/)
 })
 
-test('计划也能记完成时间（计划整体收尾时用）', () => {
-  const goal = { type: 'plan', status: 'active' }
+test('有子项的节点也能记完成时间（由子项派生自动完成时用）', () => {
+  const goal = { status: 'active', children: [{ title: 'x', status: 'done' }] }
   setStatus(goal, 'done', new Date('2026-09-14T10:00:00Z'))
   assert.ok(goal.doneAt)
 })
 
-// --------------------------------------------------------------- 节点换型
+// ----------------------------------------------------- 类型派生与形态归一
 
-test('setNodeType 待办 → 计划：原地换型（同一件事开始往下拆）', () => {
-  const node = { id: 'n1', type: 'todo', title: '数据治理', status: 'todo' }
-  setNodeType(node, 'plan')
-  assert.equal(node.type, 'plan')
-  assert.equal(typeOf(node), 'plan')
-  assert.ok(isPlan(node))
-  assert.equal(node.id, 'n1', '换型不换 id——引用它的地方（委派、备注）不该断')
+test('类型由结构派生：挂上子项自动变计划，删光子项自动变回待办', () => {
+  const plan = emptyPlan()
+  const node = makeNode(plan, { title: '数据治理' })
+  appendChild(plan, node)
+  assert.equal(typeOf(node), 'todo', '新建的都是待办（叶子）')
+  const kid = makeNode(plan, { title: '收集基础数据' })
+  appendChild(plan, kid, node.id)
+  assert.equal(typeOf(node), 'plan', '挂上第一个子项，它就是计划')
+  assert.equal(node.status, 'active', 'todo 挂子后归一成 active')
+  assert.equal('type' in node, false, '磁盘上不再存 type 字段')
+  removeNode(plan, kid.id)
+  assert.equal(typeOf(node), 'todo', '删光子项自动变回待办')
+  assert.equal(node.status, 'todo', 'active 归一成 todo')
+  assert.equal('children' in node, false, '叶子不留空 children 键（diff 噪音）')
 })
 
-test('setNodeType 计划 → 待办：状态跨类型重新归一', () => {
-  // active 只对计划合法；留成 active 会让这条待办在渲染与统计里静默错值。
-  const node = { type: 'plan', title: '数据治理', status: 'active' }
-  setNodeType(node, 'todo')
-  assert.equal(node.status, 'todo')
-  // done / dropped 两边都合法，不该被动；反向同理（doing 对计划非法 → active）。
-  const done = { type: 'plan', status: 'done' }
-  setNodeType(done, 'todo')
-  assert.equal(done.status, 'done')
-  const doing = { type: 'todo', status: 'doing' }
-  setNodeType(doing, 'plan')
-  assert.equal(doing.status, 'active')
+test('normalizeShape 不动 done / dropped：完成与放弃是人的决定', () => {
+  const done = { title: '做完的', status: 'done' }
+  normalizeShape(done)
+  assert.equal(done.status, 'done', '变回叶子也不改写完成')
+  const dropped = { title: '放弃的', status: 'dropped', children: [{ title: 'x' }] }
+  normalizeShape(dropped)
+  assert.equal(dropped.status, 'dropped', '挂了子也不复活放弃')
 })
 
-test('setNodeType 拒绝把有子节点的计划降级为待办，且不留半改状态', () => {
-  const node = {
-    id: 'n1',
-    type: 'plan',
-    title: '数据治理',
-    children: [{ id: 'n2', type: 'todo', title: '收集基础数据' }],
-  }
-  assert.throws(() => setNodeType(node, 'todo'), /还有 1 个子节点，不能降级为待办/)
-  assert.equal(node.type, 'plan', '拒绝时必须原样返回，不能已经改了 type')
-  assert.equal(node.children.length, 1)
-})
-
-test('setNodeType 校验类型取值；同类型调用幂等', () => {
-  const node = { type: 'plan', status: 'active' }
-  assert.throws(() => setNodeType(node, 'kr'), /节点类型必须是 plan \/ todo/)
-  assert.throws(() => setNodeType(node, '  '), /节点类型必须是/)
-  setNodeType(node, 'plan')
-  assert.equal(node.status, 'active', '同类型时不该动状态')
+test('makeNode 忽略传入的 type（兼容旧调用方），新建都是待办', () => {
+  const plan = emptyPlan()
+  const node = makeNode(plan, { title: '不管传什么', type: 'plan' })
+  assert.equal('type' in node, false)
+  assert.equal(typeOf(node), 'todo')
 })
 
 // ------------------------------------------------------------------- 委派
@@ -1010,11 +999,12 @@ test('todoCounts 统计待办四种状态，单列计划数与收件箱', () => 
   plan.nodes.push({ id: 't9', type: 'todo', title: '游离', status: 'todo' })
   plan.nodes.push({ id: 't10', type: 'todo', title: '已做完的游离', status: 'done' })
   const c = todoCounts(plan)
-  assert.equal(c.plans, 3)
-  assert.equal(c.total, 5, '3 个子计划下的待办 + 2 条收件箱')
+  // k1（量化、无子项）派生成待办：计划 2 个、待办多一条。
+  assert.equal(c.plans, 2)
+  assert.equal(c.total, 6, '4 个子项下的待办 + 2 条收件箱')
   assert.equal(c.done, 2)
   assert.equal(c.doing, 1)
-  assert.equal(c.todo, 2)
+  assert.equal(c.todo, 3)
   assert.equal(c.inbox, 2)
   assert.equal(c.inboxOpen, 1)
 })
@@ -1391,7 +1381,8 @@ function suggestFixture() {
           ] },
         ],
       },
-      { id: 'n9', type: 'plan', title: '低电压治理攻坚', start: '2026-10-01', end: '2026-12-31', children: [] },
+      { id: 'n9', type: 'plan', title: '低电压治理攻坚', start: '2026-10-01', end: '2026-12-31',
+        children: [{ id: 'n10', title: '已有安排', status: 'todo' }] },
     ],
   }
 }
@@ -1458,7 +1449,8 @@ test('归位建议：最多三条，且同分时的顺序稳定', () => {
   const plan = {
     schema: 2, version: 1, title: 't',
     nodes: ['A', 'B', 'C', 'D'].map((k, i) => ({
-      id: 'p' + i, type: 'plan', title: '数据' + k, children: [],
+      id: 'p' + i, type: 'plan', title: '数据' + k,
+      children: [{ id: 'c' + i, title: 'x', status: 'todo' }],
     })),
   }
   const node = { id: 'x', type: 'todo', title: '数据相关的事' }
