@@ -62,12 +62,20 @@ import {
   renderMarkdown,
   resolveAny,
   resolveNode,
+  addBlockedBy,
+  blockedListOf,
+  blockers,
+  removeBlockedBy,
+  RECUR_KIND,
   setDelegate,
   setDelegateExpectAt,
   setPriority,
   setNodeType,
+  setRecur,
   setReceipt,
+  setStar,
   setStatus,
+  spawnRecurring,
   suggestParent,
   todoCounts,
   todayStr,
@@ -1516,4 +1524,109 @@ test('setDelegateExpectAt 只挪时间，不动回执状态', () => {
   setDelegateExpectAt(node, '')
   assert.equal('expectAt' in node.delegate, false)
   assert.throws(() => setDelegateExpectAt({ id: 'x' }, '2026-10-01'), /委派记录/)
+})
+
+// ---------------------------------------------------------------- 依赖 / 星标 / 重复（MLO 核心）
+
+function depFixture() {
+  const plan = emptyPlan()
+  const a = makeNode(plan, { type: 'todo', title: '先写周报' })
+  appendChild(plan, a)
+  const b = makeNode(plan, { type: 'todo', title: '再发周报' })
+  appendChild(plan, b)
+  return { plan, a, b }
+}
+
+test('依赖：blockedBy 记 id，blockers 只列还没做完的', () => {
+  const { plan, a, b } = depFixture()
+  addBlockedBy(plan, b, a.id)
+  assert.deepEqual(blockedListOf(b), [String(a.id)])
+  assert.deepEqual(blockers(plan, b).map((n) => n.title), ['先写周报'])
+
+  // 完成不删依赖（重开后还能用），但 blockers 里不再出现。
+  setStatus(a, 'done')
+  assert.deepEqual(blockedListOf(b), [String(a.id)], '完成不删依赖——留着历史')
+  assert.equal(blockers(plan, b).length, 0, '解锁')
+  setStatus(a, 'todo')
+  assert.equal(blockers(plan, b).length, 1, '撤回完成 = 重新挡住')
+})
+
+test('依赖：自依赖、成环、目标不存在都要拦下来', () => {
+  const { plan, a, b } = depFixture()
+  addBlockedBy(plan, b, a.id)
+  assert.throws(() => addBlockedBy(plan, a, b.id), /不能成环/)
+  assert.throws(() => addBlockedBy(plan, b, b.id), /不能依赖自己/)
+  assert.throws(() => addBlockedBy(plan, a, 'n999'), /不存在/)
+  // 间接环也不行：c 等 b（b 等 a），再让 a 等 c 就是三角环。
+  const c = makeNode(plan, { type: 'todo', title: '第三件' })
+  appendChild(plan, c)
+  addBlockedBy(plan, c, b.id)
+  assert.throws(() => addBlockedBy(plan, a, c.id), /不能成环/)
+  // 重复添加去重，不报错。
+  addBlockedBy(plan, b, a.id)
+  assert.deepEqual(blockedListOf(b), [String(a.id)])
+})
+
+test('依赖：移除是幂等的，删空后不留空数组', () => {
+  const { plan, a, b } = depFixture()
+  addBlockedBy(plan, b, a.id)
+  assert.equal(removeBlockedBy(b, a.id), true)
+  assert.equal('blockedBy' in b, false)
+  assert.equal(removeBlockedBy(b, a.id), false, '再摘一次不报错')
+})
+
+test('星标：布尔开关，关掉就删键（不留 false）', () => {
+  const { b } = depFixture()
+  setStar(b, true)
+  assert.equal(b.starred, true)
+  setStar(b, false)
+  assert.equal('starred' in b, false, '磁盘上不出现 starred:false 的噪音')
+})
+
+test('重复：week 顺推 7 天，month 同日顺推且月末截断', () => {
+  assert.deepEqual(RECUR_KIND, ['week', 'month'])
+  const { plan, b } = depFixture()
+  b.due = '2026-09-15'
+  setRecur(b, 'week')
+  const c1 = spawnRecurring(plan, b, '2026-09-15')
+  assert.equal(c1.due, '2026-09-22')
+
+  b.due = '2026-01-31'
+  setRecur(b, 'month')
+  const c2 = spawnRecurring(plan, b, '2026-01-31')
+  assert.equal(c2.due, '2026-02-28', '31 号的月度任务，2 月落到月末')
+
+  // 没有截止的：从今天起算，否则第一条就没有 due。
+  b.due = undefined
+  setRecur(b, 'week')
+  const c3 = spawnRecurring(plan, b, '2026-09-15')
+  assert.equal(c3.due, '2026-09-22')
+
+  setRecur(b, 'none')
+  assert.equal('recur' in b, false)
+  assert.equal(spawnRecurring(plan, b), null, '没配重复就返回 null，调用方不用分支')
+})
+
+test('重复：克隆的是「这件事本身」，不是「上一次」', () => {
+  const { plan, b } = depFixture()
+  const a = plan.nodes.find((n) => n.title === '先写周报')
+  addBlockedBy(plan, b, a.id)
+  setStar(b, true)
+  setStatus(b, 'doing')
+  b.evidence = [{ kind: 'note', ref: '上次记录', at: 'x' }]
+  b.owner = '我'
+  b.note = '每周五发'
+  b.priority = 'high'
+  setRecur(b, 'week')
+
+  const c = spawnRecurring(plan, b)
+  assert.equal(c.title, '再发周报')
+  assert.equal(c.owner, '我')
+  assert.equal(c.priority, 'high')
+  assert.equal(c.note, '每周五发')
+  assert.equal(c.status, 'todo')
+  assert.equal('starred' in c, false, '星标说的是「这次」，不继承')
+  assert.equal('evidence' in c, false, '证据是上一次的，不继承')
+  assert.equal('blockedBy' in c, false, '依赖是上一次的排程，不继承')
+  assert.deepEqual(c.recur, { kind: 'week' }, '重复规则跟着走')
 })

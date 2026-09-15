@@ -1536,3 +1536,107 @@ test('人设：能看能改，保存走 /persona-set', async () => {
   const write = requests.find((r) => r.path === '/api/workbench/persona-set')
   assert.equal(write.body.text, '## 性格\n- 只报事实', '人改的是整篇')
 })
+
+// ---------------------------------------------------------------- MLO 核心：执行清单 / 星标 / AI 清单卡
+
+test('「执行」视图：跨分支聚合现在能做的，星标置顶，被挡的单独折叠', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  const main = planPayload.nodes.find((n) => n.title === '工作主线')
+  main.children.push(
+    { id: 'x1', type: 'todo', title: '执行甲', status: 'todo', due: '2026-09-20' },
+    { id: 'x2', type: 'todo', title: '执行乙', status: 'todo', priority: 'high', starred: true },
+    { id: 'x3', type: 'todo', title: '执行丙', status: 'todo', blockedBy: ['x1'] },
+  )
+  try {
+    const { render, view } = await mount()
+    const toggles = byClass(view, 'dsh-wb-viewtoggle')[0]
+    toggles.children.find((b) => textOf(b) === '执行').props.onClick(ev())
+    const page = render()
+    assert.match(textOf(firstByClass(page, 'dsh-wb-aihead')), /现在能做/)
+    // 共享 fixture 里还有别的待办，这里只断言相对顺序：星标的「执行乙」在「执行甲」前。
+    const bodyText = textOf(firstByClass(page, 'dsh-wb-body'))
+    assert.ok(bodyText.indexOf('执行乙') >= 0 && bodyText.indexOf('执行乙') < bodyText.indexOf('执行甲'),
+      '星标任务要排在无星标之前')
+    assert.ok(byClass(page, 'dsh-wb-task').find((r) => textOf(r).includes('执行乙')) !== undefined)
+    // 被挡的单独一段：它们不是没做，是做不了。
+    const blockedHead = byClass(page, 'dsh-wb-aihead').find((x) => textOf(x).includes('被挡住的'))
+    assert.ok(blockedHead !== undefined)
+    assert.match(textOf(firstByClass(page, 'dsh-wb-body')), /等 执行甲/, '被谁挡要说得出名字')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('行内 ★：点一下置顶星标（走 /node-set 的 star），再点取消', async () => {
+  const { render, view } = await mount()
+  const row = taskRow(view, '深层待办') ?? taskRow(view, '表层待办')
+  const star = actOf(row, '★')
+  assert.ok(star !== undefined)
+  requests = []
+  star.props.onClick(ev())
+  await settle()
+  const call = requests.find((r) => r.path === '/api/workbench/node-set')
+  assert.equal(call.body.star, true)
+})
+
+test('AI 清单卡：渲染 items 与命中情况，可一键存为视图并出现在筛选条', async () => {
+  withAi()
+  aiReply = {
+    reply: '按顺序',
+    tasks: [],
+    list: { title: '明天在家能做的', items: [
+      { title: '深层待办', id: idOf('深层待办'), ok: true },
+      { title: '不存在的活', id: null, ok: false },
+    ] },
+  }
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  aiEntry(render()).props.onChange({ target: { value: '明天在家能做什么' } })
+  aiBtn(render(), '发送').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-ailist')
+  assert.ok(card !== null, '应有清单卡')
+  const rows = byClass(card, 'dsh-wb-formrow')
+  assert.equal(rows.length, 2)
+  assert.ok(classesOf(rows[1]).includes('miss'), '没对上的要标出来')
+  // 保存：只收命中的 id。
+  storage.clear()
+  requests = []
+  aiBtn(render(), '存为视图').props.onClick(ev())
+  await settle()
+  assert.equal(requests.filter((r) => r.path !== '/api/workbench/get').length, 0, '存视图不写服务端（本机偏好）')
+  const saved = JSON.parse(storage.get('dsh-workbench:views'))
+  assert.equal(saved.length, 1)
+  assert.equal(saved[0].name, '明天在家能做的')
+  assert.deepEqual(saved[0].ids, [idOf('深层待办')])
+})
+
+test('存下的视图出现在筛选条，点开只列清单里还活着的任务', async () => {
+  withAi()
+  aiReply = { reply: 'ok', tasks: [], list: { title: '周末冲刺', items: [{ title: '深层待办', id: idOf('深层待办'), ok: true }] } }
+  const { render, view } = await mount()
+  aiEntry(view).props.onFocus(ev())
+  aiEntry(render()).props.onChange({ target: { value: '组个清单' } })
+  aiBtn(render(), '发送').props.onClick(ev())
+  await settle()
+  aiBtn(render(), '存为视图').props.onClick(ev())
+  await settle()
+
+  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺')
+  assert.ok(chip !== undefined, '存完就出现在筛选条')
+  // 存为视图时已经**自动激活**：不必再点，清单就在眼前。
+  let page = render()
+  let cv = firstByClass(page, 'dsh-wb-customview')
+  assert.ok(cv !== null, '保存后直接看到清单内容')
+  assert.match(textOf(cv), /深层待办/)
+  // chip 是开关：点一下收起，再点一下展开。**每次点击后要重新取按钮**——
+  // 重渲会换新元素，旧元素上的闭包还是旧状态（真浏览器同理，只是替身更较真）。
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺').props.onClick(ev())
+  assert.ok(firstByClass(render(), 'dsh-wb-customview') === null, '再点一下收起')
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺').props.onClick(ev())
+  page = render()
+  cv = firstByClass(page, 'dsh-wb-customview')
+  assert.ok(cv !== null, '再点一下展开')
+})

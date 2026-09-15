@@ -1076,6 +1076,175 @@ export function appendChild(plan, node, parentRef) {
   return node
 }
 
+// ============================================================ 依赖 / 星标 / 重复
+
+/**
+ * 任务依赖（**单向阻塞**，MLO 的主干语义）：`node.blockedBy = [id]`——
+ * 里面的 id 有任何一个还没做完，这个节点就是「被挡住」的。
+ *
+ * 为什么不做 MLO 的完整规则（同分支自动顺序等）：那条路每加一条规则，
+ * 「这条为什么被挡住 / 为什么没被挡住」就更难解释一层，最后变成黑箱。
+ * 单向阻塞只有一句话能解释：「它等的那件事还没做完」。
+ *
+ * 层级不是依赖：挂在计划下是**归属**，跟做不做得成无关。一个待办可以
+ * 同时挂在「工作主线」下、又被另一条待办挡着——两件事互不掺和。
+ */
+export function blockedListOf(node) {
+  const list = node === null || node === undefined || typeof node !== 'object' ? undefined : node.blockedBy
+  return Array.isArray(list) ? list : []
+}
+
+/** 按 id 找节点（依赖**只按 id**：依赖是精确的工程关系，标题匹配留给建议类功能）。 */
+function nodeById(plan, id) {
+  const want = String(id ?? '')
+  if (want === '') return null
+  for (const hit of collectNodes(plan, 'any')) {
+    if (String(hit.node.id) === want) return hit.node
+  }
+  return null
+}
+
+/** from 的依赖链（沿 blockedBy 一路走下去）是否到达 target——环检测的内核。 */
+function dependsOn(plan, from, target, seen = new Set()) {
+  const id = String(from?.id ?? '')
+  if (seen.has(id)) return false
+  seen.add(id)
+  for (const ref of blockedListOf(from)) {
+    if (String(ref) === String(target?.id)) return true
+    const next = nodeById(plan, ref)
+    if (next !== null && dependsOn(plan, next, target, seen)) return true
+  }
+  return false
+}
+
+/**
+ * 给 node 加一条依赖：等 ref 做完它才能做。
+ *
+ * 三条校验都在这一处：目标要存在；不能依赖自己；**不能成环**（A 等 B、
+ * B 又等 A，两件都永远做不了）。传 plan 是为了做后两条校验——依赖不是
+ * 一个节点自己的事，是图上的边。
+ */
+export function addBlockedBy(plan, node, ref) {
+  if (node === null || node === undefined || typeof node !== 'object') {
+    throw new Error('依赖要挂在节点上')
+  }
+  const target = nodeById(plan, ref)
+  if (target === null) throw new Error('要等的任务不存在：' + String(ref))
+  if (String(target.id) === String(node.id)) throw new Error('不能依赖自己')
+  if (dependsOn(plan, target, node)) {
+    throw new Error('不能成环：「' + String(target.title) + '」（直接或间接）已经等看「'
+      + String(node.title) + '」，再加就互相等了')
+  }
+  const id = String(target.id)
+  if (!blockedListOf(node).some((x) => String(x) === id)) {
+    if (!Array.isArray(node.blockedBy)) node.blockedBy = []
+    node.blockedBy.push(id)
+  }
+  return node
+}
+
+/** 摘掉一条依赖。幂等：摘一条不存在的依赖不报错（它已经不在了）。 */
+export function removeBlockedBy(node, ref) {
+  const list = blockedListOf(node)
+  const want = String(ref ?? '')
+  const at = list.findIndex((x) => String(x) === want)
+  if (at < 0) return false
+  list.splice(at, 1)
+  if (list.length === 0) delete node.blockedBy
+  return true
+}
+
+/** 谁挡着它：blockedBy 里**还没做完**的那些。完成不删依赖——留着，重开后还能用。 */
+export function blockers(plan, node) {
+  const out = []
+  for (const ref of blockedListOf(node)) {
+    const b = nodeById(plan, ref)
+    if (b !== null && b.status !== 'done' && b.status !== 'dropped') out.push(b)
+  }
+  return out
+}
+
+/**
+ * 星标：「我正在做 / 接下来做」。它不改变任何数据含义，只影响排序——
+ * 执行清单里置顶。故意做成布尔而不是「进行中」状态：进行中已经在
+ * `status` 里有（doing），再来一套两套语义就打架了。
+ */
+export function setStar(node, on) {
+  if (node === null || node === undefined || typeof node !== 'object') return node
+  if (on === true) node.starred = true
+  else delete node.starred
+  return node
+}
+
+export const RECUR_KIND = ['week', 'month']
+
+/** 配置重复（week / month；空值 = 取消重复）。只对待办有意义——计划不「做完再来一次」。 */
+export function setRecur(node, kind) {
+  if (node === null || node === undefined || typeof node !== 'object') return node
+  const k = opt(kind)
+  if (k === undefined || k === 'none') {
+    delete node.recur
+    return node
+  }
+  if (!RECUR_KIND.includes(k)) {
+    throw new Error('重复周期必须是 ' + RECUR_KIND.join(' / ') + ' 之一，收到：' + String(kind))
+  }
+  node.recur = { kind: k }
+  return node
+}
+
+/** 下一次到期日：有截止就接着往后推，没截止就从今天算起（否则第一次就没有 due）。 */
+function nextDue(prev, kind, today) {
+  const base = opt(prev) ?? opt(today) ?? todayStr()
+  if (kind === 'week') {
+    const d = new Date(base + 'T00:00:00Z')
+    d.setUTCDate(d.getUTCDate() + 7)
+    return d.toISOString().slice(0, 10)
+  }
+  // month：同日顺推，落进下个月没有的那天（31 号 → 2 月）就取当月最后一天。
+  const d = new Date(base + 'T00:00:00Z')
+  const day = d.getUTCDate()
+  d.setUTCDate(1)
+  d.setUTCMonth(d.getUTCMonth() + 1)
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate()
+  d.setUTCDate(Math.min(day, last))
+  return d.toISOString().slice(0, 10)
+}
+
+/**
+ * 重复任务的「重生」：完成一条带 `recur` 的待办时，克隆一条新的挂回原处。
+ *
+ * 克隆什么、不克隆什么是有意的：标题 / 负责人 / 优先级 / 备注 / 重复规则 / 截止
+ * （顺推一期）**要**——那是「这件事每周都要做」的全部含义；完成时间 / 证据 /
+ * 关联 / 星标 / 依赖**不要**——那些说的是「上一次」，不是「这一次」。
+ *
+ * @returns 新节点；没配重复就返回 null（调用方不用分支）。
+ */
+export function spawnRecurring(plan, node, today = todayStr()) {
+  if (node === null || node === undefined || typeof node !== 'object') return null
+  const recur = node.recur
+  if (recur === null || recur === undefined || typeof recur !== 'object' || !RECUR_KIND.includes(recur.kind)) {
+    return null
+  }
+  const clone = makeNode(plan, {
+    type: 'todo',
+    title: node.title,
+    owner: node.owner,
+    priority: node.priority,
+    note: node.note,
+    due: nextDue(node.due, recur.kind, today),
+  })
+  clone.recur = { kind: recur.kind }
+  const parentRef = (() => {
+    for (const hit of collectNodes(plan, 'any')) {
+      if (Array.isArray(hit.node.children) && hit.node.children.includes(node)) return hit.parent
+    }
+    return null
+  })()
+  appendChild(plan, clone, parentRef === null || parentRef === undefined ? undefined : parentRef.id)
+  return clone
+}
+
 // ============================================================ 归位建议
 
 /**
