@@ -605,7 +605,7 @@ function apply(ctx) {
         className: 'dsh-wb-mic' + (listening ? ' on' : ''),
         title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
-      }, listening ? '停止' : '语音')
+      }, listening ? '■' : '🎙')
     }
 
     // ============================================================== AI 助手
@@ -643,26 +643,39 @@ function apply(ctx) {
     }, [sessionId])
 
     /** 选图：读成 base64 存进本地状态，超上限的直接丢掉并说明丢了几张。 */
-    const addPics = async (fileList) => {
+    /**
+     * 「＋」上传：图片走 base64（多模态识别），其它文件读成文本追加进输入框——
+     * 一条通路两种形态，host 的 /ai-parse 不用为「文件」开新字段。
+     * 读失败（权限/格式）不要拖垮整个面板，跳过即可。
+     */
+    const addFiles = async (fileList) => {
       const files = []
       for (const f of fileList || []) files.push(f)
       const room = AI_MAX_IMAGES - aiPics.length
       const picked = files.slice(0, Math.max(room, 0))
       const out = []
+      const textDrops = []
       for (const file of picked) {
-        // arrayBuffer 是标准 API；读失败（权限/格式）不要拖垮整个面板，跳过即可。
+        const isImage = typeof file.type === 'string' && file.type.startsWith('image/')
         let buf = null
         try { buf = await file.arrayBuffer() } catch (e) { buf = null }
         if (buf === null) continue
-        out.push({
-          mediaType: typeof file.type === 'string' && file.type !== '' ? file.type : 'image/png',
-          data: bytesToBase64(new Uint8Array(buf)),
-          name: typeof file.name === 'string' && file.name !== '' ? file.name : '图片',
-        })
+        if (isImage) {
+          out.push({
+            mediaType: typeof file.type === 'string' && file.type !== '' ? file.type : 'image/png',
+            data: bytesToBase64(new Uint8Array(buf)),
+            name: typeof file.name === 'string' && file.name !== '' ? file.name : '图片',
+          })
+        } else {
+          // 非图片按文本读（截断 100KB），以「附件」段落追加——模型从上下文里看它。
+          const text = new TextDecoder('utf-8', { fatal: false }).decode(buf.slice(0, 100 * 1024))
+          textDrops.push('【附件：' + (file.name || '文件') + '】\n' + text)
+        }
       }
       setAiPics(aiPics.concat(out))
+      if (textDrops.length > 0) setAiText((aiText === '' ? '' : aiText + '\n\n') + textDrops.join('\n\n'))
       const dropped = files.length - picked.length
-      if (dropped > 0) flash('一次最多 ' + AI_MAX_IMAGES + ' 张图片，多的 ' + dropped + ' 张没带上')
+      if (dropped > 0) flash('一次最多 ' + AI_MAX_IMAGES + ' 个文件，多的 ' + dropped + ' 个没带上')
     }
 
     /**
@@ -672,7 +685,7 @@ function apply(ctx) {
     const runAi = (preset) => {
       const ask = (typeof preset === 'string' ? preset : aiText).trim()
       if (ask === '' && aiPics.length === 0) {
-        flash('问一句，或说点什么、贴一段文字、选一张图片')
+        flash('问一句，或说点什么、贴个文件')
         return
       }
       setAiBusy(true)
@@ -818,20 +831,19 @@ function apply(ctx) {
       setAiTasks((prev) => prev.map((t) => (t.key === key ? Object.assign({}, t, { newTitle: value }) : t)))
     }
 
-    /** 选图按钮。三个入口共用同一份上限与提示逻辑。 */
+    /** 「＋」上传文件。三个入口共用同一份上限与提示逻辑。 */
     const picButton = (key) => h('label', {
       key,
       className: 'dsh-wb-aibtn',
-      title: '选一张截图（白板 / 清单 / 聊天记录）',
+      title: '上传文件：图片识别内容，文本直接随问题带上',
     },
-      '图片',
+      '+',
       h('input', {
         type: 'file',
-        accept: 'image/png,image/jpeg,image/webp,image/gif',
         multiple: true,
         style: { display: 'none' },
         onChange: (e) => {
-          addPics(e.target.files)
+          addFiles(e.target.files)
           // 清空 value：否则连着选同一个文件不会触发 change。
           if (e.target !== null && e.target !== undefined) e.target.value = ''
         },
@@ -865,9 +877,10 @@ function apply(ctx) {
         picButton('pic'),
         h('button', {
           className: 'dsh-wb-aibtn primary',
+          title: '发送（回车同样有效）',
           disabled: aiBusy === true,
           onClick: () => runAi(),
-        }, aiBusy === true ? '思考中…' : '发送'),
+        }, aiBusy === true ? '…' : '↑'),
       ))
 
       if (open !== true) return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)

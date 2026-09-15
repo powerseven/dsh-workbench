@@ -823,7 +823,7 @@ test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
   const box = aiEntry(render())
   box.props.onChange({ target: { value: '下周三前把台账补完' } })
   requests = []
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
@@ -838,10 +838,10 @@ test('没有内容点解析：不发请求，只提示', async () => {
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   requests = []
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   assert.equal(requests.length, 0, '空输入不该去问模型')
-  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|图片/)
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|贴个文件/)
 })
 
 test('解析结果渲染成草稿；点建议**不直接落库**，而是填进详情表单等确认', async () => {
@@ -862,7 +862,7 @@ test('解析结果渲染成草稿；点建议**不直接落库**，而是填进�
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const drafted = render()
@@ -909,7 +909,7 @@ test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', a
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   requests = []
@@ -944,7 +944,7 @@ test('选「新建计划」= 先建容器（一次写入），待办仍等人在
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   // 新建计划的名字先由模型预填，用户还能改。
@@ -991,7 +991,7 @@ test('新建计划没名字就先不动：不建空壳计划，也不建待办',
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   requests = []
@@ -1014,7 +1014,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
     arrayBuffer: async () => new Uint8Array([0x41, 0x42]).buffer,
   }
   const picker = byClass(render(), 'dsh-wb-aibtn').find(
-    (b) => b.type === 'label' && textOf(b) === '图片',
+    (b) => b.type === 'label' && textOf(b) === '+',
   )
   assert.ok(picker !== undefined, '应有选图入口')
   const input = findAll(picker, (el) => (el.props || {}).type === 'file')[0]
@@ -1023,7 +1023,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
   await settle()
 
   requests = []
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
   assert.deepEqual(call.body.images, [{ mediaType: 'image/png', data: 'QUI=', name: '白板.png' }])
@@ -1455,7 +1455,7 @@ test('只提问：回复渲染成对话，且下一轮带上历史（接着聊�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '哪些逾期了' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const msgs = byClass(render(), 'dsh-wb-msg')
@@ -1468,7 +1468,7 @@ test('只提问：回复渲染成对话，且下一轮带上历史（接着聊�
   aiReply = { reply: '2026-10-01', tasks: [] }
   requests = []
   aiEntry(render()).props.onChange({ target: { value: '那它的截止呢' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
   assert.equal(call.body.history.length, 2)
@@ -1506,7 +1506,7 @@ test('草稿卡给出专家意见与历史依据（新增时要结合当前与�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   assert.match(textOf(firstByClass(render(), 'dsh-wb-advice')), /撞期/)
@@ -1529,7 +1529,7 @@ test('点选项：把它的 patch 并进草稿再打开表单，不直接建', a
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   requests = []
@@ -1621,7 +1621,7 @@ test('AI 清单卡：渲染 items 与命中情况，可一键存为视图并出�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '明天在家能做什么' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const card = firstByClass(render(), 'dsh-wb-ailist')
@@ -1647,7 +1647,7 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '组个清单' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   aiBtn(render(), '存为视图').props.onClick(ev())
   await settle()
