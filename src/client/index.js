@@ -79,7 +79,7 @@ const CSS = [
   '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
   // 宿主对 * 施加了 corner-shape:superellipse(1.5)（方角更耐看），但把胶囊压得
   // 走形，所以整圆形状要按宿主约定显式配回 round。
-  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-planbar,.dsh-wb-rootdrop{corner-shape:round;}',
+  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-rootdrop{corner-shape:round;}',
   // ── 表头 ────────────────────────────────────────────────────────────────
   '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
   '.dsh-wb-title{font:var(--dsw-font-xs-strong-13);}',
@@ -149,8 +149,13 @@ const CSS = [
   '.dsh-wb-planpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-planq{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
   '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
-  '.dsh-wb-planbar{height:2px;background:var(--wb-line);border-radius:var(--wb-pill);margin-bottom:var(--wb-sp-3);overflow:hidden;}',
-  '.dsh-wb-planbar > div{height:100%;background:var(--wb-accent);}',
+  // 计划级进度条已删除（原先两条 .dsh-wb-planbar 规则在此）：它横在计划标题与
+  // 子计划之间，读起来就是一条「下划线」，而完成度在标题行右侧的百分比里已经
+  // 说清楚了。层级关系改由缩进表达。
+  // 计划的完成 / 放弃改用标题样式表达，不再单写一行「已完成」——省一行纵向空间，
+  // 也和待办的标法统一（.dsh-wb-tasktitle.done / .dropped）。
+  '.dsh-wb-plantitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
+  '.dsh-wb-plantitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
   // ── 待办行 ──────────────────────────────────────────────────────────────
   // 待办行按「密」来配：这个面板住在底部工作台里，纵向空间是最稀缺的资源，
   // 一行省 3px、11 行就能多露出一条半任务。所以纵向内边距只给 2px、行间距给 0，
@@ -217,7 +222,9 @@ const CSS = [
   '.dsh-wb-secttitle{font:var(--dsw-font-xs-strong-13);}',
   // 收件箱行上的「纳入计划」。常显而非悬停才出——它的意义就是催人清空收件箱，
   // 藏起来等于没做（这也是本面板里唯一常显的行内按钮）。
-  '.dsh-wb-adopt{flex:none;border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);line-height:1.7;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
+  // 尺寸与同行徽章（.dsh-wb-pri 的 font/padding/border 三件套）严格一致，
+  // 高度才会一样；先前写了 line-height:1.7，它是全行最高的一块，看着就不齐。
+  '.dsh-wb-adopt{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);cursor:pointer;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-adopt:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-line);}',
   '.dsh-wb-count{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-add{display:flex;gap:var(--wb-sp-2);margin:0 0 var(--wb-sp-2);}',
@@ -1706,7 +1713,7 @@ function apply(ctx) {
       const rows = [h('div', Object.assign({
         className: 'dsh-wb-task' + dragClass(node.id),
         key: 'row',
-        style: { marginLeft: (10 + depth * 12) + 'px' },
+        style: { marginLeft: (10 + depth * 16) + 'px' },
         title: statusLabel(node.status) + (node.note ? '\n' + node.note : '')
           + '\n（单击切换完成 · 双击改名 · 拖动可排序或归位）',
       }, dragOnto(node, false)),
@@ -1772,7 +1779,7 @@ function apply(ctx) {
       rows.push(filesBlock(node))
       // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
       if (state.adding === node.id) {
-        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -1802,13 +1809,25 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-todowrap', key: node.id }, rows)
     }
 
+    /**
+     * 计划的完成 / 放弃状态改用**标题样式**（删除线 + 次级色）表达，不再单占一行
+     * 文字。待办早就是这么标的，计划跟着统一：省一行纵向空间，也不再和「负责人 /
+     * 周期」挤在同一行里。
+     */
+    const titleStateClass = (node) => {
+      if (node.status === 'done') return ' done'
+      if (node.status === 'dropped') return ' dropped'
+      return ''
+    }
+
     /** 一个计划节点（递归）。 */
     const renderPlan = (node, depth) => {
       const kids = sortNodes(childrenOf(node))
       const meta = []
       if (node.owner) meta.push('负责人 ' + node.owner)
       if (node.start || node.end) meta.push((node.start || '?') + ' ~ ' + (node.end || '?'))
-      if (node.status === 'done' || node.status === 'dropped') meta.push(statusLabel(node.status))
+      // 状态不再进 meta：它改由标题的删除线表达（见 titleStateClass），
+      // 否则「已完成」会独自占掉一整行。
       const m = node.metric
       const q = m !== null && m !== undefined && typeof m === 'object' && typeof m.target === 'number' && m.target > 0
         ? (m.current || 0) + '/' + m.target + (m.unit ? ' ' + m.unit : '')
@@ -1818,11 +1837,14 @@ function apply(ctx) {
       const head = h('div', Object.assign({
         className: 'dsh-wb-planhead' + dragClass(node.id),
         key: 'head',
-        style: { marginLeft: (depth * 12) + 'px' },
+        style: { marginLeft: (depth * 16) + 'px' },
+        // id 不再显示出来：它是等宽不定的（`n3` 与 `n12` 宽度不同），摆在标题前
+        // 会让**每条计划的标题起始位置都不一样**，看着就是「上下没对齐」。
+        // 保留成 data-id，定位/排查时仍然拿得到。
+        'data-id': node.id,
       }, dragOnto(node, true)),
         caret(node),
-        h('span', { className: 'dsh-wb-planid' }, node.id),
-        titleNode(node, 'dsh-wb-plantitle', { canToggle: kids.length === 0 }),
+        titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -1868,15 +1890,12 @@ function apply(ctx) {
       const body = [head]
       if (open) {
         if (meta.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 12) + 'px' } },
+          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 16) + 'px' } },
             meta.map((x, i) => h('span', { key: i }, x))))
         }
-        // 进度条只在真有子项时画：纳入工作计划的**叶子**没有子项可汇总，
-        // 它的完成由标题行的勾选框表达，再画一条 0% / 100% 的进度条纯属噪音。
-        if (kids.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-planbar', key: 'bar', style: { marginLeft: (depth * 12) + 'px' } },
-            h('div', { style: { width: barWidth(progress) } })))
-        }
+        // 不再画计划进度条。它横贯整行，紧贴在计划标题下面、子计划上面，读起来
+        // 就是一条「下划线」——而完成度在标题行右侧已经用百分比说清楚了，这条线
+        // 是重复信息，还每次吃掉 2px + 6px 边距。层级关系改由缩进表达。
       }
 
       // 加子项：只记「待办」这一种——它下面要是再挂东西，它会自动成为计划。
@@ -1886,7 +1905,7 @@ function apply(ctx) {
           if (title === '') return
           addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
-        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -2595,6 +2614,14 @@ function apply(ctx) {
           }, '✎'),
         ))
       }
+      rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+      if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
+    }
+
+    // 当前任务视图到此为止：它只回答「下一个动作是什么」。收件箱与工作计划是
+    // **结构视图**的内容，跟着铺进来就等于把刚抹平的结构又原样铺回去，切视图白切。
+    if (view === 'todo') {
       rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
