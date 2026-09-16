@@ -104,6 +104,35 @@ const CSS = [
   '.dsh-wb-chip.sug{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);}',
   // ── 主体 ────────────────────────────────────────────────────────────────
   '.dsh-wb-body{flex:1;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);}',
+  // ── 看板视图 ────────────────────────────────────────────────────────────
+  // 看板是树形之外另一种读法：每个顶层计划（含收件箱）占一列，待办摊成卡片。
+  // 节点多了以后树会越缩越深、越难俯瞰；看板「横向铺开」让「每个计划里有什么」
+  // 一眼可见。面板住在 ≈1000px 宽、纵向偏矮的底部工作台，横向铺列恰好吃准这个尺寸。
+  // 它**只读** /get 下发的同一份 payload，不新增任何工具或路由。
+  '.dsh-wb-board{display:flex;gap:var(--wb-sp-4);overflow-x:auto;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);align-items:flex-start;}',
+  '.dsh-wb-col{flex:0 0 210px;min-width:210px;max-width:210px;display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
+  // 列头用一条上边线把它和相邻列分开；收窄内边距，让一列里多塞下几张卡片。
+  '.dsh-wb-colhead{display:flex;align-items:baseline;gap:var(--wb-sp-2);padding:var(--wb-sp-1) var(--wb-sp-2) var(--wb-sp-2);border-top:2px solid var(--wb-line);}',
+  '.dsh-wb-coltitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
+  '.dsh-wb-colpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-colcount{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-cards{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
+  // 卡片：复用行密度思路——纵向内边距给很小，靠 hover 底色连成一片。
+  '.dsh-wb-card{border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);transition:background var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-card:hover{background:var(--wb-hover);border-color:var(--wb-line);}',
+  '.dsh-wb-card.done{opacity:.55;}',
+  '.dsh-wb-cardtop{display:flex;align-items:flex-start;gap:var(--wb-sp-2);}',
+  '.dsh-wb-cardtop input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
+  '.dsh-wb-cardtitle{flex:1;word-break:break-word;cursor:pointer;}',
+  '.dsh-wb-cardtitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
+  // 卡片上的上下文路径：说明这张卡属于哪个子计划（列只代表顶层计划）。
+  '.dsh-wb-cardpath{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
+  '.dsh-wb-cardmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--wb-sp-2);}',
+  // ── 视图切换（树 / 看板）───────────────────────────────────────────────
+  // 段控：和筛选芯片同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
+  '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
+  '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
+  '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
   '.dsh-wb-plan{margin-bottom:var(--wb-sp-4);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
@@ -273,6 +302,21 @@ function saveCollapsed(ids) {
   try { window.localStorage.setItem(COLLAPSE_KEY, serializeCollapsed(ids)) } catch (e) { /* 忽略 */ }
 }
 
+/**
+ * 视图切换（树 / 看板）的本地偏好，和折叠一样只属于这一台浏览器的这次浏览，
+ * 不进 plan.json。用单独的键，避免和折叠那串 id 混在一起解析出错。
+ */
+const VIEW_KEY = 'dsh-workbench:view'
+function loadView() {
+  try {
+    const v = window.localStorage.getItem(VIEW_KEY)
+    return v === 'tree' || v === 'board' ? v : 'tree'
+  } catch (e) { return 'tree' }
+}
+function saveView(v) {
+  try { window.localStorage.setItem(VIEW_KEY, v) } catch (e) { /* 忽略 */ }
+}
+
 function injectStyles(css) {
   const el = document.createElement('style')
   el.textContent = css
@@ -355,6 +399,9 @@ function apply(ctx) {
     // 就地编辑的三份状态也放本地，理由同上：拖拽时鼠标每动一下都要更新落点，
     // 放进全局 store 会让 tab 角标跟着重算（它订阅 store.get），白烧一遍整棵树。
     const [collapsed, setCollapsed] = React.useState(() => loadCollapsed())
+    // 视图切换（树 / 看板）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
+    const [view, setView] = React.useState(() => loadView())
+    const setViewPersist = (v) => { setView(v); saveView(v) }
     const [editing, setEditing] = React.useState(null)   // { id, original } | null
     const [editDraft, setEditDraft] = React.useState('')
     const [dragId, setDragId] = React.useState(null)
@@ -1220,10 +1267,93 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-plan', key: node.id }, body)
     }
 
+    // ============================================================ 看板视图
+    //
+    // 看板是树形之外另一种读法：每个顶层计划（含收件箱）占一列，待办摊成卡片。
+    // 它**只读** state.plan 这一份 payload，不新增任何工具或路由——和树形共用
+    // 同一份 /get 下发的数据，只是换了一种二维铺法。筛选器同样生效：state.filter
+    // 不是 all 时，只把命中的待办放进列里（boardColumns 内部复用 focusList 的口径）。
+    //
+    // 列顺序 = 顶层节点顺序（计划在前、收件箱垫后）；没有任何待办的计划列会被丢弃。
+    // 列头显示计划标题 + 完成度 + 「未完成/总数」；卡片显示标题、所属子计划路径、
+    // 重要程度、委派 / 落后 / 证据 / 截止等标记；已完成卡片整体淡出。
+    // 写入路径与树形完全一致：勾选走 /todo-set、点标题切换完成、双击改名、徽章换档。
+
+    /** 一张看板卡片。复用树形里那些已经写好的标记组件，避免两套实现漂移。 */
+    const renderCard = (node, path) => {
+      const done = node.status === 'done'
+      return h('div', { className: 'dsh-wb-card' + (done ? ' done' : ''), key: String(node.id) },
+        h('div', { className: 'dsh-wb-cardtop' },
+          h('input', {
+            type: 'checkbox',
+            checked: done,
+            onChange: () => setTodo(node.id, toggleStatus(node.status)),
+          }),
+          titleNode(node, 'dsh-wb-cardtitle', { canToggle: true, draggable: false }),
+          priBadge(node),
+        ),
+        path !== '' && path !== undefined && path !== null
+          ? h('div', { className: 'dsh-wb-cardpath', key: 'path' }, path)
+          : null,
+        h('div', { className: 'dsh-wb-cardmeta', key: 'meta' },
+          delegChip(node),
+          behindChip(node),
+          evidChip(node),
+          dueSpan(node),
+        ),
+      )
+    }
+
+    /** 一整块看板（横向铺开的列）。无内容时给一个空状态，而不是白屏。 */
+    const renderBoard = () => {
+      const cols = boardColumns(plan, state.filter, todayStr())
+      if (cols.length === 0) {
+        const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
+        return h('div', { className: 'dsh-wb-body', key: 'body' },
+          h('div', { className: 'dsh-wb-empty' },
+            state.filter !== 'all'
+              ? h('div', null, '「' + label + '」下没有可看的任务。')
+              : h('div', null, '这个工作区还没有计划，也没有待办。'),
+          ),
+        )
+      }
+      const colsView = cols.map((col) => {
+        const head = h('div', { className: 'dsh-wb-colhead', key: 'h' },
+          col.kind === 'inbox'
+            ? h('span', { className: 'dsh-wb-coltitle' }, '📥 收件箱')
+            : h('span', { className: 'dsh-wb-coltitle' }, String(col.title)),
+          col.kind === 'plan'
+            ? h('span', { className: 'dsh-wb-colpct' }, pct(col.progress))
+            : null,
+          h('span', { className: 'dsh-wb-colcount' }, col.open + '/' + col.total),
+        )
+        const cards = col.cards.map((card) => renderCard(card.node, card.path))
+        return h('div', { className: 'dsh-wb-col', key: col.id },
+          head,
+          h('div', { className: 'dsh-wb-cards', key: 'cards' }, cards),
+        )
+      })
+      return h('div', { className: 'dsh-wb-body dsh-wb-board', key: 'body' }, colsView)
+    }
+
     const rows = []
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
       h('span', { className: 'dsh-wb-title' }, '工作计划'),
       h('div', { className: 'dsh-wb-headright' },
+        // 视图切换：树形（默认）与看板各擅其场——节点一多，树越缩越深，
+        // 看板把每个计划横向铺成一列、待办摊成卡片，俯瞰当前全貌更省力。
+        h('div', { className: 'dsh-wb-viewtoggle', key: 'vt' },
+          h('button', {
+            className: 'dsh-wb-vbtn' + (view === 'tree' ? ' on' : ''),
+            title: '树形：按计划的层级一层层展开',
+            onClick: () => setViewPersist('tree'),
+          }, '树'),
+          h('button', {
+            className: 'dsh-wb-vbtn' + (view === 'board' ? ' on' : ''),
+            title: '看板：每个计划占一列，待办摊成卡片',
+            onClick: () => setViewPersist('board'),
+          }, '看板'),
+        ),
         h('span', { className: 'dsh-wb-pct' }, pct(sum.progress)),
         // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
         sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部收起（只看主线）', onClick: collapseAll }, '⊟') : null,
@@ -1276,6 +1406,12 @@ function apply(ctx) {
     }
 
     const body = []
+
+    if (view === 'board') {
+      rows.push(renderBoard())
+      if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
+    }
 
     if (state.filter !== 'all') {
       // 聚焦列表：筛选结果通常跨层级，摊平并带上路径比树形更好读。
