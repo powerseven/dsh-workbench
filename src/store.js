@@ -190,7 +190,35 @@ export function planNodes(plan) {
 
 /** 收件箱：还没归位到任何计划下的顶层待办。 */
 export function inboxOf(plan) {
-  return planNodes(plan).filter((node) => isTodo(node))
+  return planNodes(plan).filter((node) => isTodo(node) && !filedOf(node))
+}
+
+/**
+ * 这条待办是否已「纳入工作计划」（`filed: true`）。
+ *
+ * 收件箱里的待办有两条出路：**归位**到某个已有计划下当子项（`plan_node_move`），
+ * 或者**纳入工作计划**——不作为谁的子项，而是以独立条目出现在「工作计划」栏里。
+ * 这个标记只在**顶层**才有意义：一旦挪进某个计划下，它就是别人的子项了。
+ */
+export function filedOf(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  return node.filed === true
+}
+
+/** 打开 / 关闭「纳入工作计划」。关掉就删键——磁盘上不留 `filed:false`（同 starred）。 */
+export function setFiled(node, on) {
+  if (node === null || node === undefined || typeof node !== 'object') return node
+  if (on === true) node.filed = true
+  else delete node.filed
+  return node
+}
+
+/**
+ * 「工作计划」栏的内容：顶层计划 + 已纳入工作计划的顶层待办。
+ * 与收件箱**互补**——一个顶层节点要么在收件箱、要么在这里，不会两边都出现。
+ */
+export function workPlans(plan) {
+  return planNodes(plan).filter((node) => isPlan(node) || filedOf(node))
 }
 
 /** 顶层计划（进度只看它们——收件箱不参与完成度，见 docs/DESIGN.md）。 */
@@ -329,7 +357,7 @@ export function planProgress(plan) {
 
 /** 待办计数（面板角标、进度条文案）。总数只算待办，计划数单列。 */
 export function todoCounts(plan) {
-  const out = { todo: 0, doing: 0, done: 0, dropped: 0, total: 0, plans: 0, inbox: 0, inboxOpen: 0 }
+  const out = { todo: 0, doing: 0, done: 0, dropped: 0, total: 0, plans: 0, inbox: 0, inboxOpen: 0, filed: 0 }
   // 计划数与待办数都要递归统计——只数顶层的话，任何嵌套计划都会被漏掉。
   for (const x of collectNodes(plan, 'any')) {
     if (x.type === 'plan') {
@@ -341,10 +369,14 @@ export function todoCounts(plan) {
     }
   }
   for (const node of planNodes(plan)) {
-    if (isTodo(node)) {
-      out.inbox += 1
-      if (node.status !== 'done' && node.status !== 'dropped') out.inboxOpen += 1
+    if (!isTodo(node)) continue
+    // 已纳入工作计划的待办不再算收件箱——它已经在下面的工作计划栏里了。
+    if (filedOf(node)) {
+      out.filed += 1
+      continue
     }
+    out.inbox += 1
+    if (node.status !== 'done' && node.status !== 'dropped') out.inboxOpen += 1
   }
   return out
 }
@@ -1064,6 +1096,9 @@ export function appendChild(plan, node, parentRef) {
     planNodes(plan).push(node)
     return node
   }
+  // 挂到别人下面，就不再是「工作计划栏」的独立条目了——把标记清掉。留着它的话，
+  // 将来把这条挪回顶层，它会**凭空回到工作计划栏**：界面上无从解释，也查不出所以然。
+  delete node.filed
   const { node: parent } = resolveAny(plan, parentRef)
   if (!Array.isArray(parent.children)) parent.children = []
   parent.children.push(node)
@@ -1668,6 +1703,13 @@ export function normalizePlan(plan) {
     // 老数据里可能留着对当前形态非法的状态（type 字段标着 plan 的叶子等），
     // 派生后按形状归一一次。
     normalizeShape(x.node)
+  }
+  // `filed`（已纳入工作计划）只在**顶层**有意义：挪进某个计划下的待办已经是别人的
+  // 子项了，留着这个标记，将来把它挪回顶层时会**凭空回到工作计划栏**——静默发生，
+  // 且从界面上无从解释。所以每次归一都按「它现在在哪一层」重算一次。
+  const roots = new Set(planNodes(plan))
+  for (const x of collectNodes(plan, 'any')) {
+    if (!roots.has(x.node)) delete x.node.filed
   }
   return plan
 }

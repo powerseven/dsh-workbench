@@ -69,12 +69,17 @@ const CSS = [
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
   + 'display:flex;flex-direction:column;height:100%;min-height:0;'
   + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
+  // 面板内统一按 border-box 算盒模型。缺了这条时，`width:100%` 且带 padding/border
+  // 的输入框（.dsh-wb-inp / .dsh-wb-atextarea）会**实打实多出** 12px padding + 2px
+  // 边框：详情页里每个字段都被撑出 14px，输入框还会越过面板右边界。宿主没有全局
+  // reset（实测 body 的 box-sizing 就是 content-box），所以这一层必须自己声明。
+  '.dsh-wb-wrap,.dsh-wb-wrap *,.dsh-wb-wrap *::before,.dsh-wb-wrap *::after{box-sizing:border-box;}',
   // 焦点环。此前全表没有一条 :focus-visible，键盘用户完全看不出停在哪。
   // outline 不参与布局，所以出现时行不会跳。
   '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
   // 宿主对 * 施加了 corner-shape:superellipse(1.5)（方角更耐看），但把胶囊压得
   // 走形，所以整圆形状要按宿主约定显式配回 round。
-  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-planbar,.dsh-wb-rootdrop{corner-shape:round;}',
+  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-rootdrop{corner-shape:round;}',
   // ── 表头 ────────────────────────────────────────────────────────────────
   '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
   '.dsh-wb-title{font:var(--dsw-font-xs-strong-13);}',
@@ -135,7 +140,7 @@ const CSS = [
   '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
   '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
-  '.dsh-wb-plan{margin-bottom:var(--wb-sp-4);}',
+  '.dsh-wb-plan{margin-bottom:var(--wb-sp-2);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
   '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
@@ -144,8 +149,13 @@ const CSS = [
   '.dsh-wb-planpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-planq{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
   '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
-  '.dsh-wb-planbar{height:2px;background:var(--wb-line);border-radius:var(--wb-pill);margin-bottom:var(--wb-sp-3);overflow:hidden;}',
-  '.dsh-wb-planbar > div{height:100%;background:var(--wb-accent);}',
+  // 计划级进度条已删除（原先两条 .dsh-wb-planbar 规则在此）：它横在计划标题与
+  // 子计划之间，读起来就是一条「下划线」，而完成度在标题行右侧的百分比里已经
+  // 说清楚了。层级关系改由缩进表达。
+  // 计划的完成 / 放弃改用标题样式表达，不再单写一行「已完成」——省一行纵向空间，
+  // 也和待办的标法统一（.dsh-wb-tasktitle.done / .dropped）。
+  '.dsh-wb-plantitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
+  '.dsh-wb-plantitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
   // ── 待办行 ──────────────────────────────────────────────────────────────
   // 待办行按「密」来配：这个面板住在底部工作台里，纵向空间是最稀缺的资源，
   // 一行省 3px、11 行就能多露出一条半任务。所以纵向内边距只给 2px、行间距给 0，
@@ -206,6 +216,16 @@ const CSS = [
   '.dsh-wb-inbox{margin-bottom:var(--wb-sp-5);padding-bottom:var(--wb-sp-4);border-bottom:1px dashed var(--wb-line-2);}',
   '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-3);}',
   '.dsh-wb-inboxtitle{font:var(--dsw-font-xs-strong-13);}',
+  // 「工作计划」分栏标题。刻意**不要**收件箱那条虚线：虚线是「收件箱到此为止」的
+  // 分隔，而工作计划是与它并列的另一栏，不是收件箱的延续。
+  '.dsh-wb-secthead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);}',
+  '.dsh-wb-secttitle{font:var(--dsw-font-xs-strong-13);}',
+  // 收件箱行上的「纳入计划」。常显而非悬停才出——它的意义就是催人清空收件箱，
+  // 藏起来等于没做（这也是本面板里唯一常显的行内按钮）。
+  // 尺寸与同行徽章（.dsh-wb-pri 的 font/padding/border 三件套）严格一致，
+  // 高度才会一样；先前写了 line-height:1.7，它是全行最高的一块，看着就不齐。
+  '.dsh-wb-adopt{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);cursor:pointer;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-adopt:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-line);}',
   '.dsh-wb-count{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-add{display:flex;gap:var(--wb-sp-2);margin:0 0 var(--wb-sp-2);}',
   '.dsh-wb-add input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
@@ -1264,6 +1284,16 @@ function apply(ctx) {
     // 三个都是「列表式」改动，与证据 / 关联一样**即时生效**，不等「保存」——
     // 攒到保存按钮里反而要算 diff，而这三样天生一次一条。
     const setStarOn = (node, on) => write('node-set', { node: node.id, star: on === true })
+    /**
+     * 纳入 / 退出「工作计划」。纳入 = 它不再待在收件箱，而是以独立条目出现在
+     * 下面的工作计划栏（不作为谁的子项）；退出 = 回到收件箱。写的是同一个
+     * `/node-set`，不新增任何通路。
+     */
+    const setFiledOn = (node, on) => write(
+      'node-set',
+      { node: node.id, filed: on === true },
+      () => flash(on === true ? '已纳入工作计划' : '已退回收件箱'),
+    )
     const setRecurOn = (node, kind) => write('node-set', { node: node.id, recur: kind })
     const addDepOn = (node, otherId) => write('node-set', { node: node.id, blockedAdd: otherId }, () => flash('已加依赖'))
     const removeDepOn = (node, otherId) => write('node-set', { node: node.id, blockedRemove: otherId }, () => flash('已移除依赖'))
@@ -1552,11 +1582,19 @@ function apply(ctx) {
      * 与证据（📎）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
      * 无关，也不进「无证据的完成项」那条审查线。
      * vault 已配置时渲染可点的 obsidian:// 链接；host 算好的 fileWarnings 命中
-     * 则标红（文件可能被挪走了）。末尾一个「＋关联」按钮展开内联表单加一条。
+     * 则标红（文件可能被挪走了）。
+     * **没有关联时整块不渲染**——「加一条」的入口在行内的 .dsh-wb-act 组里，
+     * 不在这里；否则这个块会为每条待办留下一条看不见的 22px 空白。
      */
     const filesBlock = (node) => {
       const vaultPath = plan !== null && plan !== undefined ? plan.vaultPath : ''
       const files = filesList(node)
+      // 没有任何关联、也没在「添加关联」态时，整块不渲染：块里剩下的只是一个
+      // 悬停才可见的「＋关联」按钮（.dsh-wb-fbtn 是 opacity:0），而块本身实打实
+      // 占掉 18px + 4px 边距——于是每个待办、每个展开的计划下面都压着一条看不见
+      // 的空白，计划之间就被撑得很空。入口改挂在行内的 .dsh-wb-act 组（与 ✎/× 同级，
+      // 同样悬停才出现，但完全不占纵向空间）。
+      if (files.length === 0 && linking !== String(node.id)) return null
       // fileWarnings 是字符串数组（"文件不存在：<ref>"），从「：」后取出 ref 做匹配。
       const missing = Array.isArray(node.fileWarnings) ? node.fileWarnings : []
       const missingRefs = new Set(missing.map((w) => {
@@ -1611,13 +1649,6 @@ function apply(ctx) {
           h('button', { onClick: () => linkFile(node, linkRef, linkKind, ''), disabled: linkRef.trim() === '' }, '关联'),
           h('button', { onClick: () => { setLinking(null); setLinkRef('') } }, '取消'),
         ))
-      } else {
-        rows.push(h('button', {
-          key: 'fbtn',
-          className: 'dsh-wb-fbtn',
-          title: '关联一个 Obsidian 文件 / 文件夹',
-          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '＋关联'))
       }
       return h('div', { className: 'dsh-wb-files', key: 'files' }, rows)
     }
@@ -1682,7 +1713,7 @@ function apply(ctx) {
       const rows = [h('div', Object.assign({
         className: 'dsh-wb-task' + dragClass(node.id),
         key: 'row',
-        style: { marginLeft: (10 + depth * 12) + 'px' },
+        style: { marginLeft: (10 + depth * 16) + 'px' },
         title: statusLabel(node.status) + (node.note ? '\n' + node.note : '')
           + '\n（单击切换完成 · 双击改名 · 拖动可排序或归位）',
       }, dragOnto(node, false)),
@@ -1703,6 +1734,16 @@ function apply(ctx) {
             className: 'dsh-wb-taskdue',
             title: '被挡住：等 ' + node.blocked.join('、'),
           }, '🔒') : null,
+        // 「纳入工作计划」只在**收件箱那一层**（depth 0）出现，而且做得常显而不是
+        // 悬停才出：它的意义就是催人把收件箱清空，藏起来等于不做。措辞用「纳入计划」
+        // 而不是「提升为计划」——它并不改变节点的形态，只是不再待在收件箱。
+        depth === 0 && !filedOf(node)
+          ? h('button', {
+            className: 'dsh-wb-adopt',
+            title: '纳入工作计划：它不再待在收件箱，而是作为独立条目出现在下面的工作计划栏',
+            onClick: (e) => { e.stopPropagation(); setFiledOn(node, true) },
+          }, '纳入计划')
+          : null,
         h('button', {
           className: 'dsh-wb-act star' + (node.starred === true ? ' on' : ''),
           title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
@@ -1725,6 +1766,11 @@ function apply(ctx) {
         }, '＋'),
         h('button', {
           className: 'dsh-wb-act',
+          title: '关联资料：Obsidian 文件 / 文件夹',
+          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
+        }, '🔗'),
+        h('button', {
+          className: 'dsh-wb-act',
           title: '删除',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
@@ -1733,7 +1779,7 @@ function apply(ctx) {
       rows.push(filesBlock(node))
       // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
       if (state.adding === node.id) {
-        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -1763,13 +1809,25 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-todowrap', key: node.id }, rows)
     }
 
+    /**
+     * 计划的完成 / 放弃状态改用**标题样式**（删除线 + 次级色）表达，不再单占一行
+     * 文字。待办早就是这么标的，计划跟着统一：省一行纵向空间，也不再和「负责人 /
+     * 周期」挤在同一行里。
+     */
+    const titleStateClass = (node) => {
+      if (node.status === 'done') return ' done'
+      if (node.status === 'dropped') return ' dropped'
+      return ''
+    }
+
     /** 一个计划节点（递归）。 */
     const renderPlan = (node, depth) => {
       const kids = sortNodes(childrenOf(node))
       const meta = []
       if (node.owner) meta.push('负责人 ' + node.owner)
       if (node.start || node.end) meta.push((node.start || '?') + ' ~ ' + (node.end || '?'))
-      if (node.status === 'done' || node.status === 'dropped') meta.push(statusLabel(node.status))
+      // 状态不再进 meta：它改由标题的删除线表达（见 titleStateClass），
+      // 否则「已完成」会独自占掉一整行。
       const m = node.metric
       const q = m !== null && m !== undefined && typeof m === 'object' && typeof m.target === 'number' && m.target > 0
         ? (m.current || 0) + '/' + m.target + (m.unit ? ' ' + m.unit : '')
@@ -1779,11 +1837,14 @@ function apply(ctx) {
       const head = h('div', Object.assign({
         className: 'dsh-wb-planhead' + dragClass(node.id),
         key: 'head',
-        style: { marginLeft: (depth * 12) + 'px' },
+        style: { marginLeft: (depth * 16) + 'px' },
+        // id 不再显示出来：它是等宽不定的（`n3` 与 `n12` 宽度不同），摆在标题前
+        // 会让**每条计划的标题起始位置都不一样**，看着就是「上下没对齐」。
+        // 保留成 data-id，定位/排查时仍然拿得到。
+        'data-id': node.id,
       }, dragOnto(node, true)),
         caret(node),
-        h('span', { className: 'dsh-wb-planid' }, node.id),
-        titleNode(node, 'dsh-wb-plantitle', { canToggle: false }),
+        titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -1805,6 +1866,19 @@ function apply(ctx) {
         }, '＋'),
         h('button', {
           className: 'dsh-wb-act',
+          title: '关联资料：Obsidian 文件 / 文件夹',
+          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
+        }, '🔗'),
+        // 只有「已纳入工作计划的叶子」才有这一手：把它退回收件箱。纳入不该是单向门。
+        filedOf(node)
+          ? h('button', {
+            className: 'dsh-wb-act',
+            title: '退回收件箱（它不再是工作计划栏里的独立条目）',
+            onClick: (e) => { e.stopPropagation(); setFiledOn(node, false) },
+          }, '↩')
+          : null,
+        h('button', {
+          className: 'dsh-wb-act',
           title: '删除这个计划（连同子项）',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
@@ -1816,11 +1890,12 @@ function apply(ctx) {
       const body = [head]
       if (open) {
         if (meta.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 12) + 'px' } },
+          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 16) + 'px' } },
             meta.map((x, i) => h('span', { key: i }, x))))
         }
-        body.push(h('div', { className: 'dsh-wb-planbar', key: 'bar', style: { marginLeft: (depth * 12) + 'px' } },
-          h('div', { style: { width: barWidth(progress) } })))
+        // 不再画计划进度条。它横贯整行，紧贴在计划标题下面、子计划上面，读起来
+        // 就是一条「下划线」——而完成度在标题行右侧已经用百分比说清楚了，这条线
+        // 是重复信息，还每次吃掉 2px + 6px 边距。层级关系改由缩进表达。
       }
 
       // 加子项：只记「待办」这一种——它下面要是再挂东西，它会自动成为计划。
@@ -1830,7 +1905,7 @@ function apply(ctx) {
           if (title === '') return
           addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
-        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -2363,7 +2438,25 @@ function apply(ctx) {
 
     const rows = []
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
-      h('span', { className: 'dsh-wb-title' }, '工作计划'),
+      // 视图切换兼作表头标题：左上角原来那个「工作计划」标题是重复的——分段控件
+      // 的第一个按钮就叫「工作计划」，它本身就是这块面板的名字，再写一遍是噪音。
+      h('div', { className: 'dsh-wb-viewtoggle', key: 'vt' },
+        h('button', {
+          className: 'dsh-wb-vbtn' + (view === 'tree' ? ' on' : ''),
+          title: '工作计划：按层级展开计划与子计划',
+          onClick: () => setViewPersist('tree'),
+        }, '工作计划'),
+        h('button', {
+          className: 'dsh-wb-vbtn' + (view === 'todo' ? ' on' : ''),
+          title: '当前任务：跨所有分支把「现在能做的」汇成一张清单（被挡住的单独折叠）',
+          onClick: () => setViewPersist('todo'),
+        }, '当前任务'),
+        h('button', {
+          className: 'dsh-wb-vbtn' + (view === 'board' ? ' on' : ''),
+          title: '看板：每个计划占一列，待办摊成卡片',
+          onClick: () => setViewPersist('board'),
+        }, '看板'),
+      ),
       h('div', { className: 'dsh-wb-headright' },
         // 「＋ 新建」打开完整表单（可一次填全负责人 / 周期 / 指标 / 备注）。
         // 它**不取代**底部那行快速输入——「随手记一条」的成本必须趋近于零，
@@ -2374,25 +2467,6 @@ function apply(ctx) {
           title: '新建计划或待办（打开完整表单）',
           onClick: () => openNew('todo', null),
         }, '＋ 新建'),
-        // 视图切换：树形（默认）与看板各擅其场——节点一多，树越缩越深，
-        // 看板把每个计划横向铺成一列、待办摊成卡片，俯瞰当前全貌更省力。
-        h('div', { className: 'dsh-wb-viewtoggle', key: 'vt' },
-          h('button', {
-            className: 'dsh-wb-vbtn' + (view === 'tree' ? ' on' : ''),
-            title: '树形：按计划的层级一层层展开',
-            onClick: () => setViewPersist('tree'),
-          }, '树'),
-          h('button', {
-            className: 'dsh-wb-vbtn' + (view === 'todo' ? ' on' : ''),
-            title: '执行：跨所有分支把「现在能做的」汇成一张清单（被挡住的单独折叠）',
-            onClick: () => setViewPersist('todo'),
-          }, '执行'),
-          h('button', {
-            className: 'dsh-wb-vbtn' + (view === 'board' ? ' on' : ''),
-            title: '看板：每个计划占一列，待办摊成卡片',
-            onClick: () => setViewPersist('board'),
-          }, '看板'),
-        ),
         h('span', { className: 'dsh-wb-pct' }, pct(sum.progress)),
         // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
         sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部收起（只看主线）', onClick: collapseAll }, '⊟') : null,
@@ -2545,6 +2619,14 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
+    // 当前任务视图到此为止：它只回答「下一个动作是什么」。收件箱与工作计划是
+    // **结构视图**的内容，跟着铺进来就等于把刚抹平的结构又原样铺回去，切视图白切。
+    if (view === 'todo') {
+      rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+      if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
+    }
+
     // 收件箱：先记下来，之后再归位（↳）。没有它，「收不进来」这条就一直成立。
     //
     // 记入收件箱走这一个函数。回车与「记下」按钮原来各写了一遍提交逻辑——两份就会
@@ -2607,9 +2689,15 @@ function apply(ctx) {
       ))
     }
 
-    for (const node of roots) {
-      if (nodeType(node) === 'plan') body.push(renderPlan(node, 0))
-    }
+    // 「工作计划」栏：顶层计划 + 已纳入工作计划的顶层待办。它与收件箱**互补**——
+    // 一个顶层节点要么还在收件箱、要么已经在这里，不会两边都出现。
+    // 分栏标题是必要的：没有它，就分不清下面这些和上面收件箱的区别。
+    const works = workPlans(plan)
+    body.push(h('div', { className: 'dsh-wb-secthead', key: 'wh' },
+      h('span', { className: 'dsh-wb-secttitle' }, '工作计划'),
+      h('span', { className: 'dsh-wb-count' }, works.length > 0 ? works.length + ' 项' : '空'),
+    ))
+    for (const node of works) body.push(renderPlan(node, 0))
 
     // vault / AI 人设配置统一收进右上角「设置」，不再在各视图里平铺。
     // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，

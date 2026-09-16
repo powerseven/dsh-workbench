@@ -37,6 +37,9 @@ import {
   evidenceOf,
   evidenceWarnings,
   inboxOf,
+  filedOf,
+  setFiled,
+  workPlans,
   isDescendantOf,
   isDueWithin,
   isOverdue,
@@ -303,12 +306,48 @@ test('inboxOf 只取顶层待办；topPlans 只取顶层计划', () => {
   assert.deepEqual(topPlans(plan).map((n) => n.id), ['g1'])
 })
 
+test('「纳入工作计划」：filed 的顶层待办退出收件箱，改与计划并列在工作计划栏', () => {
+  const plan = samplePlan()
+  const t = { id: 't9', type: 'todo', title: '游离', status: 'todo' }
+  plan.nodes.push(t)
+  assert.deepEqual(inboxOf(plan).map((n) => n.id), ['t9'])
+  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1'])
+
+  setFiled(t, true)
+  assert.equal(filedOf(t), true)
+  assert.deepEqual(inboxOf(plan).map((n) => n.id), [], '纳入之后它就不在收件箱了')
+  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1', 't9'], '它与计划并列在工作计划栏')
+
+  const c = todoCounts(plan)
+  assert.equal(c.inbox, 0)
+  assert.equal(c.filed, 1)
+
+  // 关掉就删键：磁盘上不留 filed:false 的噪音（与 starred 同一条约定）。
+  setFiled(t, false)
+  assert.equal('filed' in t, false)
+  assert.deepEqual(inboxOf(plan).map((n) => n.id), ['t9'])
+})
+
+test('挪进某个计划下就丢掉 filed——否则挪回顶层会凭空回到工作计划栏', () => {
+  const plan = samplePlan()
+  const t = { id: 't9', type: 'todo', title: '游离', status: 'todo', filed: true }
+  plan.nodes.push(t)
+  appendChild(plan, t, 'g1')
+  assert.equal('filed' in t, false, '挂到别人下面就不再是工作计划栏的独立条目')
+  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1'])
+
+  // 老数据 / 外部写入留下的非顶层 filed，在读盘归一时被清掉。
+  const dirty = samplePlan()
+  dirty.nodes[0].children.push({ id: 'z1', type: 'todo', title: '脏', status: 'todo', filed: true })
+  normalizePlan(dirty)
+  assert.equal('filed' in dirty.nodes[0].children[0], false)
+})
+
 test('childrenOf 对脏数据返回空数组', () => {
   assert.deepEqual(childrenOf(null), [])
   assert.deepEqual(childrenOf({}), [])
   assert.deepEqual(childrenOf({ children: 'x' }), [])
 })
-
 test('nodeStats 统计整棵子树（删除前的提示要用）', () => {
   const plan = samplePlan()
   assert.deepEqual(nodeStats(plan.nodes[0]), { plans: 2, todos: 4, total: 6 })

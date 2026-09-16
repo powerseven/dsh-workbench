@@ -34,7 +34,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（303 个，分五层见下）
+node --test test/*.test.mjs   # 跑测试（417 个，分五层见下）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -120,6 +120,15 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 - `starred`：`true`（可选布尔），「我正在做 / 接下来做」，只影响执行清单排序。
   故意不做成状态：进行中已经在 `status` 里有（doing），两套语义会打架。
   关掉就删键——磁盘上不出现 `starred:false` 的噪音。
+- `filed`：`true`（可选布尔），**已纳入工作计划**。收件箱里的顶层待办有两条出路：
+  **归位**到某个已有计划下当子项（`plan_node_move`），或者**纳入工作计划**——
+  不作为谁的子项，而是以独立条目出现在「工作计划」栏里（面板上那个常显的
+  「纳入计划」按钮走 `/node-set` 的 `filed`，agent 走 `plan_node_set` 的同名参数，
+  两者都走 DEP_PARAMS 通道——**零新增工具、零新增路由**）。由此 `inboxOf` 与
+  `workPlans` 互补：一个顶层节点要么在收件箱、要么在工作计划栏，不会两边都出现。
+  **只在顶层有意义**：`appendChild` 挂到别人下面时会清掉它，`normalizePlan` 读盘时
+  对非顶层节点也清一遍——留着的话，将来把这条挪回顶层会**凭空回到工作计划栏**，
+  静默发生且从界面上无从解释。关掉同样删键。
 - `recur`：`{ kind: 'week' | 'month' }`，重复任务。完成带 recur 的待办时
   `spawnRecurring` 克隆一条新的挂回原处，截止顺推一期（month 落到月末截断）。
   克隆**要**：标题 / 负责人 / 优先级 / 备注 / 重复规则；克隆**不要**：

@@ -60,12 +60,27 @@ function planNodes(plan) {
   return Array.isArray(plan.nodes) ? plan.nodes : []
 }
 
-/** 收件箱：还没归位到任何计划下的顶层待办。 */
+/** 已「纳入工作计划」（filed）——只在顶层待办上有意义，口径必须与 store.js 一致。 */
+function filedOf(node) {
+  return node !== null && node !== undefined && typeof node === 'object' && node.filed === true
+}
+
+/** 收件箱：还没归位、也还没纳入工作计划的顶层待办。 */
 function inboxOf(plan) {
   var out = []
   var roots = planNodes(plan)
   for (var i = 0; i < roots.length; i++) {
-    if (nodeType(roots[i]) === 'todo') out.push(roots[i])
+    if (nodeType(roots[i]) === 'todo' && !filedOf(roots[i])) out.push(roots[i])
+  }
+  return out
+}
+
+/** 「工作计划」栏：顶层计划 + 已纳入工作计划的顶层待办（与收件箱互补）。 */
+function workPlans(plan) {
+  var out = []
+  var roots = planNodes(plan)
+  for (var i = 0; i < roots.length; i++) {
+    if (nodeType(roots[i]) === 'plan' || filedOf(roots[i])) out.push(roots[i])
   }
   return out
 }

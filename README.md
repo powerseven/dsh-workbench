@@ -302,7 +302,7 @@ agent 会把这条产出作为证据附在完成项上（`plan_todo_set` 的
 后续规划见 [docs/ROADMAP.md](./docs/ROADMAP.md)。
 
 ```sh
-npm test        # 构建 + 412 个测试（类型由结构派生）
+npm test        # 构建 + 417 个测试（类型由结构派生）
 ```
 
 ## 许可证
