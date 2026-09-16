@@ -28,6 +28,7 @@ import {
   applyStatus,
   behindList,
   childrenOf,
+  clearFields,
   collectNodes,
   controlSummary,
   delegateState,
@@ -57,10 +58,12 @@ import {
   priorityOf,
   removeNode,
   removeFile,
+  removeEvidence,
   renderMarkdown,
   resolveAny,
   resolveNode,
   setDelegate,
+  setDelegateExpectAt,
   setPriority,
   setNodeType,
   setReceipt,
@@ -1453,4 +1456,64 @@ test('归位建议：最多三条，且同分时的顺序稳定', () => {
   // 否则界面上的建议会自己跳位置。
   assert.deepEqual(s.map((x) => x.id), ['p0', 'p1', 'p2'])
   assert.deepEqual(suggestParent(plan, node, '2026-09-14'), s, '同一个计划每次算出来应当一致')
+})
+
+// ---------------------------------------------------------------- 详情表单支撑
+
+test('removeEvidence 按 ref + 可选 kind 删除，幂等且不留空数组', () => {
+  const node = { id: 'n1', type: 'todo', title: 't', status: 'done' }
+  addEvidence(node, { kind: 'file', ref: 'a.md' })
+  addEvidence(node, { kind: 'note', ref: 'a.md' })
+  addEvidence(node, { kind: 'link', ref: 'https://x' })
+  assert.equal(evidenceOf(node).length, 3)
+
+  assert.equal(removeEvidence(node, 'a.md', 'file'), true)
+  assert.deepEqual(evidenceOf(node).map((e) => e.kind), ['note', 'link'], '同 ref 不同 kind 只删指定的那条')
+
+  assert.equal(removeEvidence(node, 'nope'), false, '删不存在的返回 false，不报错')
+  assert.equal(removeEvidence(node, ''), false, '空 ref 直接不动')
+  assert.equal(removeEvidence(node, null), false)
+
+  removeEvidence(node, 'a.md')
+  removeEvidence(node, 'https://x')
+  assert.equal('evidence' in node, false, '删空后不留一个空数组')
+})
+
+test('clearFields 只清白名单内的字段，返回实际清掉的条数', () => {
+  const node = {
+    id: 'n1', type: 'plan', title: '别删我', status: 'active', children: [],
+    owner: '我', start: '2026-01-01', end: '2026-12-31', due: '2026-06-01',
+    note: '备注', metric: { target: 10, current: 3, unit: '个' },
+    delegate: { to: '小李', status: 'pending', at: 'x' },
+  }
+  assert.equal(clearFields(node, ['owner', 'due', 'metric']), 3)
+  assert.equal('owner' in node, false)
+  assert.equal('due' in node, false)
+  assert.equal('metric' in node, false)
+  assert.equal(node.title, '别删我', '不在白名单里的字段碰都不碰')
+  assert.ok(node.delegate !== undefined)
+
+  assert.equal(clearFields(node, ['owner']), 0, '本来就是空的 → 0 条（据此决定要不要留档）')
+  assert.equal(clearFields(node, ['title', 'id', 'unknown']), 0, '白名单外的名字静默忽略')
+  assert.equal(clearFields(node, 'not-an-array'), 0)
+})
+
+test('clearFields 清 delegate 是整块删掉，不留半截对象', () => {
+  const node = { id: 'n1', type: 'todo', title: 't', status: 'todo', delegate: { to: '小李', status: 'accepted' } }
+  clearFields(node, ['delegate'])
+  assert.equal('delegate' in node, false, '半截的 delegate 会让「已接受」之类的判断读到脏数据')
+})
+
+test('setDelegateExpectAt 只挪时间，不动回执状态', () => {
+  const node = { id: 'n1', type: 'todo', title: 't', status: 'todo' }
+  setDelegate(node, { to: '小李', expectAt: '2026-09-01' })
+  node.delegate.status = 'accepted'
+  node.delegate.receiptAt = '2026-08-01T00:00:00.000Z'
+  setDelegateExpectAt(node, '2026-10-01')
+  assert.equal(node.delegate.expectAt, '2026-10-01')
+  assert.equal(node.delegate.status, 'accepted', '改期望时间不该把已接受的回执打回待接受')
+  assert.equal(node.delegate.receiptAt, '2026-08-01T00:00:00.000Z')
+  setDelegateExpectAt(node, '')
+  assert.equal('expectAt' in node.delegate, false)
+  assert.throws(() => setDelegateExpectAt({ id: 'x' }, '2026-10-01'), /委派记录/)
 })

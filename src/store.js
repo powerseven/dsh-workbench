@@ -563,6 +563,25 @@ export function setDelegate(node, input, now = new Date()) {
   return node
 }
 
+/**
+ * 只改委派的期望完成时间，**不动回执状态与委派时间**。
+ *
+ * 为什么不能复用 `setDelegate`：它会把回执重置成 `pending`（换人意味着上一轮
+ * 作废）。但「同一个活、只是期望时间往后挪」不是换人，把已接受的回执打回
+ * 待接受是错的。表单保存时必须能区分这两种情况：对象变 → `setDelegate`，
+ * 只是时间变 → 这里。
+ */
+export function setDelegateExpectAt(node, expectAt) {
+  const d = node?.delegate
+  if (d === null || d === undefined || typeof d !== 'object' || opt(d.to) === undefined) {
+    throw new Error('这个节点还没有委派记录，先建立委派再改期望时间')
+  }
+  const e = opt(expectAt)
+  if (e === undefined) delete d.expectAt
+  else d.expectAt = e
+  return node
+}
+
 /** 记一次回执（对方接受了/拒绝了/交回来了）。没有委派记录时报错，避免写出半截数据。 */
 export function setReceipt(node, status, input = {}, now = new Date()) {
   const d = node?.delegate
@@ -748,6 +767,26 @@ export function evidenceWarnings(node, root) {
     if (!existsSync(abs)) out.push('证据所指的文件不存在：' + ref)
   }
   return out
+}
+
+/**
+ * 删一条完成证据（按 ref + 可选 kind 定位）。**幂等**：没找到就什么也不做，
+ * 不报错——删一条已经不存在的证据，与「它已经不在了」是同一个结果。
+ *
+ * 存在的理由：证据只能增、不能删的话，挂错一条就得靠改 plan.json 或让 agent
+ * 直接改数据，面板这一侧等于没有纠错能力。
+ */
+export function removeEvidence(node, ref, kind) {
+  const list = evidenceOf(node)
+  const target = opt(ref)
+  if (target === undefined) return false
+  const k = opt(kind)
+  const at = list.findIndex((e) => e !== null && e !== undefined
+    && e.ref === target && (k === undefined || e.kind === k))
+  if (at < 0) return false
+  list.splice(at, 1)
+  if (list.length === 0) delete node.evidence
+  return true
 }
 
 // ------------------------------------------------------------- 文件库关联
@@ -980,6 +1019,43 @@ export function metricOf(input) {
   if (Number.isFinite(current)) out.current = current
   if (unit !== undefined) out.unit = unit
   return out
+}
+
+/**
+ * 可清空的字段白名单。
+ *
+ * 为什么需要一个独立的「清空」动作：`applyFields` 的语义是「不传就不动」
+ * （空串等同于没传，见 `opt`），这对 agent 工具的增量写入是对的，但对
+ * **表单**是错的——表单是「所见即所得」，把负责人输入框清空就是要删掉负责人，
+ * 而不是「这次不改负责人」。两条语义必须由两条通路表达，不能靠猜：
+ * 写入走 `applyFields`，清空走 `clearFields`，由调用方（面板表单）分别传。
+ */
+export const CLEARABLE = ['owner', 'start', 'end', 'due', 'note', 'metric', 'delegate']
+
+/**
+ * 清空一批字段（表单里被清空的那些）。未知字段**静默忽略**而不是报错：
+ * 白名单是面板与 store 之间的契约，多传一个名字说明面板升级了、store 没跟上，
+ * 为这个让整次保存失败不值得。
+ *
+ * `metric` 与 `delegate` 是对象字段，整块删掉而不是逐键清——半截的
+ * `{ current: 3 }`（没有 target）会让进度静默退化成「按状态算」。
+ *
+ * 返回**实际清掉的字段数**（0 = 本来就是空的），调用方据此决定要不要记一次
+ * 版本留档——没改动却留一版，会让 `.versions/` 里塞满「什么都没改」的快照。
+ */
+export function clearFields(node, keys = []) {
+  // 返回类型恒为「清掉了几条」：一半情况返回数字、另一半返回节点，迟早有人
+  // 拿返回值当节点用（或反过来）。
+  if (node === null || node === undefined || typeof node !== 'object') return 0
+  if (!Array.isArray(keys)) return 0
+  let n = 0
+  for (const key of keys) {
+    if (!CLEARABLE.includes(key)) continue
+    if (node[key] === undefined) continue
+    delete node[key]
+    n += 1
+  }
+  return n
 }
 
 /**

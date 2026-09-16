@@ -306,6 +306,114 @@ function obsidianLink(vaultPath, ref) {
   return 'obsidian://open?vault=' + encodeURIComponent(vault) + '&path=' + encodeURIComponent(p)
 }
 
+// ---------------------------------------------------------------- 详情表单
+
+/**
+ * 状态选项（按类型）。与 `store.js` 的 `statusListOf` 是同一份口径——两边各写
+ * 一份是硬约束（host 是 ESM、client 是 CJS 不能共享模块），所以由测试钉住。
+ */
+var STATUS_LIST = { plan: ['active', 'done', 'dropped'], todo: ['todo', 'doing', 'done', 'dropped'] }
+var PRIORITIES = ['high', 'normal', 'low']
+
+function statusListOf(type) {
+  return type === 'plan' ? STATUS_LIST.plan.slice() : STATUS_LIST.todo.slice()
+}
+
+/** 表单草稿：把节点摊平成一屏可编辑的标量。 */
+function formDraftOf(node) {
+  var n = node !== null && node !== undefined && typeof node === 'object' ? node : {}
+  var m = n.metric !== null && n.metric !== undefined && typeof n.metric === 'object' ? n.metric : {}
+  var d = n.delegate !== null && n.delegate !== undefined && typeof n.delegate === 'object' ? n.delegate : {}
+  var t = nodeType(n) === 'plan' ? 'plan' : 'todo'
+  var status = typeof n.status === 'string' ? n.status : ''
+  var pri = typeof n.priority === 'string' ? n.priority : ''
+  return {
+    title: typeof n.title === 'string' ? n.title : '',
+    type: t,
+    // 脏数据兜底：非法状态不让它进表单（选不中就会静默写回一个非法值），
+    // 直接落在该类型的第一个合法状态上。
+    status: statusListOf(t).indexOf(status) >= 0 ? status : statusListOf(t)[0],
+    priority: PRIORITIES.indexOf(pri) >= 0 ? pri : 'normal',
+    owner: typeof n.owner === 'string' ? n.owner : '',
+    start: typeof n.start === 'string' ? n.start : '',
+    end: typeof n.end === 'string' ? n.end : '',
+    due: typeof n.due === 'string' ? n.due : '',
+    target: typeof m.target === 'number' ? String(m.target) : '',
+    current: typeof m.current === 'number' ? String(m.current) : '',
+    unit: typeof m.unit === 'string' ? m.unit : '',
+    note: typeof n.note === 'string' ? n.note : '',
+    to: typeof d.to === 'string' ? d.to : '',
+    expectAt: typeof d.expectAt === 'string' ? d.expectAt : '',
+    parent: '',
+  }
+}
+
+/**
+ * 空草稿（新建用）。类型默认待办——「随手记一条」是最高频的入口，
+ * 建计划是次一级的动作，不该让第一条路径多一次选择。
+ */
+function emptyDraft(type, parent) {
+  var d = formDraftOf({ type: type === 'plan' ? 'plan' : 'todo' })
+  d.title = ''
+  d.parent = parent === null || parent === undefined ? '' : parent
+  return d
+}
+
+/**
+ * 表单草稿 → 写入请求。**新建与编辑共用一份字段清单**，否则迟早出现
+ * 「新建支持某字段、编辑不支持」（反过来也一样）。
+ *
+ * 表单是「所见即所得」语义：留空 = 清掉这个字段，所以要额外产出 `clear`
+ * 数组交给服务端（`store.applyFields` 是「不传就不动」的增量语义，
+ * 光靠它清不掉任何东西）。新建时没有可清的，直接不传。
+ */
+function formRequest(draft, original) {
+  var isNew = original === null || original === undefined
+  var type = draft.type === 'plan' ? 'plan' : 'todo'
+  var body = isNew
+    ? { type: type, title: String(draft.title || '').trim() }
+    : { node: original.id, type: type, title: String(draft.title || '').trim(), status: draft.status }
+  body.priority = draft.priority
+  var clear = []
+  var fields = ['owner', 'start', 'end', 'due', 'note']
+  for (var i = 0; i < fields.length; i++) {
+    var v = String(draft[fields[i]] === undefined || draft[fields[i]] === null ? '' : draft[fields[i]]).trim()
+    if (v !== '') body[fields[i]] = v
+    else if (!isNew) clear.push(fields[i])
+  }
+  var metric = {}
+  var t = Number(draft.target)
+  var c = Number(draft.current)
+  if (String(draft.target || '').trim() !== '' && isFinite(t)) metric.target = t
+  if (String(draft.current || '').trim() !== '' && isFinite(c)) metric.current = c
+  if (String(draft.unit || '').trim() !== '') metric.unit = String(draft.unit).trim()
+  if (Object.keys(metric).length > 0) body.metric = metric
+  else if (!isNew) clear.push('metric')
+  if (String(draft.to || '').trim() !== '') {
+    body.to = String(draft.to).trim()
+    if (String(draft.expectAt || '').trim() !== '') body.expectAt = String(draft.expectAt).trim()
+  } else if (!isNew) {
+    clear.push('delegate')
+  }
+  if (clear.length > 0) body.clear = clear
+  if (isNew && draft.parent !== '' && draft.parent !== null && draft.parent !== undefined) body.parent = draft.parent
+  return { method: isNew ? 'node-add' : 'node-set', body: body }
+}
+
+/**
+ * 表单校验。只拦「写下去一定是错的」那几种（标题空、周期倒挂），
+ * 其余一律不拦——缺负责人、缺截止这类是**建议**不是错误，
+ * 由 ⚠ 与筛选去催，硬拦只会让人干脆不记（见 DESIGN.md「不硬拦」）。
+ */
+function formErrors(draft) {
+  var out = []
+  if (String(draft.title || '').trim() === '') out.push('标题不能为空')
+  var s = String(draft.start || '')
+  var e = String(draft.end || '')
+  if (s !== '' && e !== '' && e < s) out.push('结束日期早于开始日期')
+  return out
+}
+
 /**
  * 已完成但没有证据。优先读服务端标注；缺失时本地兜底——这条兜底不含任何
  * 阈值或日期运算，与服务端 `isUnverified` 逐字等价，所以不存在
@@ -786,6 +894,13 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     fileLabel: fileLabel,
     filesList: filesList,
     obsidianLink: obsidianLink,
+    STATUS_LIST: STATUS_LIST,
+    PRIORITIES: PRIORITIES,
+    statusListOf: statusListOf,
+    formDraftOf: formDraftOf,
+    emptyDraft: emptyDraft,
+    formRequest: formRequest,
+    formErrors: formErrors,
     unverifiedOf: unverifiedOf,
     paceText: paceText,
     flattenNodes: flattenNodes,

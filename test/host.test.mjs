@@ -1085,3 +1085,100 @@ test('/config-set 与 /file-read 数据面：配置 vault、读文件、错误�
   assert.equal(badSet.payload.ok, false)
   assert.match(badSet.payload.error, /vault 路径不存在/)
 })
+
+// ---------------------------------------------------------------- 详情编辑页的数据面
+
+test('HTTP /node-set 能写负责人 / 周期 / 截止 / 量化指标', async () => {
+  const made = await call('plan_node_add', { title: '全字段计划', type: 'plan' })
+  const id = made.node.id
+  const { payload } = await post('/node-set', {
+    sessionId: SESSION_ID, node: id,
+    owner: '我', start: '2026-01-01', end: '2026-12-31',
+    metric: { target: 12, current: 3, unit: '个' },
+  })
+  assert.equal(payload.ok, true)
+  const plan = await readPlan()
+  const got = dig(plan.nodes, id)
+  assert.equal(got.owner, '我')
+  assert.equal(got.start, '2026-01-01')
+  assert.equal(got.end, '2026-12-31')
+  assert.deepEqual(got.metric, { target: 12, current: 3, unit: '个' })
+})
+
+test('HTTP /node-set 的 clear 能清掉字段（表单「留空 = 清空」的落点）', async () => {
+  const made = await call('plan_node_add', { title: '待清空的计划', type: 'plan' })
+  const id = made.node.id
+  await post('/node-set', { sessionId: SESSION_ID, node: id, owner: '我', note: '备注', metric: { target: 4 } })
+  const before = dig((await readPlan()).nodes, id)
+  assert.equal(before.owner, '我')
+  assert.ok(before.metric !== undefined)
+
+  const { payload } = await post('/node-set', {
+    sessionId: SESSION_ID, node: id, clear: ['owner', 'note', 'metric', 'not-a-field'],
+  })
+  assert.equal(payload.ok, true)
+  const got = dig((await readPlan()).nodes, id)
+  assert.equal('owner' in got, false, '空串写不进去，只有 clear 能清掉')
+  assert.equal('note' in got, false)
+  assert.equal('metric' in got, false)
+  assert.equal(got.title, '待清空的计划', '没点名清的字段不动')
+})
+
+test('HTTP /node-set 能删证据（evidenceRemove），也能照旧追加', async () => {
+  const made = await call('plan_node_add', { title: '带证据的待办', type: 'todo' })
+  const id = made.node.id
+  await post('/node-set', { sessionId: SESSION_ID, node: id, evidenceKind: 'file', evidenceRef: 'a.md' })
+  await post('/node-set', { sessionId: SESSION_ID, node: id, evidenceKind: 'note', evidenceRef: '口头确认过' })
+  assert.equal(dig((await readPlan()).nodes, id).evidence.length, 2)
+
+  const gone = await post('/node-set', {
+    sessionId: SESSION_ID, node: id, evidenceRemove: 'a.md', evidenceKind: 'file',
+  })
+  assert.equal(gone.payload.ok, true)
+  const got = dig((await readPlan()).nodes, id)
+  assert.deepEqual(got.evidence.map((e) => e.ref), ['口头确认过'])
+
+  // 删最后一条要连空数组一起收掉，而不是留一个 evidence: [] 在 diff 里晃。
+  await post('/node-set', { sessionId: SESSION_ID, node: id, evidenceRemove: '口头确认过' })
+  assert.equal('evidence' in dig((await readPlan()).nodes, id), false)
+})
+
+test('HTTP /node-set 只改期望完成时间时，已接受的回执不被打回待接受', async () => {
+  const made = await call('plan_node_add', { title: '委派出去的活', type: 'todo' })
+  const id = made.node.id
+  await post('/node-set', { sessionId: SESSION_ID, node: id, to: '小李', expectAt: '2026-09-01' })
+  await post('/node-set', { sessionId: SESSION_ID, node: id, receipt: 'accepted' })
+  const mid = dig((await readPlan()).nodes, id)
+  assert.equal(mid.delegate.status, 'accepted')
+
+  // 表单每次保存都会把 to 原样提交一遍，若不分情况就会把回执重置成 pending。
+  const { payload } = await post('/node-set', {
+    sessionId: SESSION_ID, node: id, to: '小李', expectAt: '2026-10-01',
+  })
+  assert.equal(payload.ok, true)
+  const got = dig((await readPlan()).nodes, id)
+  assert.equal(got.delegate.expectAt, '2026-10-01')
+  assert.equal(got.delegate.status, 'accepted', '同一个人只是挪时间，回执不该作废')
+
+  // 换人才是真的重新委派：回执回到待接受。
+  await post('/node-set', { sessionId: SESSION_ID, node: id, to: '小王' })
+  const re = dig((await readPlan()).nodes, id)
+  assert.equal(re.delegate.to, '小王')
+  assert.equal(re.delegate.status, 'pending', '换人 = 上一轮回执作废')
+})
+
+test('HTTP /node-add 能一次带上负责人 / 周期 / 指标（新建表单走这条）', async () => {
+  const { payload } = await post('/node-add', {
+    sessionId: SESSION_ID,
+    title: '带全字段的计划', type: 'plan',
+    owner: '我', start: '2026-01-01', end: '2026-12-31',
+    priority: 'high', note: '备注', metric: { target: 10, current: 0, unit: '篇' },
+  })
+  assert.equal(payload.ok, true)
+  const got = dig((await readPlan()).nodes, payload.node.id)
+  assert.equal(got.owner, '我')
+  assert.equal(got.end, '2026-12-31')
+  assert.equal(got.priority, 'high')
+  assert.equal(got.note, '备注')
+  assert.deepEqual(got.metric, { target: 10, current: 0, unit: '篇' })
+})
