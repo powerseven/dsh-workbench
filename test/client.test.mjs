@@ -312,15 +312,10 @@ function caretOf(root, title) {
   return head.children.find((c) => classesOf(c).includes('dsh-wb-caret'))
 }
 
-/**
- * 「＋ 新建顶层计划」展开后的那一行。它和收件箱输入框共用 `dsh-wb-add`，
- * 靠独有的「建计划」按钮区分——按 class 取第一个会拿到收件箱那个，
- * 于是测试往收件箱里打字，断言却指望它建计划。
- */
-const rootAddRow = (root) => byClass(root, 'dsh-wb-add')
-  .find((d) => d.children.some((c) => c.type === 'button' && textOf(c) === '建计划'))
-
 const inputOf = (row) => row.children.find((c) => c.type === 'input')
+
+/** 表头右侧的文字按钮（设置等），按文案定位。 */
+const headBtn = (root, label) => byClass(root, 'dsh-wb-icon').find((b) => textOf(b) === label) ?? null
 
 /** 造一个够用的合成事件：面板只用到这几个字段，`prevented` 记录是否被拦下。 */
 function ev(extra = {}) {
@@ -352,7 +347,7 @@ function idOf(title) {
 
 // ============================================================ 渲染冒烟
 
-test('面板渲染出计划树、收件箱与新建入口（不白屏）', async () => {
+test('面板渲染出计划树、收件箱与设置入口（不白屏）', async () => {
   const { view } = await mount()
   const body = textOf(view)
   assert.match(body, /收件箱/)
@@ -360,7 +355,7 @@ test('面板渲染出计划树、收件箱与新建入口（不白屏）', async
   assert.match(body, /子计划/)
   assert.match(body, /深层待办/)
   assert.match(body, /收件箱一条/)
-  assert.ok(firstByClass(view, 'dsh-wb-rootadd') !== null, '应有「＋ 新建顶层计划」入口')
+  assert.ok(headBtn(view, '设置') !== null, '应有「设置」入口')
 })
 
 test('tab 角标显示未完成数', async () => {
@@ -368,23 +363,24 @@ test('tab 角标显示未完成数', async () => {
   assert.equal(badge(), 3, '三条待办都还没完成')
 })
 
-test('空工作区时也能建第一个计划（不被迫去开对话）', async () => {
+test('空工作区也能记下第一件事（不被迫去开对话；它就是第一个节点）', async () => {
   const keep = planPayload
   planPayload = { schema: 2, version: 1, title: '空', nodes: [] }
   try {
     const { render, view } = await mount()
-    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /还没有计划/)
+    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /记下第一件事/)
 
-    firstByClass(view, 'dsh-wb-rootadd').props.onClick(ev())
-    inputOf(rootAddRow(render())).props.onChange({ target: { value: '新主线' } })
+    // 收件箱输入框常驻在顶部：空工作区的入口是它 + AI，不再有单独的「建计划」。
+    const addRow = byClass(render(), 'dsh-wb-add')[0]
+    inputOf(addRow).props.onChange({ target: { value: '新主线' } })
 
     requests = []
-    inputOf(rootAddRow(render())).props.onKeyDown(ev({ key: 'Enter' }))
+    inputOf(byClass(render(), 'dsh-wb-add')[0]).props.onKeyDown(ev({ key: 'Enter' }))
+    await settle()
     assert.equal(requests.length, 1)
     assert.equal(requests[0].path, '/api/workbench/node-add')
     assert.equal(requests[0].body.title, '新主线')
-    assert.equal(requests[0].body.type, 'plan')
-    assert.equal('parent' in requests[0].body, false, '顶层计划不该带 parent')
+    assert.equal('parent' in requests[0].body, false, '顶层待办不该带 parent')
   } finally {
     planPayload = keep
   }
@@ -678,6 +674,10 @@ async function planWithSuggestion() {
   // 第二个**不相关**的计划不可省：只放一个计划时它同时就是建议目标，于是
   // 「建议排在最前」和「建议排在后面」渲染出来完全一样，断言形同虚设。
   await call('plan_node_add', { title: '低电压治理攻坚', type: 'plan' })
+  // 类型由结构派生：两个计划各挂一个占位子项，否则它们是叶子（待办），
+  // 进不了「可归位容器」的候选集。
+  await call('plan_node_add', { title: '占位子项甲', parent: '数据资产盘点' })
+  await call('plan_node_add', { title: '占位子项乙', parent: '低电压治理攻坚' })
   await call('plan_node_add', { title: '补充核心表的负责人与更新频率', type: 'todo' })
   const shown = await call('plan_show')
   return { tmp, plan: shown.plan }
@@ -823,7 +823,7 @@ test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
   const box = aiEntry(render())
   box.props.onChange({ target: { value: '下周三前把台账补完' } })
   requests = []
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
@@ -838,10 +838,10 @@ test('没有内容点解析：不发请求，只提示', async () => {
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   requests = []
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   assert.equal(requests.length, 0, '空输入不该去问模型')
-  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|图片/)
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|贴个文件/)
 })
 
 test('解析结果渲染成草稿；点建议**不直接落库**，而是填进详情表单等确认', async () => {
@@ -862,7 +862,7 @@ test('解析结果渲染成草稿；点建议**不直接落库**，而是填进�
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const drafted = render()
@@ -909,7 +909,7 @@ test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', a
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   requests = []
@@ -944,7 +944,7 @@ test('选「新建计划」= 先建容器（一次写入），待办仍等人在
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   // 新建计划的名字先由模型预填，用户还能改。
@@ -991,7 +991,7 @@ test('新建计划没名字就先不动：不建空壳计划，也不建待办',
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
   aiEntry(render()).props.onChange({ target: { value: '一段口述' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   requests = []
@@ -1014,7 +1014,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
     arrayBuffer: async () => new Uint8Array([0x41, 0x42]).buffer,
   }
   const picker = byClass(render(), 'dsh-wb-aibtn').find(
-    (b) => b.type === 'label' && textOf(b).includes('🖼'),
+    (b) => b.type === 'label' && textOf(b) === '+',
   )
   assert.ok(picker !== undefined, '应有选图入口')
   const input = findAll(picker, (el) => (el.props || {}).type === 'file')[0]
@@ -1023,7 +1023,7 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
   await settle()
 
   requests = []
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
   assert.deepEqual(call.body.images, [{ mediaType: 'image/png', data: 'QUI=', name: '白板.png' }])
@@ -1089,9 +1089,23 @@ test('看板尊重筛选器：切到「重要度高」只留高优先级卡片�
   assert.match(textOf(col), /\d+\/\d+/, '列头应显示 未完成/总数')
 })
 
-test('空看板（只有计划没有任务）显示空状态而非白屏', async () => {
+test('看板只看叶子：没有叶子时整棵看板为空（「空计划」即收件箱待办）', async () => {
   const keep = planPayload
+  // 类型派生后不存在「空计划」：无子项的节点就是收件箱里的一条待办。
   planPayload = { schema: 2, version: 1, title: 't', nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
+  try {
+    const { render } = await mount()
+    byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+    const board = render()
+    assert.ok(byClass(board, 'dsh-wb-col').length >= 1, '空计划 = 收件箱待办，会占一列')
+  } finally {
+    planPayload = keep
+  }
+})
+
+test('没有任何叶子时看板为空而非白屏', async () => {
+  const keep = planPayload
+  planPayload = { schema: 2, version: 1, title: 't', nodes: [] }
   try {
     const { render } = await mount()
     byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
@@ -1213,11 +1227,13 @@ test('未配置 vault 时文件只显示路径（不渲染链接），且 vault 
   }
   setFiles(planPayload.nodes)
   try {
-    const { view } = await mount()
+    const { render, view } = await mount()
     const row = byClass(view, 'dsh-wb-file')[0]
     assert.equal(row.children.find((c) => c.type === 'a'), undefined, '无 vault 不渲染链接')
-    const vault = byClass(view, 'dsh-wb-vault')[0]
-    assert.ok(vault !== undefined, '应渲染 vault 配置块')
+    // vault 配置统一在「设置」页里。
+    headBtn(view, '设置').props.onClick(ev())
+    const vault = byClass(render(), 'dsh-wb-vault')[0]
+    assert.ok(vault !== undefined, '设置页应渲染 vault 配置块')
     const cfg = findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0]
     assert.ok(cfg !== undefined, '未配置应有「配置 vault 路径」入口')
   } finally {
@@ -1231,7 +1247,8 @@ test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async 
   delete planPayload.vaultPath
   try {
     const { render, view } = await mount()
-    const vault = byClass(view, 'dsh-wb-vault')[0]
+    headBtn(view, '设置').props.onClick(ev())
+    const vault = byClass(render(), 'dsh-wb-vault')[0]
     findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0].props.onClick(ev())
     const v = byClass(render(), 'dsh-wb-vault')[0]
     const vAdd = findAll(v, (el) => classesOf(el).includes('dsh-wb-add'))[0]
@@ -1250,11 +1267,15 @@ test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async 
   }
 })
 
-test('看板视图同样渲染 vault 配置块', async () => {
+test('设置页收拢 vault 与 AI 人设（与当前视图无关）', async () => {
   const { render, view } = await mount()
-  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
-  const board = render()
-  assert.ok(byClass(board, 'dsh-wb-vault')[0] !== undefined, '看板视图也应渲染 vault 配置块')
+  headBtn(view, '设置').props.onClick(ev())
+  const page = render()
+  assert.ok(byClass(page, 'dsh-wb-vault')[0] !== undefined, 'vault 配置在设置页里')
+  assert.ok(firstByClass(page, 'dsh-wb-atextarea') !== null, 'AI 人设也在设置页里')
+  // 返回后回到面板。
+  findAll(page, (el) => el.type === 'button' && textOf(el) === '← 返回')[0].props.onClick(ev())
+  assert.ok(firstByClass(render(), 'dsh-wb-vault') === null, '返回后不再显示设置内容')
 })
 
 // ---------------------------------------------------------------- 详情编辑页
@@ -1331,35 +1352,43 @@ test('标题空时保存按钮禁用并说明原因，不会写出空标题', as
   assert.equal(requests.length, 0, '禁用之外还要真拦住（禁用了也可能被绕）')
 })
 
-test('有子节点的计划：类型「待办」按钮禁用并说明原因', async () => {
+test('详情页没有「类型」段：类型由结构派生，不能也不必手选', async () => {
   const { render, view } = await mount()
   actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
   await settle()
   const page = render()
-  assert.equal(segBtn(page, '待办').props.disabled, true, '有子节点的计划不能降级')
-  assert.match(segBtn(page, '待办').props.title, /子节点/)
-  // 空计划没有这个限制（子计划下面现在没有子项）。
-  assert.equal(segBtn(page, '计划').props.disabled, false)
+  const labels = byClass(page, 'dsh-wb-label').map((l) => textOf(l))
+  assert.equal(labels.includes('类型'), false, '「往下拆」用行内 ＋ 按钮，拆完空了自动变回待办')
+  // 有子项的计划不能手动标 done（它的完成由子项派生）。
+  const statusSeg = byClass(page, 'dsh-wb-seg').find((g) => g.children.some((b) => textOf(b) === '已完成'))
+  const doneBtn = statusSeg.children.find((b) => textOf(b) === '已完成')
+  assert.equal(doneBtn.props.disabled, true)
+  assert.match(String(doneBtn.props.title), /自动完成/)
 })
 
-test('换型时状态跟着归一：计划的 active 切成待办后变成 todo', async () => {
+test('面板跟着形态走：有子项渲染成计划行，无子项渲染成待办行', async () => {
+  const keep = planPayload
+  planPayload = JSON.parse(JSON.stringify(keep))
+  // host 侧的归一已在 host 测试里覆盖；这里验证面板对两种形态的渲染。
+  const deep = (function find(nodes) {
+    for (const n of nodes) {
+      if (n.title === '深层待办') return n
+      if (Array.isArray(n.children)) { const hit = find(n.children); if (hit !== undefined) return hit }
+    }
+    return undefined
+  })(planPayload.nodes)
+  deep.children = [{ id: 'deepkid', title: '深层的孩子', status: 'todo' }]
+  deep.status = 'active'
   const { render, view } = await mount()
-  actOf(planRow(view, '子计划'), '✎').props.onClick(ev())
-  await settle()
-  // 类型段是「进行中(active)」；切到待办后状态要归一到该类型的第一个合法值
-  // （todo），于是状态段的高亮从「进行中」跳到「待办」。
-  const segs = byClass(render(), 'dsh-wb-seg')
-  const onOf = (seg) => seg.children.find((b) => b.props.className === 'on')
-  assert.equal(textOf(onOf(segs[1])), '进行中')
-  segs[0].children.find((b) => textOf(b) === '待办').props.onClick(ev())
-  const after = byClass(render(), 'dsh-wb-seg')
-  assert.equal(textOf(onOf(after[1])), '待办', 'active 对计划才合法，换型后状态跟着归一')
-  requests = []
-  btnByText(render(), '保存').props.onClick(ev())
-  await settle()
-  const body = requests.find((r) => r.path === '/api/workbench/node-set').body
-  assert.equal(body.type, 'todo')
-  assert.equal(body.status, 'todo', 'active 对计划才合法，换型后必须归一')
+  assert.ok(planRow(view, '深层待办') !== null, '有子项 → 计划行')
+  assert.ok(taskRow(view, '深层待办') === null, '不再渲染成待办行')
+
+  deep.children = undefined
+  deep.status = 'todo'
+  const view2 = render()
+  assert.ok(taskRow(view2, '深层待办') !== null, '删光子项 → 待办行')
+  assert.ok(planRow(view2, '深层待办') === null)
+  planPayload = keep
 })
 
 test('表头「＋ 新建」打开新建表单，保存走 node-add 且带上位置', async () => {
@@ -1426,7 +1455,7 @@ test('只提问：回复渲染成对话，且下一轮带上历史（接着聊�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '哪些逾期了' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const msgs = byClass(render(), 'dsh-wb-msg')
@@ -1439,7 +1468,7 @@ test('只提问：回复渲染成对话，且下一轮带上历史（接着聊�
   aiReply = { reply: '2026-10-01', tasks: [] }
   requests = []
   aiEntry(render()).props.onChange({ target: { value: '那它的截止呢' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   const call = requests.find((r) => r.path === '/api/workbench/ai-parse')
   assert.equal(call.body.history.length, 2)
@@ -1477,7 +1506,7 @@ test('草稿卡给出专家意见与历史依据（新增时要结合当前与�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   assert.match(textOf(firstByClass(render(), 'dsh-wb-advice')), /撞期/)
@@ -1500,7 +1529,7 @@ test('点选项：把它的 patch 并进草稿再打开表单，不直接建', a
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   requests = []
@@ -1516,12 +1545,11 @@ test('点选项：把它的 patch 并进草稿再打开表单，不直接建', a
   assert.ok(dates.some((d) => d.props.value === '2026-09-21'), '选项给的 due 要落进表单')
 })
 
-test('人设：能看能改，保存走 /persona-set', async () => {
+test('人设：在设置页能看能改，保存走 /persona-set', async () => {
   withAi()
   const { render, view } = await mount()
-  aiEntry(view).props.onFocus(ev())
   requests = []
-  aiBtn(render(), '人设').props.onClick(ev())
+  headBtn(view, '设置').props.onClick(ev())
   await settle()
 
   const box = firstByClass(render(), 'dsh-wb-atextarea')
@@ -1593,7 +1621,7 @@ test('AI 清单卡：渲染 items 与命中情况，可一键存为视图并出�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '明天在家能做什么' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
   const card = firstByClass(render(), 'dsh-wb-ailist')
@@ -1619,12 +1647,12 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   const { render, view } = await mount()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '组个清单' } })
-  aiBtn(render(), '发送').props.onClick(ev())
+  aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   aiBtn(render(), '存为视图').props.onClick(ev())
   await settle()
 
-  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺')
+  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺')
   assert.ok(chip !== undefined, '存完就出现在筛选条')
   // 存为视图时已经**自动激活**：不必再点，清单就在眼前。
   let page = render()
@@ -1633,9 +1661,9 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   assert.match(textOf(cv), /深层待办/)
   // chip 是开关：点一下收起，再点一下展开。**每次点击后要重新取按钮**——
   // 重渲会换新元素，旧元素上的闭包还是旧状态（真浏览器同理，只是替身更较真）。
-  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺').props.onClick(ev())
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺').props.onClick(ev())
   assert.ok(firstByClass(render(), 'dsh-wb-customview') === null, '再点一下收起')
-  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '📋 周末冲刺').props.onClick(ev())
+  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺').props.onClick(ev())
   page = render()
   cv = firstByClass(page, 'dsh-wb-customview')
   assert.ok(cv !== null, '再点一下展开')
@@ -1643,25 +1671,28 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
 
 // ---------------------------------------------------------------- 完成语义一体化
 
-test('叶子计划有勾选框且走 /node-set；有子项的计划不出现勾选框', async () => {
+test('叶子（含原「空计划」）渲染成待办行、可勾选；容器没有勾选框', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
+  // 无子项的节点 = 待办：即便旧数据写着 type:'plan'，也按叶子渲染与操作。
   planPayload.nodes.push({ id: 'leafplan', type: 'plan', title: '叶子计划', status: 'active', children: [] })
   try {
     const { render, view } = await mount()
-    const leafHead = planRow(view, '叶子计划')
-    const leafCheck = findAll(leafHead, (el) => el.type === 'input' && el.props.type === 'checkbox')[0]
-    assert.ok(leafCheck !== undefined, '叶子计划 = 能做完的事，要能勾')
+    // 「叶子计划」现在是一条待办行（叶子），勾选走 /todo-set。
+    const leafRow = taskRow(view, '叶子计划')
+    assert.ok(leafRow !== null, '叶子按待办渲染')
+    const leafCheck = findAll(leafRow, (el) => el.type === 'input' && el.props.type === 'checkbox')[0]
+    assert.ok(leafCheck !== undefined, '叶子 = 能做完的事，要能勾')
     const withKids = planRow(view, '工作主线')
     const kidCheck = findAll(withKids, (el) => el.type === 'input' && el.props.type === 'checkbox')
-    assert.equal(kidCheck.length, 0, '有子项的计划不能手点完成——它的完成由子项派生')
+    assert.equal(kidCheck.length, 0, '容器（有子项）不能手点完成——它的完成由子项派生')
 
     requests = []
     leafCheck.props.onChange(ev())
     await settle()
-    const call = requests.find((r) => r.path === '/api/workbench/node-set')
+    const call = requests.find((r) => r.path === '/api/workbench/todo-set')
     assert.equal(call.body.status, 'done')
-    assert.equal(call.body.node, 'leafplan')
+    assert.equal(call.body.todo, 'leafplan')
   } finally {
     planPayload = keep
   }
@@ -1671,8 +1702,9 @@ test('详情页：有未完成子项的计划，「已完成」按钮禁用并�
   const { render, view } = await mount()
   actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
   await settle()
-  const segs = byClass(render(), 'dsh-wb-seg')
-  const doneBtn = segs[1].children.find((b) => textOf(b) === '已完成')
+  // 类型段删除后，状态段是第一个 seg；「已完成」在子项没做完时应被禁用。
+  const statusSeg = byClass(render(), 'dsh-wb-seg')[0]
+  const doneBtn = statusSeg.children.find((b) => textOf(b) === '已完成')
   assert.equal(doneBtn.props.disabled, true, '子项没做完，不能手动完成')
   assert.match(String(doneBtn.props.title), /自动完成/)
 })

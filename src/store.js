@@ -22,7 +22,7 @@
  *
  *   plan.nodes[]                 顶层节点。其中 type=todo 的就是「收件箱」——
  *                                还没归位到任何计划下的待办（见 docs/SCOPE.md）。
- *   node.type   'plan' | 'todo'  plan 可挂 children（深度不限），todo 是叶子。
+ *   type（派生） 有子项 = plan（容器），无子项 = todo（叶子）；不落盘
  *   node.children[]              只有 plan 有。子计划 = plan 嵌 plan。
  *
  * **为什么从「固定三层」改成「递归树」**：三层表达不了「年度 → 季度 → 月度 →
@@ -126,13 +126,24 @@ function clamp01(n) {
   return n
 }
 
-/** 节点类型。缺省当「待办」——叶子是更宽松的默认（计划会被要求周期与负责人）。 */
+/**
+ * 节点类型——**由结构派生，不是存储属性**（用户原话：「只有最后一级就是待办，
+ * 如果下面还有级的就变成计划或子计划」）：
+ *
+ *   - 下面还有子项 → 它是**计划**（容器，状态 active / done / dropped）；
+ *   - 没有子项 → 它是**待办**（能动手做完的事，状态 todo / doing / done / dropped）。
+ *
+ * 同一个节点会随结构变化在两种形态间流动：给它挂第一个子项，它自动变成计划
+ * （`normalizeShape` 把 todo/doing 归一成 active）；删光子项，它自动变回待办
+ * （active 归一成 todo）。节点上不再存 `type` 字段（normalizePlan 会清掉旧数据里的）。
+ */
 export function typeOf(node) {
-  return node !== null && node !== undefined && node.type === 'plan' ? 'plan' : 'todo'
+  return isPlan(node) ? 'plan' : 'todo'
 }
 
 export function isPlan(node) {
-  return typeOf(node) === 'plan'
+  return node !== null && node !== undefined && typeof node === 'object'
+    && Array.isArray(node.children) && node.children.length > 0
 }
 
 export function isTodo(node) {
@@ -508,37 +519,24 @@ export function setStatus(node, status) {
 }
 
 /**
- * 改节点类型（待办 ↔ 计划）。递归树的核心动作之一：随手记的待办后来发现要拆，
- * 提升成计划再往下分；拆完发现没必要，又降回待办。原地换型而不是「新建一个再搬」
- * 是因为后者的语义是「换个容器」，用户想说的是「这就是同一件事」。
+ * 结构变化后的**形态归一**。类型由结构派生（见 `typeOf`）：挂上第一个子项
+ * 自动变计划，删光子项自动变回待办——伴随的状态也要归一，否则会留下对当前
+ * 形态非法的状态（`active` 只对计划合法、`todo`/`doing` 只对待办合法），
+ * 而非法状态在渲染和统计里都是**静默错值**。
  *
- * 两条约束：
- *   - **有待办类型非法状态的节点**：状态是按类型校验的，`active` 只对计划合法、
- *     `todo`/`doing` 只对待办合法。跨类型时重新归一，否则会留下一个对该类型
- *     非法的状态，而非法状态在渲染和统计里都是静默错值（不是报错）。
- *   - **计划降级为待办时若有子节点则拒绝**：待办是叶子，孩子们会变成孤儿，
- *     而「父亲消失」这种结构损伤是不可逆的。要让用户先移走或删掉。
+ * done / dropped 不动：完成与放弃是人的决定，不因结构变化而改写。
+ *
+ * @param changed 由调用方带上「刚发生结构变化的节点」（挂了子 / 删了子的那个父）。
  */
-export function setNodeType(node, type) {
-  const t = opt(type)
-  if (t === undefined || !NODE_TYPE.includes(t)) {
-    throw new Error('节点类型必须是 ' + NODE_TYPE.join(' / ') + ' 之一，收到：' + String(type))
-  }
-  if (typeOf(node) === t) return node
-  const kids = childrenOf(node).length
-  if (t === 'todo' && kids > 0) {
-    throw new Error('「' + String(node.title) + '」下还有 ' + kids + ' 个子节点，'
-      + '不能降级为待办（待办是叶子）——先把子节点移走或删掉')
-  }
-  node.type = t
-  const allowed = statusListOf(t)
-  if (!allowed.includes(node.status)) node.status = t === 'plan' ? 'active' : 'todo'
-  // 让磁盘上的形状与 makeNode 一致：计划恒有 children 数组（上层可无条件遍历），
-  // 待办是叶子、不留空的 children 键（否则 PLAN.md 与 JSON diff 里会出现噪音）。
-  if (t === 'plan') {
+export function normalizeShape(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return node
+  if (isPlan(node)) {
     if (!Array.isArray(node.children)) node.children = []
+    if (node.status === 'todo' || node.status === 'doing') setStatus(node, 'active')
   } else {
+    // 待办是叶子、不留空的 children 键（否则 PLAN.md 与 JSON diff 里出现噪音）。
     delete node.children
+    if (node.status === 'active') setStatus(node, 'todo')
   }
   return node
 }
@@ -952,22 +950,18 @@ function dayOf(v) {
 
 /**
  * 建一个新节点（不插入，只构造）。id 由调用方给的 plan 现算，保证不撞号。
- * 计划自动带 `children: []`，这样上层可以无条件遍历它的子节点。
+ *
+ * 不再接受 `type`：类型由结构派生（见 `typeOf`）——新建的都是待办（叶子），
+ * 挂上子项它就自动变成计划。传入的 `input.type` 会被忽略（兼容旧调用方）。
  */
 export function makeNode(plan, input = {}) {
-  const type = opt(input.type) ?? 'todo'
-  if (!NODE_TYPE.includes(type)) {
-    throw new Error('type 必须是 ' + NODE_TYPE.join(' / ') + ' 之一，收到：' + String(input.type))
-  }
   const title = opt(input.title)
   if (title === undefined) throw new Error('标题不能为空')
   const node = {
     id: nextId(plan),
-    type,
     title,
-    status: type === 'plan' ? 'active' : 'todo',
+    status: 'todo',
   }
-  if (type === 'plan') node.children = []
   return applyFields(node, input)
 }
 
@@ -1060,7 +1054,10 @@ export function clearFields(node, keys = []) {
 
 /**
  * 把节点挂到某个父节点下（parent 为空则挂到顶层）。
- * 目标必须是计划——待办是叶子，往里塞子项会让树变成两种语义混在一起。
+ *
+ * **任何节点都能当父**——给它挂上第一个子项，它就自动变成计划（类型由结构
+ * 派生，`normalizeShape` 负责状态归一）。这是「计划与待办一体」的另一半：
+ * 待办发现要拆，直接往下挂就行，不需要先「提升为计划」。
  */
 export function appendChild(plan, node, parentRef) {
   if (parentRef === null || parentRef === undefined || parentRef === '') {
@@ -1068,11 +1065,9 @@ export function appendChild(plan, node, parentRef) {
     return node
   }
   const { node: parent } = resolveAny(plan, parentRef)
-  if (!isPlan(parent)) {
-    throw new Error('「' + String(parentRef) + '」是待办，不能往里放子项——目标必须是计划')
-  }
   if (!Array.isArray(parent.children)) parent.children = []
   parent.children.push(node)
+  normalizeShape(parent)
   return node
 }
 
@@ -1507,9 +1502,7 @@ export function moveNode(plan, ref, parentRef, index) {
   let toParent = null
   if (parentRef !== null && parentRef !== undefined && parentRef !== '') {
     const found = resolveAny(plan, parentRef)
-    if (!isPlan(found.node)) {
-      throw new Error('「' + String(parentRef) + '」是待办，不能作为父节点——目标必须是计划')
-    }
+    // 任何节点都能当父（挂上子项它就是计划）——只拦自环。
     if (found.node.id === from.node.id) throw new Error('不能把一个节点移到它自己下面')
     if (isDescendantOf(plan, found.node, from.node)) {
       throw new Error('不能把一个节点移到它自己的子孙下面')
@@ -1538,14 +1531,23 @@ export function moveNode(plan, ref, parentRef, index) {
   if (at > list.length) at = list.length
   if (at < 0) at = 0
   list.splice(at, 0, node)
+  // 归一：新父挂上子项可能变成计划；旧父失去最后一个子项可能变回待办。
+  if (toParent !== null) normalizeShape(toParent)
+  if (from.parent !== null && from.parent !== undefined && from.parent !== toParent) {
+    normalizeShape(from.parent)
+  }
   return { node, from: fromPath, to: toPath, index: at }
 }
 
-/** 删除一个节点（连带其整棵子树），返回被删的节点与它原来的位置。 */
+/**
+ * 删除一个节点（连带其整棵子树），返回被删的节点与它原来的位置。
+ * 删除后原父可能失去最后一个子项（自动变回待办），内部直接归一。
+ */
 export function removeNode(plan, ref) {
   const target = resolveAny(plan, ref)
   const found = locate(plan, target.node.id)
   found.siblings.splice(found.index, 1)
+  if (found.parent !== null && found.parent !== undefined) normalizeShape(found.parent)
   return {
     node: found.node,
     parent: found.parent === null ? null : found.parent.id,
@@ -1601,7 +1603,6 @@ export function migratePlan(raw) {
   for (const goal of Array.isArray(raw.goals) ? raw.goals : []) {
     const node = {
       id: goal.id,
-      type: 'plan',
       title: goal.title,
       status: goal.status === 'done' || goal.status === 'dropped' ? goal.status : 'active',
       children: [],
@@ -1610,7 +1611,6 @@ export function migratePlan(raw) {
     for (const kr of Array.isArray(goal.krs) ? goal.krs : []) {
       const sub = {
         id: kr.id,
-        type: 'plan',
         title: kr.title,
         status: kr.status === 'done' || kr.status === 'dropped' ? kr.status : 'active',
         children: [],
@@ -1621,7 +1621,6 @@ export function migratePlan(raw) {
       for (const task of Array.isArray(kr.tasks) ? kr.tasks : []) {
         const todo = {
           id: task.id,
-          type: 'todo',
           title: task.title,
           status: TODO_STATUS.includes(task.status) ? task.status : 'todo',
         }
@@ -1638,7 +1637,6 @@ export function migratePlan(raw) {
   for (const todo of Array.isArray(raw.inbox) ? raw.inbox : []) {
     const node = {
       id: todo.id,
-      type: 'todo',
       title: todo.title,
       status: TODO_STATUS.includes(todo.status) ? todo.status : 'todo',
     }
@@ -1654,15 +1652,24 @@ export function migratePlan(raw) {
  * 把从磁盘读到的计划补齐成当前 schema（只在内存里补，**不写盘**——
  * load 是只读的，改写盘会让人「只打开看了一眼」也产生一次归档）。
  * 已经是 schema 2 的原样返回；遇到 schema 1 就迁移。
+ *
+ * 顺带清掉节点上遗留的 `type` 字段：类型已经由结构派生（见 `typeOf`），
+ * 磁盘上留着它只会让「改结构却忘了改 type」这类漂移成为可能。
  */
 export function normalizePlan(plan) {
   if (plan === null || typeof plan !== 'object') throw new Error('计划必须是对象')
-  if (Array.isArray(plan.nodes)) {
-    if (plan.schema !== SCHEMA) plan.schema = SCHEMA
-    return plan
+  if (!Array.isArray(plan.nodes)) {
+    if (Array.isArray(plan.goals)) plan = migratePlan(plan)
+    else throw new Error('计划缺少 nodes 数组')
   }
-  if (Array.isArray(plan.goals)) return migratePlan(plan)
-  throw new Error('计划缺少 nodes 数组')
+  if (plan.schema !== SCHEMA) plan.schema = SCHEMA
+  for (const x of collectNodes(plan, 'any')) {
+    delete x.node.type
+    // 老数据里可能留着对当前形态非法的状态（type 字段标着 plan 的叶子等），
+    // 派生后按形状归一一次。
+    normalizeShape(x.node)
+  }
+  return plan
 }
 
 /** 生成一个自增 id（默认 n 前缀），扫描全树保证不撞号。 */
@@ -1735,6 +1742,13 @@ export function renderMarkdown(plan) {
     const bits = []
     if (node.status === 'doing') bits.push('进行中')
     if (node.status === 'dropped') bits.push('已放弃')
+    // 量化叶子（如「完成 12 个台区改造」这类带指标的待办）也要把进度亮出来——
+    // 类型派生后它不再是标题行，进度不能跟着丢。
+    const m = node.metric
+    if (m !== null && m !== undefined && typeof m === 'object'
+      && Number.isFinite(m.target) && m.target > 0) {
+      bits.push(String(m.current ?? 0) + '/' + String(m.target) + (m.unit ? ' ' + m.unit : ''))
+    }
     const due = opt(node.due)
     if (due !== undefined) bits.push('截止 ' + due)
     bits.push(...extraOf(node))

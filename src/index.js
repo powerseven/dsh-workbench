@@ -80,7 +80,6 @@ import {
   resolveNode,
   setDelegate,
   setDelegateExpectAt,
-  setNodeType,
   setPriority,
   setReceipt,
   setStatus,
@@ -549,13 +548,13 @@ export function apply(ctx) {
 
   ctx.tools.register(makeTool(
     'plan_node_add',
-    '新增一个节点：type=plan 是计划（可以再挂子项），type=todo 是待办（叶子，实际动手做的事）。'
+    '新增一个节点。**类型由结构派生**：新建的都是待办（叶子，实际动手做的事），'
+      + '挂在某个节点下就是它的子项——挂上子项的那个节点自动成为计划。'
       + 'parent 不传就放在顶层——顶层待办即收件箱，适合「先记下来、之后再归位」。'
       + '重要程度决定这个节点要走多少流程：高 = 必须周期与负责人；中 = 要有结束日期；低 = 只记录。',
     {
       title: { type: 'string', required: true, description: '节点标题，一句话说清要达成什么或要做什么' },
-      type: { type: 'string', description: '节点类型：' + NODE_TYPE.join(' / ') + '（plan=计划, todo=待办），默认 todo' },
-      parent: { type: 'string', description: '可选：父计划的 id 或标题。不传则放到顶层' },
+      parent: { type: 'string', description: '可选：父节点的 id 或标题。不传则放到顶层；挂在待办下会把那个待办变成计划' },
       owner: { type: 'string', description: '可选：负责人（计划用）' },
       start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD（计划用）' },
       end: { type: 'string', description: '可选：周期结束 YYYY-MM-DD（计划用）' },
@@ -570,7 +569,6 @@ export function apply(ctx) {
       const store = storeFor(cwdOf(exec))
       const plan = await store.load()
       const node = makeNode(plan, {
-        type: args?.type,
         title: args?.title,
         owner: args?.owner,
         start: args?.start,
@@ -595,15 +593,14 @@ export function apply(ctx) {
 
   ctx.tools.register(makeTool(
     'plan_node_set',
-    '更新任意节点的字段：标题、类型、负责人、周期、截止、重要程度、状态、量化进度、备注、完成证据。'
-      + '不传的字段保持不动。计划的状态是 active / done / dropped，待办是 todo / doing / done / dropped。'
-      + '改 type 可以把待办提升为计划（继续往下拆），或把空计划降回待办——'
-      + '有子节点的计划不能降级为待办，要先移走或删掉子节点。'
+    '更新任意节点的字段：标题、负责人、周期、截止、重要程度、状态、量化进度、备注、完成证据。'
+      + '不传的字段保持不动。类型由结构派生：有子项的节点是计划（状态 active / done / dropped），'
+      + '叶子是待办（状态 todo / doing / done / dropped）。'
+      + '有未完成子项的计划不能手动标 done（它的完成由子项派生：做完子项它会自动完成）。'
       + '把状态改成 done 时，用 evidenceRef 附上产出（文件路径 / 会话 id / 命令），'
       + '否则它会被列进「已完成但无证据」——那是给人核验「AI 真的干完了」用的清单。',
     {
       node: { type: 'string', required: true, description: '节点 id（如 n1 / g1）或标题' },
-      type: { type: 'string', description: '可选：改为 ' + NODE_TYPE.join(' / ') + '（plan=计划, todo=待办）' },
       title: { type: 'string', description: '可选：新标题' },
       owner: { type: 'string', description: '可选：负责人' },
       start: { type: 'string', description: '可选：周期开始 YYYY-MM-DD' },
@@ -624,8 +621,6 @@ export function apply(ctx) {
       const plan = await store.load()
       const { node } = resolveNode(plan, args?.node, 'any')
       const beforeStatus = node.status
-      // 先换型再写字段：状态校验依赖类型，顺序反了会用旧类型校验新状态。
-      if (optStr(args?.type) !== undefined) setNodeType(node, args.type)
       applyFields(node, args)
       // 有未完成子项的计划不能手动完成（它的完成由子项派生）。
       assertStatusAllowed(node, args?.status)
@@ -1310,7 +1305,6 @@ export function apply(ctx) {
       const store = storeFor(resolveCwd(body.sessionId))
       const plan = await store.load()
       const node = makeNode(plan, {
-        type: body.type,
         title: body.title,
         owner: body.owner,
         due: body.due,
@@ -1336,11 +1330,6 @@ export function apply(ctx) {
       const found = resolveNode(plan, body.node, 'any')
       const beforeStatus = found.node.status
       const reasons = []
-      // 换型排在最前：状态是按类型校验的，顺序反了会用旧类型校验新状态。
-      if (optStr(body.type) !== undefined) {
-        setNodeType(found.node, body.type)
-        reasons.push(typeOf(found.node) + '-retype')
-      }
       // 有未完成子项的计划不能手动完成（它的完成由子项派生）。
       assertStatusAllowed(found.node, body.status)
       if (optStr(body.title) !== undefined || optStr(body.note) !== undefined) {

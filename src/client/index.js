@@ -265,9 +265,6 @@ const CSS = [
   '.dsh-wb-drop-inside{background:var(--wb-accent-soft);outline:1px dashed var(--wb-accent);outline-offset:-1px;}',
   '.dsh-wb-dragging{opacity:.4;}',
   '.dsh-wb-rootdrop{height:2px;border-radius:var(--wb-pill);background:var(--wb-accent);margin:var(--wb-sp-3) var(--wb-sp-1);}',
-  // ── 新建顶层计划（空工作区时它是唯一的建计划入口）──────────────────────
-  '.dsh-wb-rootadd{display:block;width:100%;margin-top:var(--wb-sp-5);border:1px dashed var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-3) var(--wb-sp-4);font:inherit;cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-rootadd:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-accent);}',
   // ── 聚焦列表 ────────────────────────────────────────────────────────────
   '.dsh-wb-focus{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);margin:0;transition:background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-focus:hover{background:var(--wb-hover);}',
@@ -416,9 +413,6 @@ function injectStyles(css) {
  * `n`/`g`/`k`/`t` 前缀加数字组成，`__root__` 不可能撞上——用一个不可能
  * 撞上的字符串，比再加一份 `addingRoot: true` 状态要少一个可能不同步的字段。
  */
-/** 不可能撞上真实节点 id 的哨兵值（节点 id 是 n/g/k/t 前缀加数字）。 */
-const ROOT_ADD = '__root__'
-
 /**
  * AI 助手的快捷问法。它们同时承担两件事：① 最短的使用路径（不用想怎么问）；
  * ② 告诉用户这个助手**能回答什么**——「AI 能干什么」不演示一遍是看不出来的。
@@ -435,6 +429,8 @@ function createStore() {
     moving: null, adding: null,
     // 当前激活的自定义视图名（AI 清单存下来的）。null = 没在看自定义视图。
     custom: null,
+    // 设置页（Obsidian vault + AI 人设……）：整块替换面板，与详情页同模式。
+    showSettings: false,
   }
   const get = () => state
   const set = (patch) => {
@@ -609,7 +605,7 @@ function apply(ctx) {
         className: 'dsh-wb-mic' + (listening ? ' on' : ''),
         title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
-      }, listening ? '■' : '🎤')
+      }, listening ? '■' : '🎙')
     }
 
     // ============================================================== AI 助手
@@ -631,7 +627,6 @@ function apply(ctx) {
     // AI 动态生成的清单卡（「明天在家能做的」）。它不是数据——是一个**视图建议**。
     const [aiList, setAiList] = React.useState(null)
     const [aiPersona, setAiPersona] = React.useState('')
-    const [aiPersonaOpen, setAiPersonaOpen] = React.useState(false)
     const [aiPersonaDraft, setAiPersonaDraft] = React.useState('')
     const [aiDefault, setAiDefault] = React.useState('')
 
@@ -648,26 +643,39 @@ function apply(ctx) {
     }, [sessionId])
 
     /** 选图：读成 base64 存进本地状态，超上限的直接丢掉并说明丢了几张。 */
-    const addPics = async (fileList) => {
+    /**
+     * 「＋」上传：图片走 base64（多模态识别），其它文件读成文本追加进输入框——
+     * 一条通路两种形态，host 的 /ai-parse 不用为「文件」开新字段。
+     * 读失败（权限/格式）不要拖垮整个面板，跳过即可。
+     */
+    const addFiles = async (fileList) => {
       const files = []
       for (const f of fileList || []) files.push(f)
       const room = AI_MAX_IMAGES - aiPics.length
       const picked = files.slice(0, Math.max(room, 0))
       const out = []
+      const textDrops = []
       for (const file of picked) {
-        // arrayBuffer 是标准 API；读失败（权限/格式）不要拖垮整个面板，跳过即可。
+        const isImage = typeof file.type === 'string' && file.type.startsWith('image/')
         let buf = null
         try { buf = await file.arrayBuffer() } catch (e) { buf = null }
         if (buf === null) continue
-        out.push({
-          mediaType: typeof file.type === 'string' && file.type !== '' ? file.type : 'image/png',
-          data: bytesToBase64(new Uint8Array(buf)),
-          name: typeof file.name === 'string' && file.name !== '' ? file.name : '图片',
-        })
+        if (isImage) {
+          out.push({
+            mediaType: typeof file.type === 'string' && file.type !== '' ? file.type : 'image/png',
+            data: bytesToBase64(new Uint8Array(buf)),
+            name: typeof file.name === 'string' && file.name !== '' ? file.name : '图片',
+          })
+        } else {
+          // 非图片按文本读（截断 100KB），以「附件」段落追加——模型从上下文里看它。
+          const text = new TextDecoder('utf-8', { fatal: false }).decode(buf.slice(0, 100 * 1024))
+          textDrops.push('【附件：' + (file.name || '文件') + '】\n' + text)
+        }
       }
       setAiPics(aiPics.concat(out))
+      if (textDrops.length > 0) setAiText((aiText === '' ? '' : aiText + '\n\n') + textDrops.join('\n\n'))
       const dropped = files.length - picked.length
-      if (dropped > 0) flash('一次最多 ' + AI_MAX_IMAGES + ' 张图片，多的 ' + dropped + ' 张没带上')
+      if (dropped > 0) flash('一次最多 ' + AI_MAX_IMAGES + ' 个文件，多的 ' + dropped + ' 个没带上')
     }
 
     /**
@@ -677,7 +685,7 @@ function apply(ctx) {
     const runAi = (preset) => {
       const ask = (typeof preset === 'string' ? preset : aiText).trim()
       if (ask === '' && aiPics.length === 0) {
-        flash('问一句，或说点什么、贴一段文字、选一张图片')
+        flash('问一句，或说点什么、贴个文件')
         return
       }
       setAiBusy(true)
@@ -823,20 +831,19 @@ function apply(ctx) {
       setAiTasks((prev) => prev.map((t) => (t.key === key ? Object.assign({}, t, { newTitle: value }) : t)))
     }
 
-    /** 选图按钮。三个入口共用同一份上限与提示逻辑。 */
+    /** 「＋」上传文件。三个入口共用同一份上限与提示逻辑。 */
     const picButton = (key) => h('label', {
       key,
       className: 'dsh-wb-aibtn',
-      title: '选一张截图（白板 / 清单 / 聊天记录）',
+      title: '上传文件：图片识别内容，文本直接随问题带上',
     },
-      '🖼',
+      '+',
       h('input', {
         type: 'file',
-        accept: 'image/png,image/jpeg,image/webp,image/gif',
         multiple: true,
         style: { display: 'none' },
         onChange: (e) => {
-          addPics(e.target.files)
+          addFiles(e.target.files)
           // 清空 value：否则连着选同一个文件不会触发 change。
           if (e.target !== null && e.target !== undefined) e.target.value = ''
         },
@@ -854,7 +861,7 @@ function apply(ctx) {
       if (ai.available !== true) return null
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
       const hasChat = aiTurns.length > 0 || aiTasks.length > 0
-      const open = aiOpen === true || hasChat || aiPersonaOpen === true
+      const open = aiOpen === true || hasChat
 
       const rows = []
       rows.push(h('div', { className: 'dsh-wb-aibar', key: 'bar' },
@@ -870,14 +877,10 @@ function apply(ctx) {
         picButton('pic'),
         h('button', {
           className: 'dsh-wb-aibtn primary',
+          title: '发送（回车同样有效）',
           disabled: aiBusy === true,
           onClick: () => runAi(),
-        }, aiBusy === true ? '思考中…' : '发送'),
-        h('button', {
-          className: 'dsh-wb-aibtn',
-          title: '助手的人设（性格与专业），可以自己改',
-          onClick: () => { setAiPersonaOpen(aiPersonaOpen !== true); if (aiPersona === '') loadPersona() },
-        }, '人设'),
+        }, aiBusy === true ? '…' : '↑'),
       ))
 
       if (open !== true) return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
@@ -904,35 +907,6 @@ function apply(ctx) {
           onClick: () => { setAiOpen(false); setAiPersonaOpen(false) },
         }, '收起'),
       ))
-
-      // 人设编辑器：性格与专业是**这个工作区**的事，所以放在工作区文件里改。
-      if (aiPersonaOpen === true) {
-        rows.push(h('div', { className: 'dsh-wb-persona', key: 'persona' },
-          h('div', { className: 'dsh-wb-aihead', key: 'h' },
-            h('span', null, '人设（存在工作区 plan/agents.md）'),
-          ),
-          h('textarea', {
-            key: 'ta',
-            className: 'dsh-wb-atextarea',
-            rows: 12,
-            value: aiPersonaDraft,
-            onChange: (e) => setAiPersonaDraft(e.target.value),
-          }),
-          h('div', { className: 'dsh-wb-airow', key: 'row' },
-            h('button', { className: 'dsh-wb-aibtn primary', onClick: savePersona }, '保存'),
-            h('button', {
-              className: 'dsh-wb-aibtn',
-              onClick: () => setAiPersonaDraft(aiPersona),
-            }, '还原'),
-            h('button', {
-              className: 'dsh-wb-aibtn',
-              title: '把「记住的事」清空，其余恢复默认',
-              onClick: () => setAiPersonaDraft(aiDefault === '' ? aiPersona : aiDefault),
-            }, '默认'),
-            h('button', { className: 'dsh-wb-aibtn', onClick: () => setAiPersonaOpen(false) }, '关闭'),
-          ),
-        ))
-      }
 
       // 这次会话的问答。助手的答复与「它读了哪些文件」都留在这里，
       // 人可以随时回看刚才那句建议到底依据什么。
@@ -961,7 +935,7 @@ function apply(ctx) {
       if (aiList !== null && aiList !== undefined) {
         rows.push(h('div', { className: 'dsh-wb-ailist', key: 'ailist' },
           h('div', { className: 'dsh-wb-aihead', key: 'h' },
-            h('span', null, '📋 ' + (aiList.title === '' ? 'AI 清单' : aiList.title)),
+            h('span', null, '清单 · ' + (aiList.title === '' ? 'AI 生成' : aiList.title)),
             h('button', {
               className: 'dsh-wb-aibtn',
               title: '存成自定义视图（出现在筛选条上，随时回看）',
@@ -1746,9 +1720,9 @@ function apply(ctx) {
         }, '↳'),
         h('button', {
           className: 'dsh-wb-act',
-          title: '提升为计划（之后可以继续往下拆）',
-          onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'plan') },
-        }, '⇧'),
+          title: '加子项：往下拆，它会自动变成计划',
+          onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
+        }, '＋'),
         h('button', {
           className: 'dsh-wb-act',
           title: '删除',
@@ -1757,6 +1731,35 @@ function apply(ctx) {
       )]
       if (state.moving === node.id) rows.push(movePick(node))
       rows.push(filesBlock(node))
+      // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
+      if (state.adding === node.id) {
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
+          h('input', {
+            type: 'text',
+            autoFocus: true,
+            placeholder: '加到「' + node.title + '」下…',
+            value: nodeDraft,
+            onChange: (e) => setNodeDraft(e.target.value),
+            onKeyDown: (e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault()
+                const title = nodeDraft.trim()
+                if (title === '') return
+                addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办——它现在是一条计划了') })
+              }
+            },
+          }),
+          micButton(setNodeDraft, 'mic'),
+          h('button', {
+            disabled: nodeDraft.trim() === '',
+            onClick: () => {
+              const title = nodeDraft.trim()
+              if (title === '') return
+              addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办——它现在是一条计划了') })
+            },
+          }, '记作子项'),
+        ))
+      }
       return h('div', { className: 'dsh-wb-todowrap', key: node.id }, rows)
     }
 
@@ -1779,19 +1782,6 @@ function apply(ctx) {
         style: { marginLeft: (depth * 12) + 'px' },
       }, dragOnto(node, true)),
         caret(node),
-        // 完成语义一体化：**叶子计划**（下面没有子项的计划）也是一件能做完的事，
-        // 给勾选框——勾了走 /node-set 的 status done。有子项的计划不出现勾选框：
-        // 它的完成由子项派生（子项全完成时自动完成，host 侧级联），手点只会
-        // 造出「父已完成、子还开着」的矛盾。
-        kids.length === 0
-          ? h('input', {
-            type: 'checkbox',
-            key: 'check',
-            checked: node.status === 'done',
-            title: node.status === 'done' ? '已完成（点框重新打开）' : '点框完成这条计划',
-            onChange: () => togglePlanDone(node),
-          })
-          : null,
         h('span', { className: 'dsh-wb-planid' }, node.id),
         titleNode(node, 'dsh-wb-plantitle', { canToggle: false }),
         delegChip(node),
@@ -1813,13 +1803,6 @@ function apply(ctx) {
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, '＋'),
-        // 降回待办只在空计划上出现：有子节点的计划降级会让孩子们变成孤儿，
-        // host 会拒绝。与其让用户点了再看到报错，不如不给这个按钮。
-        childrenOf(node).length === 0 ? h('button', {
-          className: 'dsh-wb-act',
-          title: '降回待办（这是一个空计划）',
-          onClick: (e) => { e.stopPropagation(); setNodeKind(node.id, 'todo') },
-        }, '⇩') : null,
         h('button', {
           className: 'dsh-wb-act',
           title: '删除这个计划（连同子项）',
@@ -1840,15 +1823,12 @@ function apply(ctx) {
           h('div', { style: { width: barWidth(progress) } })))
       }
 
-      // 加子项：两个提交按钮区分「待办」与「子计划」，不让用户猜默认值。
+      // 加子项：只记「待办」这一种——它下面要是再挂东西，它会自动成为计划。
       if (open && state.adding === node.id) {
-        const submit = (type) => {
+        const submit = () => {
           const title = nodeDraft.trim()
           if (title === '') return
-          addNode({ title, type, parent: node.id }, () => {
-            setNodeDraft('')
-            flash(type === 'plan' ? '已加子计划' : '已加待办')
-          })
+          addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
         body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 12) + 'px' } },
           h('input', {
@@ -1857,11 +1837,10 @@ function apply(ctx) {
             placeholder: '加到「' + node.title + '」下…',
             value: nodeDraft,
             onChange: (e) => setNodeDraft(e.target.value),
-            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit('todo') } },
+            onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } },
           }),
           micButton(setNodeDraft, 'mic'),
-          h('button', { onClick: () => submit('todo'), disabled: nodeDraft.trim() === '' }, '记作待办'),
-          h('button', { onClick: () => submit('plan'), disabled: nodeDraft.trim() === '' }, '记作子计划'),
+          h('button', { onClick: () => submit(), disabled: nodeDraft.trim() === '' }, '记作待办'),
         ))
       }
 
@@ -1949,7 +1928,7 @@ function apply(ctx) {
             onChange: () => setTodo(node.id, node.status === 'doing' ? 'done' : 'doing'),
           }),
           titleNode(node, 'dsh-wb-tasktitle', { canToggle: true }),
-          h('span', { className: 'dsh-wb-path' }, x.path),
+          // 不显示树路径：执行视图的本意就是「结构抹平」，路径属于树和看板。
           delegChip(node),
           warnBadge(node),
           priBadge(node),
@@ -2041,7 +2020,7 @@ function apply(ctx) {
       }
       return h('div', { className: 'dsh-wb-vault', key: 'vault' },
         h('div', { className: 'dsh-wb-vaulthead' },
-          h('span', null, '📚 Obsidian'),
+          h('span', null, 'Obsidian vault'),
           vaultPath
             ? h('span', { className: 'dsh-wb-vpath', title: vaultPath }, vaultPath)
             : h('span', { className: 'dsh-wb-vpath' }, '未配置'),
@@ -2055,6 +2034,50 @@ function apply(ctx) {
           : h('button', { className: 'dsh-wb-aibtn primary', onClick: () => { setVaultDraft(''); setVaultEditing(true) } }, '配置 vault 路径'),
         vaultPath ? h('div', { className: 'dsh-wb-vaultempty', key: 'hint' }, '文件关联会生成可点击的打开链接；AI 也能直接读库里的笔记。') : null,
       )
+    }
+
+    /**
+     * 设置页（渲染）：**一个入口收拢所有工作区级配置**——Obsidian vault、
+     * AI 人设，以后再加的也进这里。整块替换面板（与详情页同模式），
+     * 不做成弹窗：设置是低频动作，但改的时候值得一块完整的、可滚动的版面。
+     */
+    const settingsPage = () => {
+      const rows = [h('div', { className: 'dsh-wb-header', key: 'h' },
+        h('button', {
+          className: 'dsh-wb-icon',
+          title: '返回',
+          onClick: () => store.set({ showSettings: false }),
+        }, '← 返回'),
+        h('span', { className: 'dsh-wb-title' }, '设置'),
+      )]
+      rows.push(vaultBlock())
+      rows.push(h('div', { className: 'dsh-wb-persona', key: 'persona' },
+        h('div', { className: 'dsh-wb-aihead', key: 'h' },
+          h('span', null, 'AI 人设（存在工作区 plan/agents.md）'),
+          h('button', {
+            className: 'dsh-wb-aibtn',
+            title: '把「记住的事」清空，其余恢复默认',
+            onClick: () => setAiPersonaDraft(aiDefault === '' ? aiPersona : aiDefault),
+          }, '默认'),
+          h('button', {
+            className: 'dsh-wb-aibtn',
+            onClick: () => setAiPersonaDraft(aiPersona),
+          }, '还原'),
+        ),
+        h('textarea', {
+          key: 'ta',
+          className: 'dsh-wb-atextarea',
+          rows: 14,
+          value: aiPersonaDraft,
+          onChange: (e) => setAiPersonaDraft(e.target.value),
+        }),
+        h('div', { className: 'dsh-wb-airow', key: 'row' },
+          h('button', { className: 'dsh-wb-aibtn primary', onClick: savePersona }, '保存'),
+          h('span', { className: 'dsh-wb-formnote' },
+            '定义助手的性格、专业与边界；对它说「记住：…」会追加到「记住的事」。'),
+        ),
+      ))
+      return rows
     }
 
     // ============================================================ 详情编辑页（渲染）
@@ -2105,17 +2128,8 @@ function apply(ctx) {
         })))
 
       body.push(h('div', { className: 'dsh-wb-grid3', key: 'kinds' },
-        seg('type', '类型', [
-          { value: 'plan', label: '计划' },
-          // 有子节点的计划不能降级为待办：待办是叶子，孩子们会变成孤儿（不可逆）。
-          // 这里禁用并说明原因，而不是让人点了再收到一条报错。
-          {
-            value: 'todo',
-            label: '待办',
-            disabled: kids > 0,
-            title: kids > 0 ? '下面还有 ' + kids + ' 个子节点，先移走或删掉才能降为待办' : '改成叶子待办',
-          },
-        ]),
+        // 类型段没有了：类型由结构派生（有子项=计划、叶子=待办），不能也不必手选。
+        // 「往下拆」用行内的 ＋ 按钮，拆完空了它自己变回待办。
         seg('status', '状态', statusListOf(d.type).map((s) => ({
           value: s,
           label: statusLabel(s),
@@ -2343,8 +2357,9 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    // 详情编辑页优先：打开时它本身就是一屏，不必再往下走树 / 看板的组装。
+    // 详情编辑页与设置页优先：打开时它们本身就是一屏，不必再往下走树 / 看板的组装。
     if (form !== null) return detailPage()
+    if (state.showSettings === true) return h('div', { className: 'dsh-wb-wrap' }, settingsPage())
 
     const rows = []
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
@@ -2384,15 +2399,15 @@ function apply(ctx) {
         sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部展开', onClick: () => applyCollapse([]) }, '⊞') : null,
         h('button', { className: 'dsh-wb-icon', title: '留档一个版本', onClick: snapshot, disabled: !sum.hasPlan }, '⤓'),
         h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, '⟳'),
-        // AI 入口。宿主没有模型服务时（state.ai.available=false）**不渲染**——
-        // 给一个点了就报错的按钮，等于把「这里不能用」这件事藏到点之后。
-        state.ai !== null && state.ai !== undefined && state.ai.available === true
-          ? h('button', {
-            className: 'dsh-wb-icon',
-            title: 'AI 导入：用语音或图片建任务，并建议归到哪个计划',
-            onClick: () => setAiOpen(true),
-          }, '✨ AI')
-          : null,
+        // 设置：工作区级配置收拢到一个界面（vault、AI 人设……）。
+        h('button', {
+          className: 'dsh-wb-icon',
+          title: '设置：Obsidian vault、AI 人设',
+          onClick: () => {
+            store.set({ showSettings: true, aiOpen: false })
+            if (aiPersona === '') loadPersona()
+          },
+        }, '设置'),
       ),
     ))
     rows.push(h('div', { className: 'dsh-wb-bar', key: 'bar' },
@@ -2434,7 +2449,7 @@ function apply(ctx) {
           className: 'dsh-wb-chip' + (state.custom === v.name ? ' on' : ''),
           title: '自定义视图：' + v.name + '（点击开关）',
           onClick: () => store.set({ custom: state.custom === v.name ? null : v.name }),
-        }, '📋 ' + v.name))))
+        }, '视图 · ' + v.name))))
     }
 
     if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
@@ -2482,7 +2497,6 @@ function apply(ctx) {
 
     if (view === 'board') {
       rows.push(renderBoard())
-      rows.push(vaultBlock())
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
@@ -2527,7 +2541,6 @@ function apply(ctx) {
         ))
       }
       rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
-      rows.push(vaultBlock())
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
@@ -2586,11 +2599,11 @@ function apply(ctx) {
 
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-        h('div', null, '这个工作区还没有计划。'),
-        h('div', null, '点下面的「＋ 新建顶层计划」开始，或在对话里对 agent 说：'),
+        h('div', null, '记下第一件事，或在上面跟 AI 说一句——'),
         h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
-          '「帮我把这个季度的工作计划拆成计划和子计划」'),
-        h('div', { style: { marginTop: '8px', fontSize: '11px' } }, '计划会落在 ' + (state.dir || '<工作区>/plan')),
+          '「帮我把这个季度的工作拆成计划」'),
+        h('div', { style: { marginTop: '8px', fontSize: '11px' } },
+          '计划会落在 ' + (state.dir || '<工作区>/plan') + '；需要 vault / AI 人设请点右上角「设置」'),
       ))
     }
 
@@ -2598,43 +2611,11 @@ function apply(ctx) {
       if (nodeType(node) === 'plan') body.push(renderPlan(node, 0))
     }
 
-    // vault 配置块放在正文末尾（滚动区内、页脚之前），三种视图都看得到。
-    body.push(vaultBlock())
-
+    // vault / AI 人设配置统一收进右上角「设置」，不再在各视图里平铺。
     // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，
     // 拖动适合挪到眼前的位置。接收器挂在 body 上，所以行内必须先 stopPropagation。
     if (hint !== null && hint.id === null) body.push(h('div', { className: 'dsh-wb-rootdrop', key: 'rootdrop' }))
 
-    // 新建顶层计划。空工作区时这是**唯一**的建计划入口——不能为了建第一个计划
-    // 就被迫去开一个对话，「让 agent 也能做」不等于「只能靠 agent 做」。
-    if (state.adding === ROOT_ADD) {
-      const submitRoot = () => {
-        const title = nodeDraft.trim()
-        if (title === '') return
-        addNode({ title, type: 'plan' }, () => { setNodeDraft(''); flash('已新建计划') })
-      }
-      body.push(h('div', { className: 'dsh-wb-add', key: 'rootadd' },
-        h('input', {
-          type: 'text',
-          autoFocus: true,
-          placeholder: '新建一个顶层计划…',
-          value: nodeDraft,
-          onChange: (e) => setNodeDraft(e.target.value),
-          onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitRoot() } },
-        }),
-        micButton(setNodeDraft, 'mic'),
-        // 这里只有「建计划」一个提交口：顶层的待办就是收件箱，而收件箱的输入框
-        // 就在上面常驻着，再放一个「记作待办」等于把同一个动作做两遍。
-        h('button', { onClick: submitRoot, disabled: nodeDraft.trim() === '' }, '建计划'),
-        h('button', { onClick: () => { setNodeDraft(''); store.set({ adding: null }) } }, '取消'),
-      ))
-    } else {
-      body.push(h('button', {
-        key: 'rootadd',
-        className: 'dsh-wb-rootadd',
-        onClick: () => { setNodeDraft(''); store.set({ adding: ROOT_ADD }) },
-      }, '＋ 新建顶层计划'))
-    }
 
     rows.push(h('div', {
       className: 'dsh-wb-body',
