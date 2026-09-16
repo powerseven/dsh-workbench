@@ -22,6 +22,7 @@ const {
   bytesToBase64, pickImages, AI_MAX_IMAGES,
   FILE_KINDS, fileLabel, filesList, obsidianLink,
   STATUS_LIST, PRIORITIES, statusListOf, formDraftOf, emptyDraft, formRequest, formErrors,
+  planByName, blockersOf, todoList, matchTaskTitles, loadViews, saveViews, viewItems, VIEWS_KEY,
 } = require('../src/client/logic.cjs')
 
 test('pct 四舍五入并夹取到 0..100', () => {
@@ -893,4 +894,78 @@ test('emptyDraft 带父节点，且默认待办', () => {
   assert.equal(emptyDraft('plan').type, 'plan')
   assert.equal(emptyDraft('plan').parent, '')
   assert.equal(emptyDraft().type, 'todo')
+})
+
+// ---------------------------------------------------------------- 执行清单（MLO TODO 视图）
+
+const todoFixture = () => ({
+  schema: 2, version: 1, nodes: [
+    {
+      id: 'p1', type: 'plan', title: '主线', status: 'active', children: [
+        { id: 'a', type: 'todo', title: '普通活', status: 'todo', due: '2026-09-20' },
+        { id: 'b', type: 'todo', title: '高优活', status: 'todo', priority: 'high', due: '2026-09-25' },
+        { id: 'c', type: 'todo', title: '逾期活', status: 'todo', due: '2026-09-01' },
+        { id: 'd', type: 'todo', title: '星标活', status: 'todo', due: '2026-09-30', starred: true },
+        { id: 'e', type: 'todo', title: '被挡的', status: 'todo', blockedBy: ['a'] },
+        { id: 'f', type: 'todo', title: '做完的', status: 'done' },
+      ],
+    },
+    { id: 'g', type: 'todo', title: '收件箱的一条', status: 'todo' },
+  ],
+})
+
+test('todoList：跨分支聚合「现在能做的」，星标 > 高优 > 逾期', () => {
+  const { open, blocked } = todoList(todoFixture(), '2026-09-15')
+  const titles = open.map((x) => x.node.title)
+  // 星标永远最前；同组内高优先于普通；逾期按 band 排在最前面的一组里。
+  assert.deepEqual(titles, ['星标活', '高优活', '逾期活', '普通活', '收件箱的一条'])
+  // 做完的不出现；被挡的不在「现在能做」里。
+  assert.equal(titles.includes('做完的'), false)
+  assert.equal(blocked.length, 1)
+  assert.equal(blocked[0].node.title, '被挡的')
+  assert.deepEqual(blocked[0].blockers, ['普通活'], '被谁挡要说得出名字（不是 id）')
+})
+
+test('blockersOf 与 store 的口径一致：完成解锁、撤回重挡', () => {
+  const plan = todoFixture()
+  const e = plan.nodes[0].children.find((n) => n.id === 'e')
+  assert.deepEqual(blockersOf(plan, e).map((n) => n.title), ['普通活'])
+  plan.nodes[0].children.find((n) => n.id === 'a').status = 'done'
+  assert.equal(blockersOf(plan, e).length, 0)
+})
+
+test('matchTaskTitles：AI 给的标题能反查任务，对不上的标 ok:false', () => {
+  const plan = todoFixture()
+  const r = matchTaskTitles(plan, ['高优活', '高优', '不存在的活'])
+  assert.equal(r[0].ok, true)
+  assert.equal(r[0].id, 'b')
+  assert.equal(r[1].ok, true, '互相包含也算命中')
+  assert.equal(r[1].id, 'b', '取最长的那条，避免「活」命中一堆')
+  assert.equal(r[2].ok, false, '对不上的要让人看得见，而不是悄悄丢掉')
+  assert.equal(r[2].id, null)
+})
+
+test('自定义视图：存取走 localStorage（本机偏好），viewItems 剔除做完的', () => {
+  const store = new Map()
+  globalThis.window = { localStorage: {
+    getItem: (k) => (store.has(k) ? store.get(k) : null),
+    setItem: (k, v) => { store.set(k, String(v)) },
+  } }
+  try {
+    assert.deepEqual(loadViews(), [])
+    saveViews([{ name: '明天在家', ids: ['b', 'f', 'zz'] }])
+    const views = loadViews()
+    assert.equal(views.length, 1)
+    assert.deepEqual(views[0].ids, ['b', 'f', 'zz'])
+
+    const items = viewItems(todoFixture(), views[0].ids)
+    assert.deepEqual(items.map((n) => n.id), ['b'], '做完的（f）与不存在的（zz）自动剔除')
+
+    // 存不下（隐私模式）不抛：视图是锦上添花，不值得为它弄崩面板。
+    globalThis.window.localStorage.setItem = () => { throw new Error('quota') }
+    saveViews([{ name: 'x', ids: [] }])
+    assert.equal(loadViews().length, 1)
+  } finally {
+    delete globalThis.window
+  }
 })

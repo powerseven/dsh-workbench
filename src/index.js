@@ -55,6 +55,12 @@ import {
   isDueWithin,
   clearFields,
   collectNodes,
+  addBlockedBy,
+  blockers,
+  removeBlockedBy,
+  setStar,
+  setRecur,
+  spawnRecurring,
   isOverdue,
   isUnverified,
   makeNode,
@@ -159,7 +165,7 @@ function makeTool(name, description, parameters, execute) {
  * @param parentSuggestions 本节点的归位建议，由 withProgress 统一算好传进来
  *   （打分要看到整棵树，单个节点算不了）。
  */
-function annotate(node, today, root, parentSuggestions = [], vaultPath = '') {
+function annotate(node, today, root, parentSuggestions = [], vaultPath = '', plan = null) {
   const type = typeOf(node)
   const progress = nodeProgress(node)
   const out = {
@@ -177,10 +183,15 @@ function annotate(node, today, root, parentSuggestions = [], vaultPath = '') {
     fileWarnings: fileWarnings(node, vaultPath),
     parentSuggestions,
   }
+  // 被谁挡着（blockedBy 里还没做完的）：面板标 🔒、执行清单把它们单独折叠、
+  // agent 回答「为什么做不了」都要用。**只给标题不给 id**，理由与 parentSuggestions 同。
+  out.blocked = plan === null ? [] : blockers(plan, node).map((b) => String(b.title ?? ''))
   out.behind = out.pace !== null && out.pace.behind === true
   // 子节点递归标注，覆盖掉 `...node` 带上来的原始 children。
   // 建议只给顶层待办算，所以递归时不再往下传。vaultPath 是 plan 级配置，整棵共享。
-  if (type === 'plan') out.children = childrenOf(node).map((child) => annotate(child, today, root, [], vaultPath))
+  if (type === 'plan') {
+    out.children = childrenOf(node).map((child) => annotate(child, today, root, [], vaultPath, plan))
+  }
   return out
 }
 
@@ -203,7 +214,7 @@ function withProgress(plan, root) {
     behind: behindList(plan, today),
     unverified: unverifiedList(plan),
     nodes: planNodes(plan).map((node) => annotate(
-      node, today, root, suggestions.get(String(node.id ?? '')) ?? [], plan.vaultPath ?? '',
+      node, today, root, suggestions.get(String(node.id ?? '')) ?? [], plan.vaultPath ?? '', plan,
     )),
   }
 }
@@ -275,6 +286,64 @@ function fileInputOf(args) {
   const ref = optStr(args?.fileRef)
   if (ref === undefined) return undefined
   return { op: 'add', kind: args?.fileKind, ref, note: args?.fileNote }
+}
+
+/**
+ * 依赖 / 星标 / 重复的参数组（plan_node_set / plan_todo_set 与 HTTP 面共用）。
+ * blockedAdd / blockedRemove 按**任务 id**——依赖是精确的工程关系，按标题太含糊
+ * （标题匹配留给建议类功能）；star 是布尔；recur 是 week / month / none。
+ */
+const DEP_PARAMS = {
+  blockedAdd: { type: 'string', description: '可选：加一条依赖——node 要等这个任务（任务 id）做完才能做；对方完成后自动解除' },
+  blockedRemove: { type: 'string', description: '可选：移除一条依赖（任务 id）' },
+  star: { type: 'boolean', description: '可选：星标（我正在做 / 接下来做），执行清单里置顶' },
+  recur: { type: 'string', description: '可选：重复周期 week / month（完成时自动克隆下一条并顺推截止），传 none 取消' },
+}
+
+/** 从入参里抽出依赖 / 星标 / 重复的写入（都没有就 undefined，不传就不动）。 */
+function depInputOf(args) {
+  if (args === null || args === undefined || typeof args !== 'object') return undefined
+  const out = {}
+  const add = optStr(args.blockedAdd)
+  if (add !== undefined) out.blockedAdd = add
+  const rm = optStr(args.blockedRemove)
+  if (rm !== undefined) out.blockedRemove = rm
+  if (typeof args.star === 'boolean') out.star = args.star
+  const recur = optStr(args.recur)
+  if (recur !== undefined) out.recur = recur
+  return Object.keys(out).length > 0 ? out : undefined
+}
+
+/** 应用依赖 / 星标 / 重复，返回给版本留档用的 reason 片段。 */
+function applyDeps(plan, node, dep) {
+  const reasons = []
+  if (dep === undefined) return reasons
+  if (dep.blockedAdd !== undefined) {
+    addBlockedBy(plan, node, dep.blockedAdd)
+    reasons.push('blocked+')
+  }
+  if (dep.blockedRemove !== undefined) {
+    removeBlockedBy(node, dep.blockedRemove)
+    reasons.push('blocked-')
+  }
+  if (dep.star !== undefined) {
+    setStar(node, dep.star)
+    reasons.push(dep.star ? 'star' : 'unstar')
+  }
+  if (dep.recur !== undefined) {
+    setRecur(node, dep.recur)
+    reasons.push('recur')
+  }
+  return reasons
+}
+
+/**
+ * 完成一条带 recur 的待办时克隆下一条。**只在「非 done → done」这一下触发**：
+    * 状态已经是 done 再保存一次不该刷出克隆，否则每存一次多一条。
+ */
+function spawnIfRecurring(plan, node, before, today) {
+  if (before === 'done' || node.status !== 'done') return null
+  return spawnRecurring(plan, node, today)
 }
 
 /**
@@ -518,15 +587,21 @@ export function apply(ctx) {
       note: { type: 'string', description: '可选：备注' },
       ...EVIDENCE_PARAMS,
       ...FILE_PARAMS,
+      ...DEP_PARAMS,
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
       const plan = await store.load()
       const { node } = resolveNode(plan, args?.node, 'any')
+      const beforeStatus = node.status
       // 先换型再写字段：状态校验依赖类型，顺序反了会用旧类型校验新状态。
       if (optStr(args?.type) !== undefined) setNodeType(node, args.type)
       applyFields(node, args)
       if (optStr(args?.status) !== undefined) setStatus(node, args.status)
+      // 依赖 / 星标 / 重复：依赖要在状态之后（spawn 要知道最终状态）。
+      const dep = depInputOf(args)
+      const depReasons = applyDeps(plan, node, dep)
+      const spawned = spawnIfRecurring(plan, node, beforeStatus, todayStr())
       // 证据在状态之后追加：先落成 done 再挂凭据，两者是同一次改变的原子结果。
       const evidence = evidenceInputOf(args)
       if (evidence !== undefined) addEvidence(node, evidence)
@@ -541,7 +616,9 @@ export function apply(ctx) {
       await store.save(plan, {
         reason: type + '-set'
           + (evidence !== undefined ? '+evidence' : '')
-          + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : ''),
+          + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '')
+          + depReasons.map((r) => '+' + r).join('')
+          + (spawned !== null ? '+recur-spawn' : ''),
       })
       return {
         ok: true,
@@ -549,6 +626,7 @@ export function apply(ctx) {
         warnings: nodeWarnings(node, type),
         evidenceWarnings: evidenceWarnings(node, store.root),
         unverified: isUnverified(node),
+        spawned: spawned === null ? undefined : { id: spawned.id, title: spawned.title, due: spawned.due ?? '' },
         plan: withProgress(plan, store.root),
       }
     },
@@ -608,14 +686,20 @@ export function apply(ctx) {
       status: { type: 'string', required: true, description: '新状态：' + TODO_STATUS.join(' / ') + '（todo=待办, doing=进行中, done=已完成, dropped=已放弃）' },
       note: { type: 'string', description: '可选：追加备注（留痕为什么放弃/怎么完成的）' },
       ...EVIDENCE_PARAMS,
+      ...DEP_PARAMS,
     },
     async (args, exec) => {
       const store = storeFor(cwdOf(exec))
       const plan = await store.load()
       const found = resolveTodo(plan, args?.todo)
+      const beforeStatus = found.node.status
       setStatus(found.node, args?.status)
       const note = optStr(args?.note)
       if (note !== undefined) found.node.note = note
+      // 依赖 / 星标 / 重复：完成带 recur 的待办会自动克隆出下一条。
+      const dep = depInputOf(args)
+      const depReasons = applyDeps(plan, found.node, dep)
+      const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
       const evidence = evidenceInputOf(args)
       if (evidence !== undefined) addEvidence(found.node, evidence)
       const file = fileInputOf(args)
@@ -625,13 +709,16 @@ export function apply(ctx) {
       }
       await store.save(plan, { reason: 'todo-' + found.node.status
         + (evidence !== undefined ? '+evidence' : '')
-        + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '') })
+        + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '')
+        + depReasons.map((r) => '+' + r).join('')
+        + (spawned !== null ? '+recur-spawn' : '') })
       return {
         ok: true,
         todo: found.node,
         warnings: nodeWarnings(found.node, 'todo'),
         evidenceWarnings: evidenceWarnings(found.node, store.root),
         unverified: isUnverified(found.node),
+        spawned: spawned === null ? undefined : { id: spawned.id, title: spawned.title, due: spawned.due ?? '' },
         plan: withProgress(plan, store.root),
       }
     },
@@ -1071,11 +1158,48 @@ export function apply(ctx) {
         // 只报事时 reply 是一句确认。面板两种都要能渲染。
         reply: parsed.reply,
         tasks: attachSuggestions(plan, parsed.tasks, today),
+        // AI 动态生成的清单：标题匹配回真实节点（匹配不上的 ok=false 带回去）。
+        list: matchListTitles(plan, parsed.list),
         read: picked.map((f) => f.ref),
         turns: kept,
         model: { provider: status.provider, model: status.model },
       })
     }, AI_MAX_BODY_BYTES)
+
+    /**
+     * 把 AI 清单里的**任务标题**匹配回节点。
+     * 匹配规则与 attachSuggestions 的「模型点名计划」一致（相等 → 包含，取最长），
+     * 匹配不上的条目 ok=false 原样返回——AI 指错了要让人看得见，而不是悄悄丢掉。
+     */
+    function matchListTitles(plan, list) {
+      if (list === null || list === undefined) return null
+      const flat = collectNodes(plan, 'any')
+      const items = (Array.isArray(list.items) ? list.items : []).map((t) => {
+        const want = norm(String(t))
+        let hit = null
+        let best = 0
+        for (const x of flat) {
+          const got = norm(String(x.node.title ?? ''))
+          if (got === '') continue
+          if (got === want) { hit = x.node; best = got.length; break }
+          if ((got.includes(want) || want.includes(got)) && got.length > best) {
+            hit = x.node
+            best = got.length
+          }
+        }
+        return {
+          title: String(t),
+          id: hit === null ? null : String(hit.id ?? ''),
+          ok: hit !== null,
+        }
+      })
+      return { title: String(list.title ?? ''), items }
+    }
+
+    /** 与 ai.js 的 norm 同款（ai.js 没导出它，这里只用到这一种形态）。 */
+    function norm(text) {
+      return String(text ?? '').replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
+    }
 
     /**
      * 读人设（`plan/agents.md`）。文件不在就用内置的默认人设——
@@ -1116,7 +1240,12 @@ export function apply(ctx) {
       const plan = await store.load()
       // 限定类型找待办：面板上的待办可能挂在任意深度的计划下，也可能在收件箱里。
       const found = resolveTodo(plan, body.todo)
+      const beforeStatus = found.node.status
       setStatus(found.node, body.status)
+      // 依赖 / 星标 / 重复（详情编辑页与执行清单走这里）。
+      const dep = depInputOf(body)
+      const depReasons = applyDeps(plan, found.node, dep)
+      const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
       const evidence = evidenceInputOf(body)
       if (evidence !== undefined) addEvidence(found.node, evidence)
       const file = fileInputOf(body)
@@ -1127,7 +1256,9 @@ export function apply(ctx) {
       await store.save(plan, {
         reason: 'todo-' + found.node.status
           + (evidence === undefined ? '' : '+evidence')
-          + (file === undefined ? '' : '+file' + (file.op === 'remove' ? '-rm' : '')),
+          + (file === undefined ? '' : '+file' + (file.op === 'remove' ? '-rm' : ''))
+          + depReasons.map((r) => '+' + r).join('')
+          + (spawned !== null ? '+recur-spawn' : ''),
       })
       json(res, { ok: true, plan: withProgress(plan, store.root) })
     })
@@ -1162,6 +1293,7 @@ export function apply(ctx) {
       const store = storeFor(resolveCwd(body.sessionId))
       const plan = await store.load()
       const found = resolveNode(plan, body.node, 'any')
+      const beforeStatus = found.node.status
       const reasons = []
       // 换型排在最前：状态是按类型校验的，顺序反了会用旧类型校验新状态。
       if (optStr(body.type) !== undefined) {
@@ -1231,6 +1363,11 @@ export function apply(ctx) {
         else addFile(found.node, file)
         reasons.push('file' + (file.op === 'remove' ? '-rm' : ''))
       }
+      // 依赖 / 星标 / 重复（详情编辑页的依赖区、★ 与重复下拉走这里）。
+      const dep = depInputOf(body)
+      reasons.push(...applyDeps(plan, found.node, dep))
+      const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
+      if (spawned !== null) reasons.push('recur-spawn')
       if (reasons.length === 0) {
         throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef')
       }

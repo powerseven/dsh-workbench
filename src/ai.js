@@ -319,11 +319,15 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '{"reply":"给人看的一段话","tasks":[{"title":"待办标题","due":"YYYY-MM-DD 或留空",',
     '"priority":"high|normal|low 或留空","note":"备注或留空","plan":"计划名或留空",',
     '"advice":"计划专家意见或留空","options":[{"label":"选项名","why":"为什么",',
-    '"patch":{"due":"...","priority":"...","plan":"...","note":"..."}}]}]}',
+    '"patch":{"due":"...","priority":"...","plan":"...","note":"..."}}]}],',
+    '"list":{"title":"清单名","items":["任务标题","任务标题"]}}',
     '',
     '规则：',
     '1. reply **必填**：回答用户的问题；如果用户只是在报事，就用一句话说明你拆出了什么、',
     '   并指出最值得注意的一条风险（重复 / 依赖 / 排不动 / 与某个逾期项撞车）。控制在 3 句内。',
+    '1a. 当用户想要一份**清单或视图**（「明天在家能做的」「半小时以内能干完的」「按顺序该先做哪三件」），',
+    '   给出 list：title 是清单名，items 从【当前全貌】里**原样抄**符合条件的任务标题；',
+    '   清单要排好序（先做谁在后做谁），数量尊重用户说的（说三件就给三件）。',
     '2. title 必填（仅当有要记的事）：一句话说清要做什么，不带序号、不带「完成」这类状态词。',
     '3. due 只有**明确说了时间**才填（「下周三」「9月20日前」都要换算成具体日期）；没说就留空。',
     '4. priority 只有明确说了「重要/紧急/必须」才填 high，「有空再做」才填 low，其余留空。',
@@ -448,21 +452,41 @@ function normOption(raw) {
  */
 export function parseAiReply(raw) {
   const parsed = extractJson(raw)
-  if (parsed === null) return { reply: '', tasks: [], error: '模型没有给出能解析的 JSON：' + clip(String(raw ?? '')) }
+  if (parsed === null) return { reply: '', tasks: [], list: null, error: '模型没有给出能解析的 JSON：' + clip(String(raw ?? '')) }
   if (Array.isArray(parsed)) {
     // 模型偶尔直接给一个数组（旧格式的习惯），按「只有 tasks」处理。
-    return { reply: '', tasks: tasksOf(parsed), error: '' }
+    return { reply: '', tasks: tasksOf(parsed), list: null, error: '' }
   }
   if (parsed === null || typeof parsed !== 'object') {
-    return { reply: '', tasks: [], error: '模型给出的不是对象也不是数组' }
+    return { reply: '', tasks: [], list: null, error: '模型给出的不是对象也不是数组' }
   }
   const list = Array.isArray(parsed.tasks) ? parsed.tasks : []
   const reply = isStr(parsed.reply) ? String(parsed.reply).trim().slice(0, 2000) : ''
   const tasks = tasksOf(list)
-  if (reply === '' && tasks.length === 0) {
-    return { reply: '', tasks: [], error: '模型既没有回答，也没有给出待办' }
+  if (reply === '' && tasks.length === 0 && normList(parsed.list) === null) {
+    return { reply: '', tasks: [], list: null, error: '模型既没有回答，也没有给出待办' }
   }
-  return { reply, tasks, error: '' }
+  return { reply, tasks, list: normList(parsed.list), error: '' }
+}
+
+/**
+ * AI **动态生成的清单**：{ title, items:[标题] }。
+ *
+ * items 里是**任务标题**而不是 id——与 plan 字段同一条纪律。host 侧会把标题
+ * 匹配回真实节点，匹配不上的 ok=false 原样带回去，用户能看见 AI 指错了哪条。
+ */
+export function normList(raw) {
+  if (raw === null || raw === undefined || typeof raw !== 'object' || !Array.isArray(raw.items)) return null
+  const items = raw.items
+    .filter((x) => isStr(x))
+    .map((x) => String(x).trim().slice(0, 200))
+    .filter((x) => x !== '')
+    .slice(0, MAX_TASKS)
+  if (items.length === 0) return null
+  return {
+    title: isStr(raw.title) ? String(raw.title).trim().slice(0, 100) : '',
+    items,
+  }
 }
 
 /** 把一组原始条目收敛成待办（含专家意见与选项）。 */

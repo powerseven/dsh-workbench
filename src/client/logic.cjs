@@ -444,6 +444,159 @@ function normTitle(v) {
   return String(v === null || v === undefined ? '' : v).replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
 }
 
+// ---------------------------------------------------------------- 执行清单（MLO 的 TODO 视图）
+
+/**
+ * 谁挡着它：blockedBy 里还没做完的（与 store.js 的 `blockers` 同一份口径，
+ * 两边各写一份是硬约束，由测试钉住）。
+ */
+function blockersOf(plan, node) {
+  var list = node === null || node === undefined || typeof node !== 'object' ? undefined : node.blockedBy
+  if (!Array.isArray(list)) return []
+  var out = []
+  for (var i = 0; i < list.length; i++) {
+    var b = nodeByIdIn(plan, list[i])
+    if (b !== null && b.status !== 'done' && b.status !== 'dropped') out.push(b)
+  }
+  return out
+}
+
+function nodeByIdIn(plan, id) {
+  var want = String(id === null || id === undefined ? '' : id)
+  if (want === '') return null
+  var flat = flattenNodes(plan)
+  for (var i = 0; i < flat.length; i++) {
+    if (String(flat[i].node.id) === want) return flat[i].node
+  }
+  return null
+}
+
+/**
+ * **执行清单**（MLO 的王牌视图）：跨所有分支，把「现在能做的」汇成一张平的清单。
+ *
+ * 「现在能做」= 未完成 + 未被依赖挡住。分两组返回：`open`（能做的，按
+ * 星标 > 重要度 > 逾期/本周 > 截止 > 树序排）与 `blocked`（被挡的，单独折叠——
+ * 它们不是没做，是**做不了**，混在一起会让人误以为拖延了）。
+ */
+function todoList(plan, today) {
+  var all = []
+  var flat = flattenNodes(plan)
+  for (var i = 0; i < flat.length; i++) {
+    var it = flat[i]
+    if (it.type !== 'todo') continue
+    var n = it.node
+    if (n.status === 'done' || n.status === 'dropped') continue
+    all.push({
+      node: n,
+      path: it.path,
+      depth: it.depth,
+      starred: n.starred === true,
+      blockers: blockersOf(plan, n).map(function (b) { return String(b.title ?? '') }),
+      doneAt: null,
+      due: typeof n.due === 'string' ? n.due : '',
+      pri: priorityRank(n.priority),
+    })
+  }
+  var open = all.filter(function (x) { return x.blockers.length === 0 })
+  var blocked = all.filter(function (x) { return x.blockers.length > 0 })
+  var band = function (x) {
+    if (overdueFallback(x.node, today)) return 0
+    if (dueWithin(x.node, 7, today)) return 1
+    return 2
+  }
+  open.sort(function (a, b) {
+    return (b.starred - a.starred)
+      || (a.pri - b.pri)
+      || (band(a) - band(b))
+      || String(a.due).localeCompare(String(b.due))
+  })
+  return { open: open, blocked: blocked }
+}
+
+/** 日期 +days（YYYY-MM-DD 字符串）。 */
+function addDaysStr(dateStr, days) {
+  var d = new Date(String(dateStr) + 'T00:00:00Z')
+  if (isNaN(d.getTime())) return null
+  d.setUTCDate(d.getUTCDate() + days)
+  return d.toISOString().slice(0, 10)
+}
+
+/** 是否在 [今天, 今天+days] 内到期（与 store 的 isDueWithin 同口径的本地简化版）。 */
+function dueWithin(node, days, today) {
+  var a = typeof node.due === 'string' && node.due !== '' ? node.due
+    : (typeof node.end === 'string' && node.end !== '' ? node.end : null)
+  if (a === null) return false
+  var limit = addDaysStr(today, days)
+  if (limit === null) return false
+  return a >= today && a <= limit
+}
+
+/**
+ * 把一串**任务标题**匹配回节点（AI 清单卡用）。与 `planByName` 同一条纪律：
+ * 模型给的是名字不是 id，名字可以反查、id 没法校验。
+ * 返回 [{ id, title, ok }]——匹配不上的 ok=false，原样带回去让用户知道 AI 指错了。
+ */
+function matchTaskTitles(plan, titles) {
+  var out = []
+  var titlesArr = Array.isArray(titles) ? titles : []
+  for (var i = 0; i < titlesArr.length; i++) {
+    var want = normTitle(titlesArr[i])
+    var hit = null
+    if (want !== '') {
+      var flat = flattenNodes(plan)
+      var best = null
+      var bestLen = 0
+      for (var j = 0; j < flat.length; j++) {
+        var t = normTitle(flat[j].node.title)
+        if (t === '') continue
+        if (t === want) { best = flat[j].node; bestLen = t.length; break }
+        if ((t.indexOf(want) >= 0 || want.indexOf(t) >= 0) && t.length > bestLen) {
+          best = flat[j].node
+          bestLen = t.length
+        }
+      }
+      hit = best
+    }
+    out.push({
+      title: String(titlesArr[i] ?? ''),
+      id: hit === null ? null : String(hit.id),
+      ok: hit !== null,
+    })
+  }
+  return out
+}
+
+// ------------------------------------------------- 自定义视图（AI 生成的清单存下来）
+
+var VIEWS_KEY = 'dsh-workbench:views'
+
+/** 已保存的自定义视图：[{ name, ids:[] }]。只活在这台浏览器上（与折叠同类）。 */
+function loadViews() {
+  try {
+    var raw = window.localStorage.getItem(VIEWS_KEY)
+    var arr = raw === null || raw === undefined || raw === '' ? [] : JSON.parse(raw)
+    return Array.isArray(arr) ? arr.filter(function (v) {
+      return v !== null && typeof v === 'object' && typeof v.name === 'string' && Array.isArray(v.ids)
+    }) : []
+  } catch (e) { return [] }
+}
+
+function saveViews(views) {
+  try { window.localStorage.setItem(VIEWS_KEY, JSON.stringify(views)) } catch (e) { /* 存不下就当没存 */ }
+}
+
+/** 清单 ids → 视图用的条目（按给定顺序，丢了 id 的任务自动剔除）。 */
+function viewItems(plan, ids) {
+  var out = []
+  var arr = Array.isArray(ids) ? ids : []
+  for (var i = 0; i < arr.length; i++) {
+    var n = nodeByIdIn(plan, arr[i])
+    if (n === null || n.status === 'done' || n.status === 'dropped') continue
+    out.push(n)
+  }
+  return out
+}
+
 /**
  * 已完成但没有证据。优先读服务端标注；缺失时本地兜底——这条兜底不含任何
  * 阈值或日期运算，与服务端 `isUnverified` 逐字等价，所以不存在
@@ -932,6 +1085,13 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     formRequest: formRequest,
     formErrors: formErrors,
     planByName: planByName,
+    blockersOf: blockersOf,
+    todoList: todoList,
+    matchTaskTitles: matchTaskTitles,
+    loadViews: loadViews,
+    saveViews: saveViews,
+    viewItems: viewItems,
+    VIEWS_KEY: VIEWS_KEY,
     unverifiedOf: unverifiedOf,
     paceText: paceText,
     flattenNodes: flattenNodes,

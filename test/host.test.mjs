@@ -1275,3 +1275,95 @@ test('/persona-set 的 append 只往「记住的事」一节末尾加一条', as
   // 追加不能把「性格」一节改掉。
   assert.ok(r.payload.text.includes('## 性格\n- 简短'))
 })
+
+// ---------------------------------------------------------------- MLO 核心：依赖 / 星标 / 重复 / AI 清单
+
+test('plan_node_set 能加依赖（按 id）、标星、配重复；环会被拦', async () => {
+  const a = await call('plan_node_add', { title: '前置任务', type: 'todo' })
+  const b = await call('plan_node_add', { title: '后续任务', type: 'todo' })
+  const r = await call('plan_node_set', { node: b.node.id, blockedAdd: a.node.id, star: true, recur: 'week' })
+  assert.equal(r.ok, true)
+  const plan = await readPlan()
+  const got = dig(plan.nodes, b.node.id)
+  assert.deepEqual(got.blockedBy, [String(a.node.id)], '依赖按 id 记')
+  assert.equal(got.starred, true)
+  assert.deepEqual(got.recur, { kind: 'week' })
+  // 环：前置任务反过来等后续任务。
+  await assert.rejects(
+    () => call('plan_node_set', { node: a.node.id, blockedAdd: b.node.id }),
+    /不能成环/,
+  )
+  // payload 里给的是标题不是 id（agent 要能读懂「被谁挡住」）。
+  const shown = await call('plan_show')
+  const annotated = dig(shown.plan.nodes, b.node.id)
+  assert.deepEqual(annotated.blocked, ['前置任务'])
+})
+
+test('完成带 recur 的待办会自动克隆下一条并顺推截止；重复保存不再刷克隆', async () => {
+  const made = await call('plan_node_add', { title: '每周交周报', type: 'todo', due: '2026-09-15' })
+  const id = made.node.id
+  await call('plan_node_set', { node: id, recur: 'week' })
+
+  const r1 = await call('plan_todo_set', { todo: id, status: 'done' })
+  assert.ok(r1.spawned !== undefined, '完成时重生下一条')
+  assert.equal(r1.spawned.title, '每周交周报')
+  assert.equal(r1.spawned.due, '2026-09-22', '顺推一周')
+  assert.equal(r1.spawned.id !== id, true)
+
+  // 已经是 done 再保存一次，不该再克隆。
+  const before = dig((await readPlan()).nodes, undefined) && (await readPlan())
+  const count1 = countTitles(await readPlan(), '每周交周报')
+  await call('plan_todo_set', { todo: id, status: 'done', note: '补充记录' })
+  const count2 = countTitles(await readPlan(), '每周交周报')
+  assert.equal(count2, count1, '重复保存不刷克隆')
+})
+
+function countTitles(plan, title) {
+  let n = 0
+  const walk = (nodes) => {
+    for (const x of nodes) {
+      if (x.title === title) n++
+      if (Array.isArray(x.children)) walk(x.children)
+    }
+  }
+  walk(plan.nodes)
+  return n
+}
+
+test('HTTP /node-set 也接受 star / blockedAdd / recur（详情页的即时写走这里）', async () => {
+  const a = await post('/node-add', { sessionId: SESSION_ID, title: 'HTTP 前置', type: 'todo' })
+  const b = await post('/node-add', { sessionId: SESSION_ID, title: 'HTTP 后续', type: 'todo' })
+  const r = await post('/node-set', {
+    sessionId: SESSION_ID, node: b.payload.node.id,
+    blockedAdd: a.payload.node.id, star: true, recur: 'month',
+  })
+  assert.equal(r.payload.ok, true)
+  const got = dig((await readPlan()).nodes, b.payload.node.id)
+  assert.deepEqual(got.blockedBy, [String(a.payload.node.id)])
+  assert.equal(got.starred, true)
+  assert.deepEqual(got.recur, { kind: 'month' })
+  const rm = await post('/node-set', { sessionId: SESSION_ID, node: b.payload.node.id, blockedRemove: a.payload.node.id, star: false })
+  const got2 = dig((await readPlan()).nodes, b.payload.node.id)
+  assert.equal('blockedBy' in got2, false, '依赖删空后收掉数组')
+  assert.equal('starred' in got2, false)
+  assert.ok(rm.payload.ok)
+})
+
+test('/ai-parse 能回 AI 动态清单：标题匹配回真实节点，对不上的 ok:false', async () => {
+  const made = await call('plan_node_add', { title: '补台账', type: 'todo' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '按依赖顺序，先做这三件',
+    tasks: [],
+    list: { title: '今天先做', items: ['补台账', '不存在的活'] },
+  }))
+
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '我该先做哪几件' })
+  assert.equal(r.payload.ok, true)
+  assert.equal(r.payload.list.title, '今天先做')
+  assert.equal(r.payload.list.items.length, 2)
+  assert.equal(r.payload.list.items[0].ok, true)
+  assert.equal(r.payload.list.items[0].id, made.node.id)
+  assert.equal(r.payload.list.items[1].ok, false, 'AI 指错了要让人看见')
+  assert.equal(r.payload.list.items[1].id, null)
+})

@@ -361,6 +361,14 @@ const CSS = [
   '.dsh-wb-persona{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
   '.dsh-wb-atextarea{width:100%;font:var(--dsw-font-xxxs-11);line-height:1.7;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);resize:vertical;}',
   '.dsh-wb-atextarea:focus{border-color:var(--wb-accent);}',
+  // ── 执行清单（MLO 的 TODO 视图） ─────────────────────────────────────
+  '.dsh-wb-todoseq{flex:none;min-width:18px;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);text-align:right;}',
+  '.dsh-wb-act.star{color:var(--wb-fg-2);}',
+  '.dsh-wb-act.star.on{color:var(--wb-accent);font-weight:700;}',
+  '.dsh-wb-task.starred{background:var(--wb-accent-soft);}',
+  '.dsh-wb-ailist{display:flex;flex-direction:column;gap:var(--wb-sp-2);border:1px solid var(--wb-line);border-radius:var(--wb-r-3);padding:var(--wb-sp-3);}',
+  '.dsh-wb-formrow.miss{opacity:.55;}',
+  '.dsh-wb-customview{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
 ].join('')
 
 /**
@@ -388,7 +396,7 @@ const VIEW_KEY = 'dsh-workbench:view'
 function loadView() {
   try {
     const v = window.localStorage.getItem(VIEW_KEY)
-    return v === 'tree' || v === 'board' ? v : 'tree'
+    return v === 'tree' || v === 'todo' || v === 'board' ? v : 'tree'
   } catch (e) { return 'tree' }
 }
 function saveView(v) {
@@ -424,6 +432,8 @@ function createStore() {
     filter: 'all',
     // 交互态：一次只展开一个。moving = 正在归位的待办 id，adding = 正在加子项的父节点 id。
     moving: null, adding: null,
+    // 当前激活的自定义视图名（AI 清单存下来的）。null = 没在看自定义视图。
+    custom: null,
   }
   const get = () => state
   const set = (patch) => {
@@ -512,6 +522,8 @@ function apply(ctx) {
     const [formFileKind, setFormFileKind] = React.useState('file')
     const [formFileRef, setFormFileRef] = React.useState('')
     const [formParent, setFormParent] = React.useState('')
+    // 依赖添加行的选中值（同上：绑定详情页，不与树上的 moving/adding 混用）。
+    const [formDepPick, setFormDepPick] = React.useState('')
     // AI 草稿队列：「全部采纳」时不直接落库，而是逐条填进表单让人过一遍。
     const [aiQueue, setAiQueue] = React.useState([])
     // 单击「切换完成」与双击「改名」抢的是同一个元素，单击因此必须延后执行。
@@ -615,6 +627,8 @@ function apply(ctx) {
     const [aiBusy, setAiBusy] = React.useState(false)
     const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿，逐条采纳
     const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
+    // AI 动态生成的清单卡（「明天在家能做的」）。它不是数据——是一个**视图建议**。
+    const [aiList, setAiList] = React.useState(null)
     const [aiPersona, setAiPersona] = React.useState('')
     const [aiPersonaOpen, setAiPersonaOpen] = React.useState(false)
     const [aiPersonaDraft, setAiPersonaDraft] = React.useState('')
@@ -673,6 +687,7 @@ function apply(ctx) {
           setAiPics([])
           const reply = typeof r.reply === 'string' ? r.reply : ''
           const list = Array.isArray(r.tasks) ? r.tasks : []
+          setAiList(r.list !== null && r.list !== undefined && typeof r.list === 'object' ? r.list : null)
           // 先把这一轮记进会话：回答与草稿都留在屏幕上，随手可回看。
           setAiTurns((prev) => prev.concat(
             [{ role: 'user', text: ask }],
@@ -694,7 +709,21 @@ function apply(ctx) {
     }
 
     /** 清空这次会话（不写盘——它本来就只在内存里）。 */
-    const aiClear = () => { setAiTurns([]); setAiTasks([]) }
+    const aiClear = () => { setAiTurns([]); setAiTasks([]); setAiList(null) }
+
+    /** 把 AI 清单存成自定义视图（localStorage，与折叠 / 视图偏好同类：本机偏好）。 */
+    const saveAiView = () => {
+      if (aiList === null || aiList === undefined) return
+      const ids = (Array.isArray(aiList.items) ? aiList.items : [])
+        .filter((x) => x !== null && typeof x === 'object' && x.ok === true && x.id !== null)
+        .map((x) => String(x.id))
+      if (ids.length === 0) { flash('清单里没有能对上的任务，存不了'); return }
+      const name = (typeof aiList.title === 'string' && aiList.title.trim() !== '')
+        ? aiList.title.trim() : ('AI 清单 ' + new Date().toISOString().slice(5, 10))
+      saveViews(loadViews().filter((v) => v.name !== name).concat([{ name, ids }]))
+      store.set({ custom: name })
+      flash('已存为视图「' + name + '」，在筛选条上点它随时回看')
+    }
 
     /**
      * 点草稿卡上的一个选项：把它的 patch 并进草稿，再打开新建表单。
@@ -927,6 +956,31 @@ function apply(ctx) {
           ))))
       }
 
+      // AI 动态生成的清单卡：「明天在家能做的」「先做哪三件」。可一键存为视图。
+      if (aiList !== null && aiList !== undefined) {
+        rows.push(h('div', { className: 'dsh-wb-ailist', key: 'ailist' },
+          h('div', { className: 'dsh-wb-aihead', key: 'h' },
+            h('span', null, '📋 ' + (aiList.title === '' ? 'AI 清单' : aiList.title)),
+            h('button', {
+              className: 'dsh-wb-aibtn',
+              title: '存成自定义视图（出现在筛选条上，随时回看）',
+              onClick: saveAiView,
+            }, '存为视图'),
+          ),
+          h('div', { className: 'dsh-wb-formlist', key: 'items' },
+            (Array.isArray(aiList.items) ? aiList.items : []).map((it, i) => {
+              const n = it.ok === true && it.id !== null ? nodeById(it.id) : null
+              return h('div', { className: 'dsh-wb-formrow' + (it.ok === true ? '' : ' miss'), key: 'i' + i },
+                h('span', { className: 'dsh-wb-fmeta' }, String(i + 1)),
+                h('span', { className: 'dsh-wb-fref' }, String(it.title) + (it.ok === true ? '' : '（没对上任务）')),
+                n !== null
+                  ? h('button', { className: 'dsh-wb-fbtn', title: '打开这条任务', onClick: () => openEdit(n) }, '✎')
+                  : null,
+              )
+            })),
+        ))
+      }
+
       if (aiTasks.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aipics', key: 'all' },
           h('span', null, '待确认 ' + aiTasks.length + ' 条，逐条挑去处，或'),
@@ -1144,6 +1198,7 @@ function apply(ctx) {
       setEditing(null)                 // 关掉就地改名，两个编辑器不能同时开着
       setFormEvRef('')
       setFormFileRef('')
+      setFormDepPick('')
       setFormParent('')
       setForm({ mode: 'edit', id: node.id, draft: formDraftOf(node) })
     }
@@ -1228,6 +1283,15 @@ function apply(ctx) {
 
     const plan = state.plan
     const sum = summarize(plan)
+
+    // ============================================================ 依赖 / 星标 / 重复（即时写）
+    //
+    // 三个都是「列表式」改动，与证据 / 关联一样**即时生效**，不等「保存」——
+    // 攒到保存按钮里反而要算 diff，而这三样天生一次一条。
+    const setStarOn = (node, on) => write('node-set', { node: node.id, star: on === true })
+    const setRecurOn = (node, kind) => write('node-set', { node: node.id, recur: kind })
+    const addDepOn = (node, otherId) => write('node-set', { node: node.id, blockedAdd: otherId }, () => flash('已加依赖'))
+    const removeDepOn = (node, otherId) => write('node-set', { node: node.id, blockedRemove: otherId }, () => flash('已移除依赖'))
     const inbox = inboxOf(plan)
     const roots = planNodes(plan)
     const isTopLevel = (id) => roots.some((n) => n.id === id)
@@ -1650,6 +1714,16 @@ function apply(ctx) {
         evidChip(node),
         priBadge(node),
         dueSpan(node),
+        Array.isArray(node.blocked) && node.blocked.length > 0
+          ? h('span', {
+            className: 'dsh-wb-taskdue',
+            title: '被挡住：等 ' + node.blocked.join('、'),
+          }, '🔒') : null,
+        h('button', {
+          className: 'dsh-wb-act star' + (node.starred === true ? ' on' : ''),
+          title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
+          onClick: (e) => { e.stopPropagation(); setStarOn(node, node.starred !== true) },
+        }, '★'),
         h('button', {
           className: 'dsh-wb-act',
           title: '编辑全部信息（负责人 / 截止 / 备注 / 证据 …）',
@@ -1823,6 +1897,67 @@ function apply(ctx) {
           onClick: () => openEdit(node),
         }, '✎'),
       )
+    }
+
+    /**
+     * 执行清单（MLO 的 TODO 视图）。
+     *
+     * 回答的问题只有一个：「**下一个动作是什么**」。树和看板展示结构，
+     * 这里把结构抹平：跨所有分支把「现在能做的」排成一张清单
+     * （星标 > 重要度 > 逾期/本周 > 截止），被依赖挡住的单独折叠在下面——
+     * 它们不是没做，是做不了，混在一起会让人误以为拖延了。
+     */
+    const renderTodoList = () => {
+      const { open, blocked } = todoList(plan, todayStr())
+      const rows = []
+      if (open.length === 0 && blocked.length === 0) {
+        rows.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
+          h('div', null, '没有待办。在顶部跟 AI 说一句，或直接记一条。')))
+        return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
+      }
+      const row = (x, i) => {
+        const node = x.node
+        return h('div', { className: 'dsh-wb-task' + (x.starred ? ' starred' : ''), key: node.id },
+          h('span', { className: 'dsh-wb-todoseq' }, String(i + 1)),
+          h('input', {
+            type: 'checkbox',
+            checked: node.status === 'doing',
+            title: node.status === 'doing' ? '进行中（点框标成完成）' : '点框直接标完成',
+            onChange: () => setTodo(node.id, node.status === 'doing' ? 'done' : 'doing'),
+          }),
+          titleNode(node, 'dsh-wb-tasktitle', { canToggle: true }),
+          h('span', { className: 'dsh-wb-path' }, x.path),
+          delegChip(node),
+          warnBadge(node),
+          priBadge(node),
+          dueSpan(node),
+          h('button', {
+            className: 'dsh-wb-act star' + (x.starred ? ' on' : ''),
+            title: x.starred ? '取消星标' : '星标：接下来做（清单置顶）',
+            onClick: () => setStarOn(node, x.starred !== true),
+          }, '★'),
+          h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(node) }, '✎'),
+        )
+      }
+      rows.push(h('div', { className: 'dsh-wb-aihead', key: 'oh' },
+        h('span', null, '现在能做（' + open.length + '）'),
+        h('span', { className: 'dsh-wb-formnote' }, '星标 > 重要度 > 逾期/本周 > 截止'),
+      ))
+      rows.push(h('div', { className: 'dsh-wb-formlist', key: 'open' }, open.map((x, i) => row(x, i))))
+      if (blocked.length > 0) {
+        rows.push(h('div', { className: 'dsh-wb-aihead', key: 'bh' },
+          h('span', null, '🔒 被挡住的（' + blocked.length + '）'),
+          h('span', { className: 'dsh-wb-formnote' }, '它们等的前置还没做完'),
+        ))
+        rows.push(h('div', { className: 'dsh-wb-formlist', key: 'blocked' }, blocked.map((x, i) =>
+          h('div', { className: 'dsh-wb-task', key: x.node.id },
+            h('span', { className: 'dsh-wb-todoseq' }, '🔒'),
+            titleNode(x.node, 'dsh-wb-tasktitle', { canToggle: false }),
+            h('span', { className: 'dsh-wb-path' }, '等 ' + x.blockers.join('、')),
+            h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(x.node) }, '✎'),
+          ))))
+      }
+      return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
     }
 
     /** 一整块看板（横向铺开的列）。无内容时给一个空状态，而不是白屏。 */
@@ -2084,6 +2219,53 @@ function apply(ctx) {
             ? h('div', { className: 'dsh-wb-formnote' }, '还没配置 vault 路径，链接不会可点。')
             : null))
 
+        // 依赖：这条要等哪些任务做完才能做（MLO 的 blockedBy，单向阻塞）。
+        const deps = Array.isArray(node.blockedBy) ? node.blockedBy : []
+        const depNodes = deps.map((id) => nodeById(id)).filter((n) => n !== null)
+        const depChoices = flattenNodes(plan).filter((it) => it.type === 'todo'
+          && String(it.node.id) !== String(node.id)
+          && !deps.includes(String(it.node.id)))
+        body.push(h('div', { className: 'dsh-wb-field', key: 'deps' },
+          h('span', { className: 'dsh-wb-label' }, '依赖（这些做完才能做这条）'),
+          depNodes.length > 0
+            ? h('div', { className: 'dsh-wb-formlist' }, depNodes.map((d) => h('div', { className: 'dsh-wb-formrow', key: d.id },
+              h('span', { className: 'dsh-wb-fmeta' }, d.status === 'done' ? '✓ 已完成' : '⏳ 未完成'),
+              h('span', { className: 'dsh-wb-fref' }, String(d.title)),
+              h('button', { className: 'dsh-wb-fbtn', title: '移除依赖', onClick: () => removeDepOn(node, d.id) }, '×'),
+            )))
+            : null,
+          h('div', { className: 'dsh-wb-fadd' },
+            h('select', {
+              value: formDepPick,
+              onChange: (e) => setFormDepPick(e.target.value),
+            },
+              h('option', { value: '' }, '要等哪条任务…'),
+              depChoices.map((it) => h('option', { key: String(it.node.id), value: String(it.node.id) }, '　'.repeat(it.depth) + String(it.node.title)))),
+            h('button', {
+              disabled: formDepPick === '',
+              onClick: () => { addDepOn(node, formDepPick); setFormDepPick('') },
+            }, '添加'),
+          )))
+
+        // 重复 + 星标：都即时写（列表式改动不等保存，与证据 / 关联一致）。
+        body.push(h('div', { className: 'dsh-wb-grid2', key: 'flags' },
+          h('div', { className: 'dsh-wb-field', key: 'recur' },
+            h('span', { className: 'dsh-wb-label' }, '重复（完成时自动生成下一条并顺推截止）'),
+            h('div', { className: 'dsh-wb-seg' },
+              [['', '不重复'], ['week', '每周'], ['month', '每月']].map(([k, label]) => h('button', {
+                key: k,
+                className: ((node.recur !== null && node.recur !== undefined && node.recur.kind) || '') === k ? 'on' : '',
+                onClick: () => setRecurOn(node, k === '' ? 'none' : k),
+              }, label)))),
+          h('div', { className: 'dsh-wb-field', key: 'star' },
+            h('span', { className: 'dsh-wb-label' }, '标记'),
+            h('div', { className: 'dsh-wb-seg' },
+              h('button', {
+                className: node.starred === true ? 'on' : '',
+                title: '星标：执行清单里置顶',
+                onClick: () => setStarOn(node, node.starred !== true),
+              }, '★ 我正在做 / 接下来做')))))
+
       }
 
       const rows = []
@@ -2150,6 +2332,11 @@ function apply(ctx) {
             onClick: () => setViewPersist('tree'),
           }, '树'),
           h('button', {
+            className: 'dsh-wb-vbtn' + (view === 'todo' ? ' on' : ''),
+            title: '执行：跨所有分支把「现在能做的」汇成一张清单（被挡住的单独折叠）',
+            onClick: () => setViewPersist('todo'),
+          }, '执行'),
+          h('button', {
             className: 'dsh-wb-vbtn' + (view === 'board' ? ' on' : ''),
             title: '看板：每个计划占一列，待办摊成卡片',
             onClick: () => setViewPersist('board'),
@@ -2202,11 +2389,60 @@ function apply(ctx) {
     }
     if (sum.hasPlan) rows.push(h('div', { className: 'dsh-wb-filters', key: 'filters' }, chips))
 
+    // 自定义视图（AI 清单存下来的）：和筛选芯片同一行语义——点了切换「看什么」。
+    const savedViews = loadViews()
+    if (savedViews.length > 0) {
+      rows.push(h('div', { className: 'dsh-wb-filters', key: 'views' },
+        savedViews.map((v) => h('button', {
+          key: v.name,
+          className: 'dsh-wb-chip' + (state.custom === v.name ? ' on' : ''),
+          title: '自定义视图：' + v.name + '（点击开关）',
+          onClick: () => store.set({ custom: state.custom === v.name ? null : v.name }),
+        }, '📋 ' + v.name))))
+    }
+
     if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
     if (state.error !== null && state.error !== undefined) {
       rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
     }
     const body = []
+
+    // 执行清单（MLO 的 TODO 视图）：一眼看到下一个动作是什么。
+    if (view === 'todo') {
+      body.push(renderTodoList())
+    }
+
+    // 自定义视图（AI 清单存下来的）：按保存时的顺序列出，做完的自动消失。
+    if (state.custom !== null && state.custom !== undefined && state.custom !== '') {
+      const v = loadViews().find((x) => x.name === state.custom)
+      if (v === undefined) {
+        // 视图定义被删了：**不要在渲染里 store.set**（渲染期副作用会级联重渲），
+        // 画一句空状态，让下一次交互自然把 custom 清掉。
+        body.push(h('div', { className: 'dsh-wb-empty', key: 'cv-gone' }, '这个视图不存在了。'))
+      } else {
+        const items = viewItems(plan, v.ids)
+        body.push(h('div', { className: 'dsh-wb-customview', key: 'cv' },
+          h('div', { className: 'dsh-wb-aihead' },
+            h('span', null, '📋 ' + v.name + '（' + items.length + '）'),
+            h('button', {
+              className: 'dsh-wb-aibtn',
+              title: '删除这个视图（只删本机的视图定义，不动任务）',
+              onClick: () => {
+                saveViews(loadViews().filter((x) => x.name !== v.name))
+                store.set({ custom: null })
+              },
+            }, '删除视图'),
+          ),
+          items.length === 0
+            ? h('div', { className: 'dsh-wb-empty' }, '清单里的任务都做完（或被删）了。')
+            : h('div', { className: 'dsh-wb-formlist' }, items.map((n, i) => h('div', { className: 'dsh-wb-formrow', key: n.id },
+              h('span', { className: 'dsh-wb-fmeta' }, String(i + 1)),
+              titleNode(n, 'dsh-wb-tasktitle', { canToggle: true, draggable: false }),
+              h('button', { className: 'dsh-wb-fbtn', title: '打开详情', onClick: () => openEdit(n) }, '✎'),
+            ))),
+        ))
+      }
+    }
 
     if (view === 'board') {
       rows.push(renderBoard())
