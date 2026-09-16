@@ -1245,6 +1245,88 @@ export function spawnRecurring(plan, node, today = todayStr()) {
   return clone
 }
 
+// ============================================================ 完成语义一体化
+
+/**
+ * 找一个节点的父节点（同一棵内存树里用对象同一性比对，稳定且零开销）。
+ * 拿不到返回 null——顶层节点的父就是 null。
+ */
+export function parentOf(plan, node) {
+  for (const hit of collectNodes(plan, 'any')) {
+    if (hit.node === node) return hit.parent ?? null
+  }
+  return null
+}
+
+/** 子节点是否全部完成（没有子节点的返回 false——它的完成不归这里管）。 */
+function allChildrenDone(node) {
+  const kids = childrenOf(node)
+  if (kids.length === 0) return false
+  return kids.every((c) => c.status === 'done')
+}
+
+/**
+ * **完成向上级联**：一个节点标成 done 后，它的父（若也是「等待完成」的计划）
+ * 在所有子项都完成时自动完成，并且**一层层向上**——最深的叶子完成，
+ * 可能一路把整条链都点亮。
+ *
+ * 只动 `active` 的计划：dropped（已放弃）的父不该被顺手复活；
+ * 已经 done 的父无需再动。返回**被自动完成的节点**（调用方据此记版本原因）。
+ */
+export function autoCompleteAncestors(plan, node, today = todayStr()) {
+  const changed = []
+  let cur = node
+  for (;;) {
+    const parent = parentOf(plan, cur)
+    if (parent === null) break
+    if (typeOf(parent) === 'plan' && parent.status === 'active' && allChildrenDone(parent)) {
+      setStatus(parent, 'done')
+      changed.push(parent)
+      cur = parent
+    } else break
+  }
+  return changed
+}
+
+/**
+ * **撤回向上重开**：一个 done 的节点被撤回（变回 todo / doing，或改成 dropped）
+ * 时，它那条「自动完成」的父链要重新打开——否则父显示已完成、进度却不满，
+ * 两个真相源当场打架。
+ *
+ * done 的非叶计划只可能来自自动完成（有未完成子项的手动完成会被写入入口拦下），
+ * 所以这里可以放心把它改回 active。
+ */
+export function reopenAncestors(plan, node, today = todayStr()) {
+  const changed = []
+  let cur = node
+  for (;;) {
+    const parent = parentOf(plan, cur)
+    if (parent === null) break
+    if (typeOf(parent) === 'plan' && parent.status === 'done') {
+      setStatus(parent, 'active')
+      changed.push(parent)
+      cur = parent
+    } else break
+  }
+  return changed
+}
+
+/**
+ * 有未完成子项的计划**不能手动完成**——它的完成是子项派生出来的，
+ * 手动写 done 只会造出「父已完成、子还开着」的矛盾状态。
+ * 面板的勾选框、详情页的状态段、agent 的写入入口都靠它拦（提示语告诉
+ * 正确做法：做完子项，它自己会完成）。
+ */
+export function assertManualDoneAllowed(node) {
+  if (node === null || node === undefined || typeof node !== 'object') return
+  if (typeOf(node) !== 'plan') return
+  const open = childrenOf(node).filter((c) => c.status !== 'done' && c.status !== 'dropped')
+  if (open.length > 0) {
+    throw new Error('「' + String(node.title) + '」下面还有 ' + open.length
+      + ' 个未完成的子项，不能直接完成——做完它们，它会自动完成')
+  }
+}
+
 // ============================================================ 归位建议
 
 /**

@@ -163,6 +163,16 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 后者尤其重要：不归一留下的是「对该类型非法的状态」，而它不会报错，只会让进度、
 筛选、角标**静默错值**。
 
+**完成语义一体化（用户原话：「计划和待办应该是一体的」）**：无论计划还是待办，
+**叶子**（下面没有子项）都是一件能做完的事——面板给勾选框（计划走 `/node-set`
+的 status，待办走 `/todo-set`），agent 走同一条写入。**有子项的节点不能手动
+完成**：它的完成是子项派生出来的，`assertManualDoneAllowed` 在四个写入入口拦
+（面板勾选框根本不出现、详情页禁用按钮、agent 收到可读报错）。子项全部完成时
+`autoCompleteAncestors` **级联自动完成**父链（记 doneAt、reason 标 `auto-done`）；
+撤回子项时 `reopenAncestors` 把自动完成的父链重新打开（清 doneAt）——否则
+「父已完成、子还开着」是两个真相源打架。dropped 的父不被顺手复活：放弃的分支
+不参与级联。手动标 `dropped`（放弃整个分支）不受影响。
+
 **写入路径唯一**：面板（HTTP 面）与 agent 工具都调用 `store.js` 的同一组函数
 （`applyFields` / `setStatus` / `setNodeType` / `setPriority` / `setDelegate` /
 `setReceipt` / `addEvidence`），谁都不另写一套；每一次写入都自动归档版本，
