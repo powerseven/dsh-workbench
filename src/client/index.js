@@ -343,6 +343,24 @@ const CSS = [
   '.dsh-wb-formrow:hover{background:var(--wb-hover);}',
   '.dsh-wb-formrow .dsh-wb-fref{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-formrow .dsh-wb-fmeta{flex:none;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);}',
+  // ── AI 助手（第一入口） ──────────────────────────────────────────────
+  // 常驻一行：它是「记」与「问」的共同入口，不该藏在按钮后面。
+  '.dsh-wb-aiwrap{display:flex;flex-direction:column;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
+  '.dsh-wb-aibar{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  '.dsh-wb-aiinput{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-aiinput:focus{border-color:var(--wb-accent);}',
+  '.dsh-wb-aiinput::placeholder{color:var(--wb-fg-2);}',
+  '.dsh-wb-quick{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
+  // 对话：自己的话靠右、助手的靠左，靠**位置**而不是颜色区分（颜色要留给语义色）。
+  '.dsh-wb-chat{display:flex;flex-direction:column;gap:var(--wb-sp-2);max-height:180px;overflow-y:auto;}',
+  '.dsh-wb-msg{font:var(--dsw-font-xxs-12);line-height:1.6;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-3);max-width:88%;white-space:pre-wrap;}',
+  '.dsh-wb-msg.me{align-self:flex-end;background:var(--wb-accent-soft);}',
+  '.dsh-wb-msg.ai{align-self:flex-start;border:1px solid var(--wb-line);}',
+  '.dsh-wb-advice{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
+  '.dsh-wb-aihist{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
+  '.dsh-wb-persona{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
+  '.dsh-wb-atextarea{width:100%;font:var(--dsw-font-xxxs-11);line-height:1.7;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);resize:vertical;}',
+  '.dsh-wb-atextarea:focus{border-color:var(--wb-accent);}',
 ].join('')
 
 /**
@@ -389,7 +407,14 @@ function injectStyles(css) {
  * `n`/`g`/`k`/`t` 前缀加数字组成，`__root__` 不可能撞上——用一个不可能
  * 撞上的字符串，比再加一份 `addingRoot: true` 状态要少一个可能不同步的字段。
  */
+/** 不可能撞上真实节点 id 的哨兵值（节点 id 是 n/g/k/t 前缀加数字）。 */
 const ROOT_ADD = '__root__'
+
+/**
+ * AI 助手的快捷问法。它们同时承担两件事：① 最短的使用路径（不用想怎么问）；
+ * ② 告诉用户这个助手**能回答什么**——「AI 能干什么」不演示一遍是看不出来的。
+ */
+const QUICK_ASKS = ['我今天该做什么', '哪些逾期了', '总结一下进展', '哪个方向没动']
 
 /** 极简可订阅 store：只在 set 时替换整个 state 对象，getSnapshot 引用稳定。 */
 function createStore() {
@@ -574,19 +599,38 @@ function apply(ctx) {
       }, listening ? '■' : '🎤')
     }
 
-    // ============================================================== AI 入口
+    // ============================================================== AI 助手
     //
-    // 只做三件事：① 收集素材（说话 / 打字 / 选图）→ ② 交给 host 解析成结构化待办
-    // → ③ 让用户挑去处，点了才写。**解析不写入**，所以中途改主意没有任何副作用，
-    // 也不用给「撤销一次 AI 导入」再想一套机制。
+    // 它是**第一入口**：面板最上面那一行，既能问（「哪些逾期了」「这个计划有哪些资料」），
+    // 也能记（说一件事 → 拆成草稿 → 人确认才落库）。问答与录入是同一次调用的
+    // 两种产出，模型回 `{ reply, tasks }`，面板两种都渲染。
     //
-    // 语音沿用上面的 Web Speech（只把识别结果写进这个文本域），图片走 file input
-    // 读成 base64；两者最终都是发给 /ai-parse 的普通字段，host 那边再决定怎么问模型。
+    // 三件不改的事：
+    //   ① **解析不写入**——中途改主意没有任何副作用，也就不需要「撤销 AI 导入」；
+    //   ② **草稿先进表单**——AI 给的是草稿不是决定；
+    //   ③ **对话只活在这次会话**——它是「接着聊」用的，不是档案（不进 plan.json）。
     const [aiOpen, setAiOpen] = React.useState(false)
     const [aiText, setAiText] = React.useState('')
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
     const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿，逐条采纳
+    const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
+    const [aiPersona, setAiPersona] = React.useState('')
+    const [aiPersonaOpen, setAiPersonaOpen] = React.useState(false)
+    const [aiPersonaDraft, setAiPersonaDraft] = React.useState('')
+    const [aiDefault, setAiDefault] = React.useState('')
+
+    /** 首次打开 AI 区时拉一次人设（plan/agents.md 不存在时 host 给默认人设）。 */
+    const loadPersona = React.useCallback(() => {
+      return api('persona', { sessionId })
+        .then((r) => {
+          setAiPersona(typeof r.text === 'string' ? r.text : '')
+          setAiPersonaDraft(typeof r.text === 'string' ? r.text : '')
+          setAiDefault(typeof r.default === 'string' ? r.default : '')
+          return r
+        })
+        .catch((e) => { store.set({ error: e instanceof Error ? e.message : String(e) }); return null })
+    }, [sessionId])
 
     /** 选图：读成 base64 存进本地状态，超上限的直接丢掉并说明丢了几张。 */
     const addPics = async (fileList) => {
@@ -611,30 +655,79 @@ function apply(ctx) {
       if (dropped > 0) flash('一次最多 ' + AI_MAX_IMAGES + ' 张图片，多的 ' + dropped + ' 张没带上')
     }
 
-    const runAi = () => {
-      if (aiText.trim() === '' && aiPics.length === 0) {
-        flash('说点什么、贴一段文字，或选一张图片')
+    /**
+     * 问一句 / 记一件事：都走 /ai-parse。
+     * 带上会话内的前几轮，模型才接得住「那它的截止呢」这类追问。
+     */
+    const runAi = (preset) => {
+      const ask = (typeof preset === 'string' ? preset : aiText).trim()
+      if (ask === '' && aiPics.length === 0) {
+        flash('问一句，或说点什么、贴一段文字、选一张图片')
         return
       }
       setAiBusy(true)
-      api('ai-parse', { sessionId, text: aiText.trim(), images: aiPics })
+      setAiText('')
+      api('ai-parse', { sessionId, text: ask, images: aiPics, history: aiTurns })
         .then((r) => {
           setAiBusy(false)
+          setAiPics([])
+          const reply = typeof r.reply === 'string' ? r.reply : ''
           const list = Array.isArray(r.tasks) ? r.tasks : []
-          // newTitle 单独存一份：候选里的那个只是**默认值**，用户要能改。
-          setAiTasks(list.map((t, i) => {
+          // 先把这一轮记进会话：回答与草稿都留在屏幕上，随手可回看。
+          setAiTurns((prev) => prev.concat(
+            [{ role: 'user', text: ask }],
+            reply === '' ? [] : [{ role: 'assistant', text: reply }],
+          ))
+          setAiTasks((prev) => prev.concat(list.map((t, i) => {
             const fresh = (Array.isArray(t.candidates) ? t.candidates : []).find((c) => c.kind === 'new')
             return Object.assign({}, t, {
-              key: 'ai' + i,
+              key: 'ai' + Date.now() + '-' + i,
               newTitle: fresh !== undefined && typeof fresh.title === 'string' ? fresh.title : '',
             })
-          }))
-          if (list.length === 0) flash('没解析出待办，换个说法试试')
+          })))
+          if (reply === '' && list.length === 0) flash('没解析出待办，换个说法试试')
         })
         .catch((e) => {
           setAiBusy(false)
           store.set({ error: e instanceof Error ? e.message : String(e) })
         })
+    }
+
+    /** 清空这次会话（不写盘——它本来就只在内存里）。 */
+    const aiClear = () => { setAiTurns([]); setAiTasks([]) }
+
+    /**
+     * 点草稿卡上的一个选项：把它的 patch 并进草稿，再打开新建表单。
+     * 选项**不直接建**——与「AI 草稿先进表单」是同一条纪律，只是预填得更多一点。
+     */
+    const aiApplyOption = (task, option) => {
+      const draft = aiDraftOf(task, '')
+      const patch = option !== null && option !== undefined && typeof option.patch === 'object'
+        ? option.patch : {}
+      if (typeof patch.due === 'string' && patch.due !== '') draft.due = patch.due
+      if (typeof patch.priority === 'string' && patch.priority !== '') draft.priority = patch.priority
+      if (typeof patch.note === 'string' && patch.note !== '') draft.note = patch.note
+      if (typeof patch.plan === 'string' && patch.plan !== '') {
+        // 选项给的也是**计划名**，不给 id——与模型点名的 plan 同一条纪律。
+        const hit = planByName(plan, patch.plan)
+        if (hit !== null) draft.parent = String(hit.id)
+        else flash('没找到叫「' + patch.plan + '」的计划，位置请在表单里选')
+      }
+      setAiTasks((prev) => prev.filter((t) => t.key !== task.key))
+      setAiQueue([])
+      openDraft(draft)
+      flash('已按「' + String(option.label) + '」填好，改完点保存')
+    }
+
+    /** 保存人设（整篇改写）。 */
+    const savePersona = () => {
+      api('persona-set', { sessionId, text: aiPersonaDraft })
+        .then((r) => {
+          setAiPersona(typeof r.text === 'string' ? r.text : '')
+          setAiPersonaOpen(false)
+          flash('人设已保存，下次提问就生效')
+        })
+        .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
     }
 
     /**
@@ -700,131 +793,229 @@ function apply(ctx) {
       setAiTasks((prev) => prev.map((t) => (t.key === key ? Object.assign({}, t, { newTitle: value }) : t)))
     }
 
-    /** AI 块。只在宿主真有模型服务时才渲染入口——点不亮的按钮不如不给。 */
+    /** 选图按钮。三个入口共用同一份上限与提示逻辑。 */
+    const picButton = (key) => h('label', {
+      key,
+      className: 'dsh-wb-aibtn',
+      title: '选一张截图（白板 / 清单 / 聊天记录）',
+    },
+      '🖼',
+      h('input', {
+        type: 'file',
+        accept: 'image/png,image/jpeg,image/webp,image/gif',
+        multiple: true,
+        style: { display: 'none' },
+        onChange: (e) => {
+          addPics(e.target.files)
+          // 清空 value：否则连着选同一个文件不会触发 change。
+          if (e.target !== null && e.target !== undefined) e.target.value = ''
+        },
+      }))
+
+    /**
+     * AI 助手：**第一入口**。
+     *
+     * 形态：面板最上面常驻一行输入（问一句 / 说件事 / 贴一张图都能进），
+     * 有内容时展开成这次会话的问答与草稿。宿主没有模型服务时**整块不渲染**——
+     * 给一个点不亮的输入框，不如不给。
+     */
     const aiBlock = () => {
       const ai = state.ai === null || state.ai === undefined ? { available: false } : state.ai
       if (ai.available !== true) return null
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
-      const head = h('div', { className: 'dsh-wb-aihead', key: 'ah' },
-        h('span', null, '✨ AI 导入'),
-        model === '' ? null : h('span', { className: 'dsh-wb-aimodel', title: '用这个模型解析' }, model),
+      const hasChat = aiTurns.length > 0 || aiTasks.length > 0
+      const open = aiOpen === true || hasChat || aiPersonaOpen === true
+
+      const rows = []
+      rows.push(h('div', { className: 'dsh-wb-aibar', key: 'bar' },
+        h('input', {
+          className: 'dsh-wb-aiinput',
+          placeholder: '问一句（「哪些逾期了」），或直接说要做什么…',
+          value: aiText,
+          onFocus: () => { setAiOpen(true); if (aiPersona === '') loadPersona() },
+          onChange: (e) => setAiText(e.target.value),
+          onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runAi() } },
+        }),
+        micButton(setAiText, 'mic'),
+        picButton('pic'),
+        h('button', {
+          className: 'dsh-wb-aibtn primary',
+          disabled: aiBusy === true,
+          onClick: () => runAi(),
+        }, aiBusy === true ? '思考中…' : '发送'),
         h('button', {
           className: 'dsh-wb-aibtn',
-          style: { marginLeft: 'auto' },
-          onClick: () => { setAiOpen(false); setAiText(''); setAiPics([]); setAiTasks([]) },
+          title: '助手的人设（性格与专业），可以自己改',
+          onClick: () => { setAiPersonaOpen(aiPersonaOpen !== true); if (aiPersona === '') loadPersona() },
+        }, '人设'),
+      ))
+
+      if (open !== true) return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
+
+      // 快捷问法：把「助手能干什么」直接摆在眼前。它同时是最短的那条学习路径。
+      rows.push(h('div', { className: 'dsh-wb-quick', key: 'quick' },
+        QUICK_ASKS.map((q) => h('button', {
+          key: q,
+          className: 'dsh-wb-chip',
+          title: '问一句：' + q,
+          disabled: aiBusy === true,
+          onClick: () => { setAiOpen(true); runAi(q) },
+        }, q)),
+        h('span', { className: 'dsh-wb-aimodel', key: 'm' }, model),
+        h('button', {
+          key: 'clear',
+          className: 'dsh-wb-aibtn',
+          title: '清空这次会话（不写盘，它本来只在内存里）',
+          onClick: aiClear,
+        }, '清空'),
+        h('button', {
+          key: 'fold',
+          className: 'dsh-wb-aibtn',
+          onClick: () => { setAiOpen(false); setAiPersonaOpen(false) },
         }, '收起'),
-      )
-      if (aiOpen !== true) {
-        return h('div', { className: 'dsh-wb-ai', key: 'ai' },
-          head,
-          h('button', {
-            className: 'dsh-wb-aibtn primary',
-            onClick: () => setAiOpen(true),
-            title: '把一段口述或一张截图变成待办，并建议该放到哪个计划下',
-          }, '语音 / 图片转任务'),
-        )
-      }
-      const pics = aiPics.length === 0 ? null : h('div', { className: 'dsh-wb-aipics', key: 'pics' },
-        aiPics.map((p, i) => h('span', { className: 'dsh-wb-aipic', key: 'p' + i },
-          '🖼 ' + p.name,
-          h('button', {
-            title: '去掉这张',
-            onClick: () => setAiPics(aiPics.filter((_, j) => j !== i)),
-          }, '×'),
-        )),
-      )
-      const composer = h('div', { className: 'dsh-wb-ai', key: 'ai' },
-        head,
-        h('div', { className: 'dsh-wb-airow', key: 'row' },
+      ))
+
+      // 人设编辑器：性格与专业是**这个工作区**的事，所以放在工作区文件里改。
+      if (aiPersonaOpen === true) {
+        rows.push(h('div', { className: 'dsh-wb-persona', key: 'persona' },
+          h('div', { className: 'dsh-wb-aihead', key: 'h' },
+            h('span', null, '人设（存在工作区 plan/agents.md）'),
+          ),
           h('textarea', {
-            className: 'dsh-wb-aitext',
-            placeholder: '把口述内容、会议纪要粘在这里，或直接说话 / 选一张截图…',
-            value: aiText,
-            onChange: (e) => setAiText(e.target.value),
+            key: 'ta',
+            className: 'dsh-wb-atextarea',
+            rows: 12,
+            value: aiPersonaDraft,
+            onChange: (e) => setAiPersonaDraft(e.target.value),
           }),
-          micButton(setAiText, 'mic'),
-          h('label', { className: 'dsh-wb-aibtn', title: '选一张截图（白板 / 清单 / 聊天记录）' },
-            '🖼 图片',
-            h('input', {
-              type: 'file',
-              accept: 'image/png,image/jpeg,image/webp,image/gif',
-              multiple: true,
-              style: { display: 'none' },
-              onChange: (e) => {
-                addPics(e.target.files)
-                // 清空 value：否则连着选同一个文件不会触发 change。
-                if (e.target !== null && e.target !== undefined) e.target.value = ''
-              },
-            }),
+          h('div', { className: 'dsh-wb-airow', key: 'row' },
+            h('button', { className: 'dsh-wb-aibtn primary', onClick: savePersona }, '保存'),
+            h('button', {
+              className: 'dsh-wb-aibtn',
+              onClick: () => setAiPersonaDraft(aiPersona),
+            }, '还原'),
+            h('button', {
+              className: 'dsh-wb-aibtn',
+              title: '把「记住的事」清空，其余恢复默认',
+              onClick: () => setAiPersonaDraft(aiDefault === '' ? aiPersona : aiDefault),
+            }, '默认'),
+            h('button', { className: 'dsh-wb-aibtn', onClick: () => setAiPersonaOpen(false) }, '关闭'),
           ),
-          h('button', {
-            className: 'dsh-wb-aibtn primary',
-            disabled: aiBusy === true,
-            onClick: runAi,
-          }, aiBusy === true ? '解析中…' : '解析'),
-        ),
-        pics,
-        aiTasks.length === 0 ? null : h('div', { key: 'tasks' },
-          h('div', { className: 'dsh-wb-aipics', key: 'all' },
-            h('span', null, '解析出 ' + aiTasks.length + ' 条，逐条挑去处，或'),
-            h('button', { className: 'dsh-wb-aibtn', disabled: aiBusy === true, onClick: aiApplyAll },
-              '全部按首选建议加入'),
-          ),
-          aiTasks.map((task) => h('div', { className: 'dsh-wb-aitask', key: task.key },
-            h('div', { className: 'dsh-wb-aititle', key: 't' },
-              h('span', null, task.title),
-              typeof task.due === 'string' && task.due !== ''
-                ? h('span', { className: 'dsh-wb-aimeta', key: 'd' }, task.due) : null,
-              typeof task.priority === 'string' && task.priority !== ''
-                ? h('span', { className: 'dsh-wb-aimeta', key: 'p' }, priorityLabel(task.priority)) : null,
-              h('button', {
-                key: 'x',
-                className: 'dsh-wb-aibtn',
-                title: '丢弃这条',
-                onClick: () => setAiTasks((prev) => prev.filter((t) => t.key !== task.key)),
-              }, '×'),
-            ),
-            h('div', { className: 'dsh-wb-movepick', key: 'pick' },
-              h('span', { className: 'dsh-wb-movepicklabel' }, '归入：'),
-              (Array.isArray(task.candidates) ? task.candidates : []).map((c, i) => {
-                if (c.kind === 'plan') {
-                  return h('button', {
-                    key: 'c' + i,
-                    className: 'dsh-wb-chip' + (i === 0 ? ' sug' : ''),
-                    title: c.why,
-                    onClick: () => aiApply(task, c),
-                  }, (i === 0 ? '建议 ↳ ' : '↳ ') + c.title)
-                }
-                if (c.kind === 'inbox') {
-                  return h('button', {
-                    key: 'c' + i,
-                    className: 'dsh-wb-chip',
-                    title: c.why,
-                    onClick: () => aiApply(task, c),
-                  }, '收件箱')
-                }
-                // 新建计划：输入框 + 按钮一组。它跟其它候选**平级**，
-                // 所以放在同一行里，而不是另起一块表单。
-                return h('span', { key: 'c' + i, className: 'dsh-wb-aipic' },
-                  h('input', {
-                    className: 'dsh-wb-ainew',
-                    placeholder: '新建计划…',
-                    value: task.newTitle === undefined ? '' : task.newTitle,
-                    onChange: (e) => setNewTitle(task.key, e.target.value),
-                  }),
-                  h('button', {
-                    className: 'dsh-wb-chip',
-                    title: c.why,
-                    onClick: () => aiApply(task, { kind: 'new', title: task.newTitle }),
-                  }, '＋建计划'),
-                )
-              }),
-            ),
-          )),
-        ),
-      )
-      return composer
+        ))
+      }
+
+      // 这次会话的问答。助手的答复与「它读了哪些文件」都留在这里，
+      // 人可以随时回看刚才那句建议到底依据什么。
+      if (aiTurns.length > 0) {
+        rows.push(h('div', { className: 'dsh-wb-chat', key: 'chat' },
+          aiTurns.map((t, i) => h('div', {
+            key: 'm' + i,
+            className: 'dsh-wb-msg ' + (t.role === 'assistant' ? 'ai' : 'me'),
+          }, t.text)),
+          aiBusy === true ? h('div', { className: 'dsh-wb-msg ai', key: 'wait' }, '…') : null,
+        ))
+      }
+
+      if (aiPics.length > 0) {
+        rows.push(h('div', { className: 'dsh-wb-aipics', key: 'pics' },
+          aiPics.map((p, i) => h('span', { className: 'dsh-wb-aipic', key: 'p' + i },
+            '🖼 ' + p.name,
+            h('button', {
+              title: '去掉这张',
+              onClick: () => setAiPics(aiPics.filter((_, j) => j !== i)),
+            }, '×'),
+          ))))
+      }
+
+      if (aiTasks.length > 0) {
+        rows.push(h('div', { className: 'dsh-wb-aipics', key: 'all' },
+          h('span', null, '待确认 ' + aiTasks.length + ' 条，逐条挑去处，或'),
+          h('button', { className: 'dsh-wb-aibtn', disabled: aiBusy === true, onClick: aiApplyAll },
+            '全部按首选建议加入'),
+        ))
+        for (const task of aiTasks) rows.push(aiTaskCard(task))
+      }
+
+      return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
     }
+
+    /**
+     * 一张草稿卡：标题 + **专家意见** + 历史依据 + 选项 + 归位候选。
+     *
+     * 意见与选项来自模型，历史依据（`history`）来自 store 的 `historyHints`
+     * ——两者都给，是因为模型的意见是自然语言（说不清就别说），
+     * 而历史是算出来的（有几条、花了几天，可以核对）。
+     */
+    const aiTaskCard = (task) => h('div', { className: 'dsh-wb-aitask', key: task.key },
+      h('div', { className: 'dsh-wb-aititle', key: 't' },
+        h('span', null, task.title),
+        typeof task.due === 'string' && task.due !== ''
+          ? h('span', { className: 'dsh-wb-aimeta', key: 'd' }, task.due) : null,
+        typeof task.priority === 'string' && task.priority !== ''
+          ? h('span', { className: 'dsh-wb-aimeta', key: 'p' }, priorityLabel(task.priority)) : null,
+        h('button', {
+          key: 'x',
+          className: 'dsh-wb-aibtn',
+          title: '丢弃这条',
+          onClick: () => setAiTasks((prev) => prev.filter((t) => t.key !== task.key)),
+        }, '×'),
+      ),
+      typeof task.advice === 'string' && task.advice !== ''
+        ? h('div', { className: 'dsh-wb-advice', key: 'adv' }, '💡 ' + task.advice) : null,
+      Array.isArray(task.history) && task.history.length > 0
+        ? h('div', { className: 'dsh-wb-aihist', key: 'hist' },
+          task.history.map((x, i) => h('div', { key: 'h' + i },
+            '历史：' + x.title + '（' + (x.status === 'done' ? '已完成' : '已放弃')
+            + (x.days !== null && x.days !== undefined ? '，用了 ' + x.days + ' 天' : '')
+            + (x.evidence > 0 ? '，附 ' + x.evidence + ' 条证据' : '') + '）')))
+        : null,
+      Array.isArray(task.options) && task.options.length > 0
+        ? h('div', { className: 'dsh-wb-movepick', key: 'opts' },
+          h('span', { className: 'dsh-wb-movepicklabel' }, '可以这样：'),
+          task.options.map((o, i) => h('button', {
+            key: 'o' + i,
+            className: 'dsh-wb-chip' + (i === 0 ? ' sug' : ''),
+            title: o.why === '' ? '按这个来' : o.why,
+            onClick: () => aiApplyOption(task, o),
+          }, o.label)))
+        : null,
+      h('div', { className: 'dsh-wb-movepick', key: 'pick' },
+        h('span', { className: 'dsh-wb-movepicklabel' }, '归入：'),
+        (Array.isArray(task.candidates) ? task.candidates : []).map((c, i) => {
+          if (c.kind === 'plan') {
+            return h('button', {
+              key: 'c' + i,
+              className: 'dsh-wb-chip' + (i === 0 ? ' sug' : ''),
+              title: c.why,
+              onClick: () => aiApply(task, c),
+            }, (i === 0 ? '建议 ↳ ' : '↳ ') + c.title)
+          }
+          if (c.kind === 'inbox') {
+            return h('button', {
+              key: 'c' + i,
+              className: 'dsh-wb-chip',
+              title: c.why,
+              onClick: () => aiApply(task, c),
+            }, '收件箱')
+          }
+          // 新建计划：输入框 + 按钮一组。它跟其它候选**平级**，
+          // 所以放在同一行里，而不是另起一块表单。
+          return h('span', { key: 'c' + i, className: 'dsh-wb-aipic' },
+            h('input', {
+              className: 'dsh-wb-ainew',
+              placeholder: '新建计划…',
+              value: task.newTitle === undefined ? '' : task.newTitle,
+              onChange: (e) => setNewTitle(task.key, e.target.value),
+            }),
+            h('button', {
+              className: 'dsh-wb-chip',
+              title: c.why,
+              onClick: () => aiApply(task, { kind: 'new', title: task.newTitle }),
+            }, '＋建计划'),
+          )
+        }),
+      ),
+    )
 
     const refresh = React.useCallback(() => {
       if (sessionId === undefined || sessionId === null || sessionId === '') {
@@ -1985,6 +2176,13 @@ function apply(ctx) {
       h('div', { className: 'dsh-wb-bar-fill', style: { width: barWidth(sum.progress) } }),
     ))
 
+    // AI 助手是**第一入口**：放在筛选条之上——打开面板第一眼就该看见
+    // 「可以问、可以说」。宿主没有模型服务时整块不渲染（见 aiBlock）。
+    {
+      const block = aiBlock()
+      if (block !== null) rows.push(block)
+    }
+
     // 筛选条：只显示「有货」的筛选器，窄侧栏里不堆一排空按钮。
     const chips = [h('button', {
       key: 'all',
@@ -2008,13 +2206,6 @@ function apply(ctx) {
     if (state.error !== null && state.error !== undefined) {
       rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
     }
-    // AI 块插在**错误条之后、列表之前**：它是「往这个计划里加东西」的入口，
-    // 位置要在内容之上，但不能越过错误提示（那会把报错顶下去看不见）。
-    {
-      const block = aiBlock()
-      if (block !== null) rows.push(block)
-    }
-
     const body = []
 
     if (view === 'board') {

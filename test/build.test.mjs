@@ -57,7 +57,7 @@ test('client bundle 内联了纯逻辑函数（UI 直接引用闭包里的名字
     'function isDescendantOf(', 'function dropTarget(',
     'function filesList(', 'function fileLabel(', 'function obsidianLink(',
     'function statusListOf(', 'function formDraftOf(', 'function emptyDraft(',
-    'function formRequest(', 'function formErrors(',
+    'function formRequest(', 'function formErrors(', 'function planByName(',
   ]) {
     assert.ok(client.includes(fn), 'bundle 缺少内联函数 ' + fn)
   }

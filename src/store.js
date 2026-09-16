@@ -1101,6 +1101,59 @@ function overlap(a, b) {
   return n
 }
 
+/** 两个 ISO 时间戳之间隔了几天；缺一头就返回 null（不知道就别说 0 天）。 */
+function isoDays(from, to) {
+  const a = opt(from)
+  const b = opt(to)
+  if (a === undefined || b === undefined) return null
+  const ms = new Date(b).getTime() - new Date(a).getTime()
+  if (!Number.isFinite(ms)) return null
+  return Math.max(0, Math.round(ms / 86400000))
+}
+
+/**
+ * 历史上做过的**相似的事**（已完成 / 已放弃），按相似度降序。
+ *
+ * 「新增一条任务时，历史上类似的活是怎么做的」——AI 给专业意见、面板给提醒，
+ * 都靠这一份：它把「以前那条拖了多久、有没有证据、最后是不是放弃了」摆出来，
+ * 让人在接新活的时候就知道代价。
+ *
+ * 相似度复用 `bigrams`（与归位建议同一套字面信号）：不引入模型、不引入词典，
+ * 高频小动作等不起一次模型调用，而且结果要能解释（why 里写明重合几处）。
+ *
+ * 只认 `done` / `dropped`：正在做的事已经在树上了，不算「历史」。
+ */
+export function historyHints(plan, title, limit = 3) {
+  const want = bigrams(title)
+  if (want.size === 0) return []
+  const out = []
+  for (const hit of collectNodes(plan, 'any')) {
+    const n = hit.node
+    if (n.status !== 'done' && n.status !== 'dropped') continue
+    const theirs = bigrams(n.title)
+    if (theirs.size === 0) continue
+    const shared = overlap(want, theirs)
+    if (shared === 0) continue
+    // 分母取「较小的那一边」：两条标题长短差很多时不至于把分数压没。
+    const ratio = shared / Math.min(want.size, theirs.size)
+    if (ratio < 0.25) continue
+    out.push({
+      id: String(n.id ?? ''),
+      title: String(n.title ?? ''),
+      status: n.status,
+      path: String(hit.path ?? ''),
+      doneAt: opt(n.doneAt) ?? null,
+      days: isoDays(n.startedAt, n.doneAt),
+      note: opt(n.note) ?? '',
+      evidence: evidenceOf(n).length,
+      score: ratio,
+      why: '标题用词重合 ' + shared + ' 处',
+    })
+  }
+  out.sort((a, b) => (b.score - a.score) || String(b.doneAt ?? '').localeCompare(String(a.doneAt ?? '')))
+  return out.slice(0, limit > 0 ? limit : 3)
+}
+
 /**
  * 给一条「还没归位的顶层待办」推荐该放到哪个计划下，按分数降序。
  *
