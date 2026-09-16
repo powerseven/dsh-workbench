@@ -249,8 +249,10 @@ agent 会把这条产出作为证据附在完成项上（`plan_todo_set` 的
 | `plan_node_set` | 改任意节点的标题 / **类型** / 负责人 / 周期 / 截止 / 重要程度 / 状态 / 量化进度 / **证据** |
 | `plan_node_move` | 归位或调序（移到别的计划下、移回收件箱） |
 | `plan_node_remove` | 删节点（计划会连同子项一起删） |
-| `plan_todo_set` | 改待办状态（自动记完成时间；可同时附一条证据） |
+| `plan_todo_set` | 改待办状态（自动记完成时间；可同时附一条证据 / 文件关联） |
 | `plan_priority_set` | 设置任意节点的重要程度（返回还缺什么） |
+| `plan_config_set` | 配置 Obsidian vault 的绝对根路径（机器相关，存 `plan.json` 顶层） |
+| `plan_file_read` | 读 vault 内文件内容 / 列文件夹条目（ref 相对 vault 根，禁止跳出） |
 | `plan_delegate_set` / `plan_delegate_receipt` | 建立委派 / 登记回执 |
 | `plan_delegated` | 列出「我委派出去的」（逾期在前） |
 | `plan_snapshot` | 手动留档一个版本 |
@@ -270,7 +272,7 @@ agent 会把这条产出作为证据附在完成项上（`plan_todo_set` 的
 后续规划见 [docs/ROADMAP.md](./docs/ROADMAP.md)。
 
 ```sh
-npm test        # 构建 + 265 个测试
+npm test        # 构建 + 341 个测试
 ```
 
 ## 许可证

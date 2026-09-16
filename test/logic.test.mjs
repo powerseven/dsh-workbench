@@ -20,6 +20,7 @@ const {
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
   bytesToBase64, pickImages, AI_MAX_IMAGES,
+  FILE_KINDS, fileLabel, filesList, obsidianLink,
 } = require('../src/client/logic.cjs')
 
 test('pct 四舍五入并夹取到 0..100', () => {
@@ -403,6 +404,35 @@ test('evidenceList 永远返回数组，对脏数据安全', () => {
   assert.deepEqual(evidenceList({ evidence: 'nope' }), [])
   assert.deepEqual(evidenceList({}), [])
   assert.deepEqual(evidenceList(null), [])
+})
+
+test('FILE_KINDS 与 host 的 FILE_KIND 完全一致（跨半身约定）', async () => {
+  const host = await import('../src/store.js')
+  assert.deepEqual(FILE_KINDS, host.FILE_KIND)
+})
+
+test('fileLabel 覆盖两种关联类型，未知值按「文件」兜底', () => {
+  assert.equal(fileLabel('file'), '文件')
+  assert.equal(fileLabel('folder'), '文件夹')
+  assert.equal(fileLabel('乱写'), '文件')
+  assert.equal(fileLabel(undefined), '文件')
+})
+
+test('filesList 永远返回数组，对脏数据安全', () => {
+  assert.deepEqual(filesList({ files: [{ kind: 'file', ref: 'a.md' }] }).length, 1)
+  assert.deepEqual(filesList({ files: 'nope' }), [])
+  assert.deepEqual(filesList({}), [])
+  assert.deepEqual(filesList(null), [])
+})
+
+test('obsidianLink 用 vault 末段作 vault 名，路径按 vault 根相对编码', () => {
+  // 没配 vault → 不渲染链接（面板据此只显示路径文本）。
+  assert.equal(obsidianLink('', 'a/b.md'), null)
+  assert.equal(obsidianLink('/Users/me/vault', ''), null)
+  // 绝对路径 ref 仍以末段 vault 名生成链接，并去掉前导斜杠。
+  const link = obsidianLink('/Users/me/vault', '项目A/需求.md')
+  assert.equal(link, 'obsidian://open?vault=vault&path=' + encodeURIComponent('项目A/需求.md'))
+  assert.match(link, /^obsidian:\/\/open\?vault=vault&path=/)
 })
 
 test('unverifiedOf 优先读服务端标注，缺失时按「done 且无证据」兜底', () => {

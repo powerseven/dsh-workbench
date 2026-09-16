@@ -750,6 +750,100 @@ export function evidenceWarnings(node, root) {
   return out
 }
 
+// ------------------------------------------------------------- 文件库关联
+
+/**
+ * 文件关联的关联类型。
+ *   file   单个文件（会议纪要.md、台账.xlsx …）
+ *   folder 一整个文件夹（某个项目的资料夹、某个客户的往来目录 …）
+ * 与「完成证据」是两种语义：证据是「做完了的凭证」（只认单文件、要核验存在、
+ * 还与「无证据完成项」审查线绑定）；文件关联是「做这件事要看的资料」，可挂
+ * 文件也可挂文件夹，跟完没完成无关（见 docs/DESIGN.md「文件库关联」章）。
+ * 两者刻意分开：把文件夹硬塞进 evidence 会污染那条审查线，也违背它
+ * 「只校验单文件」的设计。
+ */
+export const FILE_KIND = ['file', 'folder']
+export const FILE_LABEL = { file: '文件', folder: '文件夹' }
+
+/** 读关联列表（永远返回数组，缺省为空）。 */
+export function filesOf(node) {
+  const list = node === null || node === undefined ? undefined : node.files
+  return Array.isArray(list) ? list : []
+}
+
+/**
+ * 给节点挂一个文件 / 文件夹关联。追加而不是覆盖（与证据同思路：同一条关联
+ * 重试不重复产生）。
+ *
+ * ref 是**相对 Obsidian vault 根**的路径——这样它和具体机器的绝对路径解耦，
+ * plan.json 里只存一份「逻辑路径」，核验 / 生成 obsidian:// 链接时再按配置好的
+ * vaultPath 拼成绝对路径。机器相关的绝对路径不进 plan.json，换机器 / 换人时才不
+ * 会读到一串对不上的路径。
+ *
+ * kind 缺省 file（只记录、不核验），写错枚举值仍报错。
+ */
+export function addFile(node, input = {}, now = new Date()) {
+  if (node === null || node === undefined || typeof node !== 'object') {
+    throw new Error('文件关联要挂在节点上')
+  }
+  const kind = opt(input.kind) ?? 'file'
+  if (!FILE_KIND.includes(kind)) {
+    throw new Error('关联类型必须是 ' + FILE_KIND.join(' / ') + ' 之一，收到：' + String(input.kind))
+  }
+  const ref = opt(input.ref)
+  if (ref === undefined) {
+    throw new Error('关联需要一个 ref：vault 内相对路径（文件或文件夹）')
+  }
+  const iso = (now instanceof Date ? now : new Date(now)).toISOString()
+  if (!Array.isArray(node.files)) node.files = []
+  const dup = node.files.find((f) => f !== null && f !== undefined && f.kind === kind && f.ref === ref)
+  if (dup !== undefined) {
+    dup.at = iso
+    const patch = opt(input.note)
+    if (patch !== undefined) dup.note = patch
+    return dup
+  }
+  const item = { kind, ref, at: iso }
+  const note = opt(input.note)
+  if (note !== undefined) item.note = note
+  node.files.push(item)
+  return item
+}
+
+/**
+ * 从节点摘掉一条关联（按 ref + 可选 kind 定位）。摘掉不存在的 ref 是静默无操作，
+ * 不报错——面板点 ✕、agent 解绑都该是「幂等的安全动作」。
+ */
+export function removeFile(node, ref, kind) {
+  if (node === null || node === undefined || typeof node !== 'object') return false
+  if (!Array.isArray(node.files)) return false
+  const r = opt(ref)
+  if (r === undefined) return false
+  const before = node.files.length
+  node.files = node.files.filter((f) => !(
+    f !== null && f !== undefined && f.ref === r && (kind === undefined || f.kind === kind)
+  ))
+  return node.files.length < before
+}
+
+/**
+ * 关联的文件 / 文件夹是否存在。相对路径按 vaultPath 解析；vaultPath 没配时
+ * 返回空数组（「未配置 vault」由面板另提示，不该污染每个节点的告警）。
+ * 与 evidenceWarnings 分开：证据核验走工作区根、只看 file；这里走 vault 根、
+ * file 与 folder 都核验。
+ */
+export function fileWarnings(node, vaultPath) {
+  const out = []
+  if (typeof vaultPath !== 'string' || vaultPath === '') return out
+  for (const f of filesOf(node)) {
+    const ref = opt(f.ref)
+    if (ref === undefined) continue
+    const abs = ref.startsWith('/') ? ref : join(vaultPath, ref)
+    if (!existsSync(abs)) out.push((f.kind === 'folder' ? '文件夹' : '文件') + '不存在：' + ref)
+  }
+  return out
+}
+
 /**
  * 「我委派出去的」清单：所有带委派的节点，逾期的排前面。
  * 这是 PRD FR-D4 的数据源——委派如果没有一个统一的视图，

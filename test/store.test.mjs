@@ -22,6 +22,7 @@ import {
   SCHEMA,
   PRIORITY,
   addEvidence,
+  addFile,
   appendChild,
   applyFields,
   applyStatus,
@@ -55,6 +56,7 @@ import {
   planProgress,
   priorityOf,
   removeNode,
+  removeFile,
   renderMarkdown,
   resolveAny,
   resolveNode,
@@ -69,6 +71,8 @@ import {
   topPlans,
   typeOf,
   unverifiedList,
+  filesOf,
+  fileWarnings,
 } from '../src/store.js'
 
 /** 一份 schema 2 的样例计划：计划 → 两个子计划 → 待办（含一条量化子计划）。 */
@@ -1225,6 +1229,87 @@ test('evidenceWarnings 支持绝对路径，且没有工作区根时静默跳过
     addEvidence(node, { kind: 'file', ref: join(dir, 'nope.txt') })
     assert.equal(evidenceWarnings(node, dir).length, 1)
     assert.deepEqual(evidenceWarnings(node, undefined), [], '没根目录就不假装能核验')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('filesOf 永远返回数组，对脏数据安全', () => {
+  assert.deepEqual(filesOf({ files: [{ kind: 'file', ref: 'a.md' }] }).length, 1)
+  assert.deepEqual(filesOf({ files: 'nope' }), [])
+  assert.deepEqual(filesOf({}), [])
+  assert.deepEqual(filesOf(null), [])
+})
+
+test('addFile 追加而不是覆盖，并补上时间戳', () => {
+  const node = {}
+  addFile(node, { kind: 'file', ref: 'docs/a.md' }, new Date('2026-09-14T02:00:00Z'))
+  addFile(node, { kind: 'folder', ref: '项目A' }, new Date('2026-09-14T03:00:00Z'))
+  assert.equal(node.files.length, 2)
+  assert.equal(node.files[0].at, new Date('2026-09-14T02:00:00Z').toISOString())
+  assert.equal(node.files[1].kind, 'folder')
+})
+
+test('addFile 的 kind 缺省按 file（只记录不核验），传错枚举才报错', () => {
+  const node = {}
+  assert.equal(addFile(node, { ref: '一句话.md' }).kind, 'file')
+  assert.throws(() => addFile(node, { kind: 'filee', ref: 'x' }), /关联类型必须是/)
+})
+
+test('addFile 必须有 ref，否则报错而不是写半截数据', () => {
+  assert.throws(() => addFile({}, { kind: 'file' }), /关联需要一个 ref/)
+  assert.throws(() => addFile({}, { ref: '   ' }), /关联需要一个 ref/)
+  assert.throws(() => addFile(null, { ref: 'x' }), /文件关联要挂在节点上/)
+})
+
+test('addFile 对同 kind + 同 ref 不重复追加（重试不产两条一样的关联）', () => {
+  const node = {}
+  addFile(node, { kind: 'file', ref: 'out/a.md' }, new Date('2026-09-10T00:00:00Z'))
+  addFile(node, { kind: 'file', ref: 'out/a.md' }, new Date('2026-09-14T00:00:00Z'))
+  assert.equal(node.files.length, 1)
+  assert.equal(node.files[0].at, new Date('2026-09-14T00:00:00Z').toISOString())
+  // 不同 kind 算不同关联（同一路径可以是文件也可以是文件夹视角）。
+  addFile(node, { kind: 'folder', ref: 'out/a.md' })
+  assert.equal(node.files.length, 2)
+})
+
+test('addFile 可以带一条说明，重复关联只更新说明不新增', () => {
+  const node = {}
+  addFile(node, { kind: 'file', ref: 'x.md', note: '初版' })
+  addFile(node, { kind: 'file', ref: 'x.md', note: '终版' })
+  assert.equal(node.files.length, 1)
+  assert.equal(node.files[0].note, '终版')
+})
+
+test('removeFile 按 ref 摘掉，幂等无操作', () => {
+  const node = { files: [{ kind: 'file', ref: 'keep.md' }, { kind: 'folder', ref: 'drop' }] }
+  assert.equal(removeFile(node, 'drop'), true)
+  assert.equal(node.files.length, 1)
+  assert.equal(removeFile(node, 'drop'), false, '再删一次是静默无操作')
+  assert.equal(removeFile(null, 'x'), false, '空节点也不报错')
+  removeFile(node, 'keep.md', 'file')
+  assert.equal(node.files.length, 0)
+})
+
+test('fileWarnings 按 vaultPath 解析相对路径核验存在，缺 vault 时静默跳过', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'dsh-wb-fw-'))
+  try {
+    await writeFile(join(dir, 'real.md'), 'x')
+    const node = {}
+    addFile(node, { kind: 'file', ref: 'real.md' })
+    addFile(node, { kind: 'file', ref: 'missing.md' })
+    addFile(node, { kind: 'folder', ref: '缺失目录' })
+    // 绝对路径直接查，不拼 vault 根。
+    const abs = join(dir, 'abs.md')
+    await writeFile(abs, 'x')
+    addFile(node, { kind: 'file', ref: abs })
+    assert.deepEqual(fileWarnings(node, dir).filter((s) => s.includes('abs.md')), [], '绝对路径直接查，不拼根目录')
+    assert.equal(fileWarnings(node, dir).length, 2, 'real.md 与 abs.md 在，missing.md 与 缺失目录 不在')
+    assert.deepEqual(fileWarnings(node, undefined), [], '没 vault 根就不假装能核验')
+    // vault 根下建一个文件夹，核验通过。
+    await writeFile(join(dir, 'present'), 'placeholder')
+    addFile(node, { kind: 'folder', ref: 'present' })
+    assert.equal(fileWarnings(node, dir).filter((s) => s.includes('present')).length, 0)
   } finally {
     await rm(dir, { recursive: true, force: true })
   }

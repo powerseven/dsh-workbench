@@ -55,6 +55,7 @@ test('client bundle 内联了纯逻辑函数（UI 直接引用闭包里的名字
     'function paceText(', 'function boardColumns(',
     'function parseCollapsed(', 'function serializeCollapsed(', 'function descendantCount(',
     'function isDescendantOf(', 'function dropTarget(',
+    'function filesList(', 'function fileLabel(', 'function obsidianLink(',
   ]) {
     assert.ok(client.includes(fn), 'bundle 缺少内联函数 ' + fn)
   }
@@ -158,6 +159,7 @@ test('host 半身注册了完整的 plan_* 工具集（节点模型）', () => {
     'plan_todo_set', 'plan_priority_set',
     'plan_delegate_set', 'plan_delegate_receipt', 'plan_delegated',
     'plan_snapshot', 'plan_history', 'plan_restore',
+    'plan_config_set', 'plan_file_read',
   ]) {
     assert.ok(host.includes("'" + tool + "'"), 'host 缺少工具 ' + tool)
   }
@@ -165,7 +167,7 @@ test('host 半身注册了完整的 plan_* 工具集（节点模型）', () => {
 
 test('host 半身暴露 /api/workbench 数据面', () => {
   assert.match(host, /'\/api\/workbench' \+ path/)
-  for (const route of ['/get', '/ai-parse', '/todo-set', '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot', '/history']) {
+  for (const route of ['/get', '/ai-parse', '/todo-set', '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot', '/history', '/config-set', '/file-read']) {
     assert.ok(host.includes("route('" + route + "'"), 'host 缺少路由 ' + route)
   }
 })
