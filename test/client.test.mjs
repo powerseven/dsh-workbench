@@ -1783,7 +1783,7 @@ const monthDay = (offset) => {
   return (d.getMonth() + 1) + '月' + d.getDate() + '日'
 }
 
-test('「未来 7 天」按天分组：逾期单独置顶，空天不占行', async () => {
+test('「未来 7 天」按天分组：逾期滚入今日组，空天不占行', async () => {
   const keep = planPayload
   const tmp = await mkdtemp(join(tmpdir(), 'dsh-wb-up-'))
   try {
@@ -1800,14 +1800,16 @@ test('「未来 7 天」按天分组：逾期单独置顶，空天不占行', as
 
     const page = render()
     const heads = byClass(page, 'dsh-wb-dayhead').map((h) => textOf(h))
-    assert.equal(heads[0], '逾期（1）', '逾期单独一段，且排在最前')
-    assert.equal(heads.length, 3, '逾期 + 明天 + 三天后；中间那天没有事项就不占行')
+    assert.ok(heads[0].includes('今天'), '逾期滚入「今天」组，第一段是今日而非「逾期（N）」：' + heads[0])
+    assert.equal(heads.length, 3, '今天(含逾期) + 明天 + 三天后；中间那天没有事项就不占行')
     assert.ok(heads[1].includes(monthDay(1)), '第二天是「明天」那一组：' + heads[1])
     assert.ok(heads[2].includes(monthDay(3)), '第三天是「三天后」那一组：' + heads[2])
-    // 逾期段里的那条不该再出现在「今天/明天」组里（同一个节点只出现一次）。
+    // 逾期项只出现一次（在今日组里），不另立一段。
     const tasks = byClass(page, 'dsh-wb-focus').map((r) => textOf(r))
     assert.equal(tasks.filter((t) => t.includes('拖了两天的活')).length, 1)
-    assert.ok(classesOf(byClass(page, 'dsh-wb-dayhead')[0]).includes('late'), '逾期标题要标出来')
+    // 信号不丢：滚入今日的逾期项，due 仍显红（dsh-wb-taskdue.overdue）。
+    const overdueDue = byClass(page, 'dsh-wb-taskdue').filter((s) => classesOf(s).includes('overdue'))
+    assert.ok(overdueDue.length >= 1, '逾期项红标仍在')
   } finally {
     planPayload = keep
     await rm(tmp, { recursive: true, force: true })

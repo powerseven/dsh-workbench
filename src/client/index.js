@@ -79,7 +79,7 @@ const CSS = [
   '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
   // 宿主对 * 施加了 corner-shape:superellipse(1.5)（方角更耐看），但把胶囊压得
   // 走形，所以整圆形状要按宿主约定显式配回 round。
-  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-rootdrop{corner-shape:round;}',
+  '.dsh-wb-chip,.dsh-wb-rootdrop{corner-shape:round;}',
   // ── 表头 ────────────────────────────────────────────────────────────────
   '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
   '.dsh-wb-title{font:var(--dsw-font-xs-strong-13);}',
@@ -139,6 +139,14 @@ const CSS = [
   '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
   '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
   '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-icon.on{background:var(--wb-accent-soft);color:var(--wb-fg);border-color:var(--wb-accent);}',
+  '.dsh-wb-shutdown{background:var(--wb-hover);border-radius:var(--wb-r-2);margin:var(--wb-sp-2) var(--wb-sp-2) 0;padding:var(--wb-sp-2) var(--wb-sp-3);}',
+  '.dsh-wb-shutdown-head{display:flex;align-items:center;justify-content:space-between;font:var(--dsw-font-xxxs-11);font-weight:500;color:var(--wb-fg-2);margin-bottom:var(--wb-sp-1);}',
+  '.dsh-wb-shrow{display:flex;align-items:center;gap:var(--wb-sp-2);padding:var(--wb-sp-1) 0;border-top:1px solid var(--wb-border-tertiary);}',
+  '.dsh-wb-shrow .dsh-wb-tasktitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-shact{display:flex;gap:var(--wb-sp-1);flex:none;}',
+  '.dsh-wb-shact .dsh-wb-act{padding:2px var(--wb-sp-2);font:var(--dsw-font-xxxs-11);border-radius:var(--wb-r-2);border:1px solid var(--wb-border-secondary);background:var(--wb-bg);color:var(--wb-fg-2);cursor:pointer;}',
+  '.dsh-wb-shact .dsh-wb-act.done{color:var(--wb-success);border-color:var(--wb-success);}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
   '.dsh-wb-plan{margin-bottom:var(--wb-sp-2);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
@@ -182,36 +190,31 @@ const CSS = [
   '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act,.dsh-wb-card:hover .dsh-wb-act,.dsh-wb-card:focus-within .dsh-wb-act,.dsh-wb-focus:hover .dsh-wb-act,.dsh-wb-focus:focus-within .dsh-wb-act{opacity:1;}',
   '.dsh-wb-act:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── 重要程度徽章 ────────────────────────────────────────────────────────
-  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);cursor:pointer;border:1px solid transparent;user-select:none;}',
-  // 「中/低」都不换更浅的灰（那会掉到 AA 以下），改用描边与留白区分。
-  '.dsh-wb-pri.normal{color:var(--wb-fg-2);border-color:var(--wb-line-2);}',
+  // ── 重要程度徽章 ────────────────────────────────────────────────────────
+  // 留白纪律（Superlist / Google Tasks）：砍掉描边 / 软底 / 圆角，降级为纯文字。
+  // AA 对比度是硬约束——红 / 琥珀文字在浅色下都够不到 4.5:1，所以「高」不再靠红，
+  // 改靠字重；中 / 低走中性灰。盒子去掉后，强调只由字号、字重与间隔承担。
+  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);user-select:none;cursor:pointer;color:var(--wb-fg-2);}',
+  '.dsh-wb-pri.normal{color:var(--wb-fg-2);}',
   '.dsh-wb-pri.low{color:var(--wb-fg-2);}',
-  // 「高」的红只走描边 + 软底，文字保持中性。两个方向都试算过、都不安全：
-  // 浅色下的红是 #ec1313，对纯白 4.49:1，再叠一层 5% 红软底就掉到 4.45:1
-  // （AA 要 4.5:1）；暗色下换成 #f25a5a，实心红配白字只有 3.29:1。
-  // 既然红两个方向都当不了安全的文字色，就让它只承担「形状 + 底色」的信息，
-  // 顺带把「三行红字」的噪声降成「三个红边小胶囊」。
-  '.dsh-wb-pri.high{color:var(--wb-fg);background:var(--wb-danger-soft);border-color:var(--wb-danger);font-weight:600;}',
-  '.dsh-wb-pri:hover{filter:brightness(.95);}',
+  '.dsh-wb-pri.medium{color:var(--wb-fg);}',
+  '.dsh-wb-pri.high{color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-pri:hover{text-decoration:underline;}',
   // ── 委派标记 ────────────────────────────────────────────────────────────
-  // 以前用紫色（#8250df）——宿主的语义色里没有紫，所以它一眼就不像宿主的一部分。
-  // 委派是「进行中」，归到强调色的软底；逾期才转 danger。
-  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid transparent;background:var(--wb-accent-soft);color:var(--wb-fg);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;}',
-  // 逾期仍然由红来表意，但同样只落在底色与描边上——理由同上面的「高」：
-  // 红字叠在红软底上是 4.45:1，达不到 4.5:1。基础态先声明透明描边是为了让这里
-  // 只改颜色、不改盒子尺寸，胶囊不会因逾期与否而变宽一像素。
-  '.dsh-wb-deleg.late{background:var(--wb-danger-soft);border-color:var(--wb-danger);color:var(--wb-fg);font-weight:600;}',
+  // 纯文字：正常态走强调色（链接语义，AA 安全）；逾期回执只靠字重 + tooltip，
+  // 不再用红软底做盒子。
+  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;color:var(--wb-accent);cursor:help;}',
+  '.dsh-wb-deleg.late{color:var(--wb-fg);font-weight:600;}',
   // ── 管控缺口 ────────────────────────────────────────────────────────────
   '.dsh-wb-warn{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
   // ── 落后于周期 ──────────────────────────────────────────────────────────
-  // 琥珀在白底只有 2.8:1，所以颜色只上软底，文字走中性。
-  '.dsh-wb-behind{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);background:var(--wb-warn-soft);color:var(--wb-fg);cursor:help;white-space:nowrap;}',
+  // 琥珀软底已砍；落后靠字重 + 「落后 N%」文字本身表意，不靠颜色。
+  '.dsh-wb-behind{flex:none;font:var(--dsw-font-xxxs-strong-11);white-space:nowrap;color:var(--wb-fg);font-weight:600;cursor:help;}',
   // ── 完成证据：📎n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
-  // 两者都自带符号，颜色是冗余信息，所以文字统一走中性——顺带绕开
-  // 「绿 2.3:1 / 琥珀 2.8:1 在浅色下达不到 AA」这个坑。
+  // 两者都自带符号，颜色冗余，统一中性；缺失证据靠字重强调。
   '.dsh-wb-evid{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
-  '.dsh-wb-evid.bad{color:var(--wb-danger);font-weight:600;}',
-  '.dsh-wb-unverif{flex:none;font:var(--dsw-font-xxxs-strong-11);border-radius:var(--wb-r-1);padding:0 var(--wb-sp-1);background:var(--wb-warn-soft);color:var(--wb-fg);cursor:help;}',
+  '.dsh-wb-evid.bad{color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-unverif{flex:none;font:var(--dsw-font-xxxs-strong-11);color:var(--wb-fg-2);cursor:help;}',
   // ── 收件箱 ──────────────────────────────────────────────────────────────
   '.dsh-wb-inbox{margin-bottom:var(--wb-sp-5);padding-bottom:var(--wb-sp-4);border-bottom:1px dashed var(--wb-line-2);}',
   '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-3);}',
@@ -297,7 +300,7 @@ const CSS = [
   // 「这几条属于同一天」，又不能和待办标题抢注意力。
   '.dsh-wb-daygroup{margin-top:var(--wb-sp-4);}',
   '.dsh-wb-dayhead{font:var(--dsw-font-xxxs-11);font-weight:500;color:var(--wb-fg-2);padding:var(--wb-sp-1) var(--wb-sp-2);letter-spacing:.02em;}',
-  '.dsh-wb-dayhead.late{color:var(--wb-danger);}',
+  '.dsh-wb-dayhead.today{color:var(--wb-accent);}',
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
@@ -524,6 +527,7 @@ function apply(ctx) {
     const [editDraft, setEditDraft] = React.useState('')
     const [dragId, setDragId] = React.useState(null)
     const [hint, setHint] = React.useState(null)         // { id, place } | null（id=null 表示落在空白处）
+    const [shutdownOpen, setShutdownOpen] = React.useState(false)   // 收尾复盘面板开关
     // 文件库关联的内联表单：正在关联哪个节点、填了一半的路径与类型。放进本地
     // 状态——每次敲字都重渲整棵计划树太浪费，且输入框会丢焦点。
     const [linking, setLinking] = React.useState(null)   // 正在加关联的节点 id | null
@@ -1301,6 +1305,10 @@ function apply(ctx) {
       () => flash(on === true ? '已纳入工作计划' : '已退回收件箱'),
     )
     const setRecurOn = (node, kind) => write('node-set', { node: node.id, recur: kind })
+    // 收尾复盘：把没做完的顺延到明天 / 下周（写 due），或清掉 due 退回收件箱。
+    // 复用 /node-set，不加工具不加路由。清空走 `clear: ['due']`（空串在 applyFields 里等同不动）。
+    const setDueOn = (node, due) => write('node-set', { node: node.id, due })
+    const clearDueOn = (node) => write('node-set', { node: node.id, clear: ['due'] }, () => flash('已退回收件箱'))
     const addDepOn = (node, otherId) => write('node-set', { node: node.id, blockedAdd: otherId }, () => flash('已加依赖'))
     const removeDepOn = (node, otherId) => write('node-set', { node: node.id, blockedRemove: otherId }, () => flash('已移除依赖'))
     /**
@@ -2443,6 +2451,9 @@ function apply(ctx) {
     if (state.showSettings === true) return h('div', { className: 'dsh-wb-wrap' }, settingsPage())
 
     const rows = []
+    const today = todayStr()
+    // 收尾复盘的对象：今天组里的未做完项 = 逾期 + 今天到期（upcomingByDay 已把逾期滚入今日组）。
+    const unfinished = (upcomingByDay(plan, today).days.find((d) => d.date === today) || { items: [] }).items
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
       // 视图切换兼作表头标题：左上角原来那个「工作计划」标题是重复的——分段控件
       // 的第一个按钮就叫「工作计划」，它本身就是这块面板的名字，再写一遍是噪音。
@@ -2488,11 +2499,44 @@ function apply(ctx) {
             if (aiPersona === '') loadPersona()
           },
         }, '设置'),
+        // 收尾复盘（Sunsama 式）：每天收工前把没做完的顺延，而非留着堆。
+        // 只在真有未做完项时才出现——没东西要复盘时它不该占一行。
+        unfinished.length > 0 ? h('button', {
+          className: 'dsh-wb-icon' + (shutdownOpen ? ' on' : ''),
+          key: 'shutdown',
+          title: '收尾复盘：把没做完的重新规划，而非留着堆',
+          onClick: () => setShutdownOpen((v) => !v),
+        }, '收尾 ' + unfinished.length) : null,
       ),
     ))
     rows.push(h('div', { className: 'dsh-wb-bar', key: 'bar' },
       h('div', { className: 'dsh-wb-bar-fill', style: { width: barWidth(sum.progress) } }),
     ))
+
+    // 收尾复盘面板：把未做完项逐条重新规划，而非留着堆。复用到期的写通道，
+    // 顺延走 deferDate（明天 / 下周），「稍后」清掉 due 退回收件箱。
+    const shutdownRow = (item) => {
+      const node = item.node
+      const isLeaf = item.type === 'todo'
+      return h('div', { className: 'dsh-wb-shrow', key: item.path },
+        titleNode(node, 'dsh-wb-tasktitle', { canToggle: isLeaf, draggable: false }),
+        h('div', { className: 'dsh-wb-shact' },
+          h('button', { className: 'dsh-wb-act', onClick: () => { setDueOn(node, deferDate(today, 'tomorrow')); flash('顺延到明天') } }, '明天'),
+          h('button', { className: 'dsh-wb-act', onClick: () => { setDueOn(node, deferDate(today, 'nextweek')); flash('顺延到下周') } }, '下周'),
+          h('button', { className: 'dsh-wb-act', onClick: () => clearDueOn(node) }, '稍后'),
+          isLeaf
+            ? h('button', { className: 'dsh-wb-act done', onClick: () => setTodo(node.id, 'done') }, '完成')
+            : h('button', { className: 'dsh-wb-act done', onClick: () => togglePlanDone(node) }, '完成'),
+        ),
+      )
+    }
+    if (shutdownOpen && unfinished.length > 0) {
+      rows.push(h('div', { className: 'dsh-wb-shutdown', key: 'shutdown' },
+        h('div', { className: 'dsh-wb-shutdown-head' },
+          h('span', null, '收尾复盘 · 没做完 ' + unfinished.length + ' 条'),
+          h('button', { className: 'dsh-wb-act', title: '收工', onClick: () => setShutdownOpen(false) }, '完成')),
+        unfinished.map(shutdownRow)))
+    }
 
     // AI 助手是**第一入口**：放在筛选条之上——打开面板第一眼就该看见
     // 「可以问、可以说」。宿主没有模型服务时整块不渲染（见 aiBlock）。
@@ -2606,7 +2650,7 @@ function apply(ctx) {
           behindChip(node),
           evidChip(node),
           priBadge(node),
-          isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' }, node.end) : null),
+          isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' + (node.overdue === true ? ' overdue' : '') }, node.end) : null),
           h('button', {
             className: 'dsh-wb-act',
             title: '编辑全部信息',
@@ -2615,23 +2659,20 @@ function apply(ctx) {
         )
       }
 
-      // 「本周到期」是一个**时间视角**，不是一个筛选结果：同一批事项按天摊开
-      // 才回答得了「下周三我有什么事」。所以这一档走按天分组（逾期单独置顶），
-      // 其余筛选器仍是扁平列表。
+      // 「未来 7 天」是一个**时间视角**，不是一个筛选结果：同一批事项按天摊开
+      // 才回答得了「下周三我有什么事」。所以这一档走按天分组；逾期项按 TeuxDeux
+      // 顺延滚入「今天」组（红标区分），不单独置顶成段。其余筛选器仍是扁平列表。
       if (state.filter === 'week') {
         const up = upcomingByDay(plan, todayStr())
-        if (up.overdue.length === 0 && up.days.length === 0) {
+        if (up.days.length === 0) {
           body.push(h('div', { className: 'dsh-wb-empty', key: 'noup' },
             h('div', null, '未来 7 天没有安排。')))
         }
-        if (up.overdue.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-daygroup', key: 'late' },
-            h('div', { className: 'dsh-wb-dayhead late' }, '逾期（' + up.overdue.length + '）'),
-            up.overdue.map(focusRow)))
-        }
         for (const d of up.days) {
+          const isToday = d.date === todayStr()
           body.push(h('div', { className: 'dsh-wb-daygroup', key: d.date },
-            h('div', { className: 'dsh-wb-dayhead' }, d.label + (d.date === todayStr() ? ' · 今天' : '')),
+            h('div', { className: 'dsh-wb-dayhead' + (isToday ? ' today' : '') },
+              d.label + (isToday ? ' · 今天' : '')),
             d.items.map(focusRow)))
         }
         rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
