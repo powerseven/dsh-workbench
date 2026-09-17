@@ -567,31 +567,31 @@ test('勾选待办走 /todo-set（与 agent 同一条写入路径）', async () 
   assert.equal(requests[0].body.status, 'done')
 })
 
-test('单击标题延后切换：一次双击不会顺手把事办了', async () => {
+test('双击改名的同时不会顺手打开详情（单击延后仍生效）', async () => {
   const { render, view } = await mount()
   requests = []
 
   // 一次真实的双击会先来两次 click、再来一次 dblclick。两个 click 一个都不能
-  // 落地，否则改名会顺带切换完成状态（还多留一个版本快照）。
+  // 落地——单击现在是「打开详情」，立刻执行的话改名会被详情盖住。
   byText(view, 'dsh-wb-tasktitle', '表层待办').props.onClick(ev())
   byText(render(), 'dsh-wb-tasktitle', '表层待办').props.onClick(ev())
   byText(render(), 'dsh-wb-tasktitle', '表层待办').props.onDoubleClick(ev())
 
   await new Promise((r) => setTimeout(r, 260))
   await flush()
-  assert.equal(requests.length, 0, '双击不该切换完成状态')
+  assert.equal(requests.length, 0, '双击不该产生任何写请求')
   assert.ok(firstByClass(render(), 'dsh-wb-rename') !== null, '而是进入改名')
+  assert.equal(firstByClass(render(), 'dsh-wb-formhead'), null, '且不该顺手打开详情')
 })
 
-test('只单击（不双击）仍然会切换完成状态', async () => {
+test('只单击标题 = 打开详情，不再切换完成', async () => {
   const { render, view } = await mount()
   requests = []
   byText(view, 'dsh-wb-tasktitle', '表层待办').props.onClick(ev())
   await new Promise((r) => setTimeout(r, 260))
   await flush()
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].path, '/api/workbench/todo-set')
-  assert.equal(requests[0].body.todo, idOf('表层待办'))
+  assert.equal(requests.length, 0, '打开详情是纯本地状态，不发请求、不改状态')
+  assert.ok(firstByClass(render(), 'dsh-wb-formhead') !== null, '单击标题应当打开详情编辑页')
 })
 
 // ============================================================ 语音输入
@@ -1295,6 +1295,9 @@ test('✎ 打开详情编辑页，字段按节点预填；改标题保存走 nod
   const { render, view } = await mount()
   actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
   await settle()
+  // 低频项（负责人等）已收进「更多」，先展开再改——与真实用户流程一致
+  firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
+  await settle()
 
   const form = render()
   assert.ok(firstByClass(form, 'dsh-wb-formhead') !== null, '整块面板换成详情页')
@@ -1326,6 +1329,8 @@ test('表单里清空字段 = 提交 clear，而不是「什么都没传」', as
   try {
     const { render, view } = await mount()
     actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+    await settle()
+    firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
     await settle()
     assert.equal(inpByPh(render(), '谁负责（可空）').props.value, '原负责人')
     inpByPh(render(), '谁负责（可空）').props.onChange({ target: { value: '' } })
@@ -1424,6 +1429,9 @@ test('详情页能删一条完成证据（面板此前只能加不能删）', as
     const { render, view } = await mount()
     actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
     await settle()
+    // 证据属低频项，收在「更多」里：先展开
+    firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
+    await settle()
     const row = byClass(render(), 'dsh-wb-formrow').find((r) => textOf(r).includes('a.md'))
     assert.ok(row !== undefined, '证据要在详情页里列出来')
     requests = []
@@ -1435,6 +1443,29 @@ test('详情页能删一条完成证据（面板此前只能加不能删）', as
   } finally {
     planPayload = keep
   }
+})
+
+test('详情页渐进披露：编辑时「更多」默认收起，点开才展开低频项', async () => {
+  const { render, view } = await mount()
+  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+  await settle()
+
+  // 一级只给简单信息；低频项不该占版面。
+  assert.ok(inpByPh(render(), '要做什么') !== null, '一级：标题在')
+  assert.ok(firstByClass(render(), 'dsh-wb-morebtn') !== null, '一级：有「更多」按钮')
+  assert.equal(inpByPh(render(), '谁负责（可空）'), null, '收起时低频项（负责人）不渲染')
+
+  firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
+  await settle()
+  assert.ok(inpByPh(render(), '谁负责（可空）') !== null, '点开后低频项出现')
+  assert.ok(byText(render(), 'dsh-wb-morebtn', '收起更多') !== null, '按钮变成「收起更多」')
+})
+
+test('新建表单默认展开「更多」：要一次填完，不该再让人多点一下', async () => {
+  const { render, view } = await mount()
+  byClass(view, 'dsh-wb-icon').find((b) => textOf(b) === '＋ 新建').props.onClick(ev())
+  await settle()
+  assert.ok(byText(render(), 'dsh-wb-morebtn', '收起更多') !== null, '新建：更多默认展开')
 })
 
 test('返回 / 取消 = 放弃改动，不发任何写入', async () => {

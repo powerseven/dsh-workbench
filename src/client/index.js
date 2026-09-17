@@ -194,12 +194,12 @@ const CSS = [
   // 留白纪律（Superlist / Google Tasks）：砍掉描边 / 软底 / 圆角，降级为纯文字。
   // AA 对比度是硬约束——红 / 琥珀文字在浅色下都够不到 4.5:1，所以「高」不再靠红，
   // 改靠字重；中 / 低走中性灰。盒子去掉后，强调只由字号、字重与间隔承担。
-  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);user-select:none;cursor:pointer;color:var(--wb-fg-2);}',
+  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);user-select:none;color:var(--wb-fg-2);}',
   '.dsh-wb-pri.normal{color:var(--wb-fg-2);}',
   '.dsh-wb-pri.low{color:var(--wb-fg-2);}',
   '.dsh-wb-pri.medium{color:var(--wb-fg);}',
   '.dsh-wb-pri.high{color:var(--wb-fg);font-weight:600;}',
-  '.dsh-wb-pri:hover{text-decoration:underline;}',
+  // 徽章已不可点，故不再有 hover 态——「改重要程度」这件事全部回到详情页。
   // ── 委派标记 ────────────────────────────────────────────────────────────
   // 纯文字：正常态走强调色（链接语义，AA 安全）；逾期回执只靠字重 + tooltip，
   // 不再用红软底做盒子。
@@ -365,6 +365,9 @@ const CSS = [
   '.dsh-wb-formerr{font:var(--dsw-font-xxxs-11);color:var(--wb-danger);line-height:1.6;}',
   '.dsh-wb-formactions{display:flex;align-items:center;gap:var(--wb-sp-2);margin-top:var(--wb-sp-2);padding-bottom:var(--wb-sp-4);}',
   '.dsh-wb-formactions .spacer{margin-left:auto;}',
+  // 「更多」折叠条：文左对齐、无框，靠 hover 下划线提示可点——窄面板里不再多一个胶囊。
+  '.dsh-wb-morebtn{align-self:flex-start;margin-top:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) 0;cursor:pointer;}',
+  '.dsh-wb-morebtn:hover{color:var(--wb-fg);text-decoration:underline;}',
   '.dsh-wb-formlist{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-top:var(--wb-sp-2);}',
   '.dsh-wb-formrow{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);}',
   '.dsh-wb-formrow:hover{background:var(--wb-hover);}',
@@ -551,6 +554,9 @@ function apply(ctx) {
     const [formParent, setFormParent] = React.useState('')
     // 依赖添加行的选中值（同上：绑定详情页，不与树上的 moving/adding 混用）。
     const [formDepPick, setFormDepPick] = React.useState('')
+    // 详情页「更多」：低频 / 复杂项默认收起。新建时反向（要一次填完，默认展开），
+    // 由 openEdit / openDraft 各自设定。
+    const [moreOpen, setMoreOpen] = React.useState(false)
     // AI 草稿队列：「全部采纳」时不直接落库，而是逐条填进表单让人过一遍。
     const [aiQueue, setAiQueue] = React.useState([])
     // 单击「切换完成」与双击「改名」抢的是同一个元素，单击因此必须延后执行。
@@ -1115,7 +1121,8 @@ function apply(ctx) {
     }, [sessionId])
 
     const setTodo = React.useCallback((id, status) => write('todo-set', { todo: id, status }), [write])
-    const setPriority = React.useCallback((id, priority) => write('node-set', { node: id, priority }), [write])
+    // 行内「点徽章换重要程度」已去掉（理由见 priBadge）——换档统一走详情页，
+    // 所以不再需要 setPriority 这条通路。
     // 换型：待办 ↔ 计划。原地换型而不是「新建一个再搬」——用户想说的是
     // 「这就是同一件事，只是现在要往下拆」，换个容器会多出一层没有意义的嵌套。
     const setNodeKind = React.useCallback((id, type) => write(
@@ -1205,6 +1212,7 @@ function apply(ctx) {
       setFormFileRef('')
       setFormDepPick('')
       setFormParent('')
+      setMoreOpen(false)               // 编辑：只给简单信息，低频项收在「更多」里
       setForm({ mode: 'edit', id: node.id, draft: formDraftOf(node) })
     }
     /** 关掉表单。顺手清掉 AI 队列——否则取消之后它会在下一次保存时突然冒出来。 */
@@ -1214,6 +1222,7 @@ function apply(ctx) {
       setFormEvRef('')
       setFormFileRef('')
       setFormParent(draft.parent === undefined ? '' : draft.parent)
+      setMoreOpen(true)                // 新建：要一次填完，默认全展开
       setForm({ mode: 'new', id: null, draft })
     }
     /**
@@ -1480,12 +1489,15 @@ function apply(ctx) {
     }
 
     /**
-     * 标题上的三种手势：单击切换完成、双击就地改名、按住拖动排序。
+     * 标题上的三种手势：**单击打开详情**、双击就地改名、按住拖动排序。
      *
-     * 单击必须**延后执行**：双击会先触发两次 click，立刻切换的话，一次改名
-     * 会顺带把事办了（还留下两个版本快照）。延迟只加在这条便利路径上，
-     * 复选框依旧是即时的——想快就点框。
-     * 计划标题不参与切换（它没有「完成」这个单击语义），所以只延后待办。
+     * 单击**曾经**是「切换完成」——那是把高频低风险的「查看」让位给了低频高
+     * 风险的「改状态」：误触的代价是改状态 + 写盘 + 多留一个版本快照，而「完成」
+     * 本来就有明确的控件（复选框）。任务首先是**信息载体**，点它应当是查看 / 编辑。
+     * 所以单击改为打开详情，完成只走复选框（想快就点框）。
+     *
+     * 单击同样延后 200ms：双击会先触发两次 click，立刻打开详情的话，一次改名
+     * 会被详情盖住。双击时清掉定时器（见下），所以改名不会被盖。
      */
     const titleProps = (node, base, opts) => {
       const canToggle = opts.canToggle === true
@@ -1497,15 +1509,20 @@ function apply(ctx) {
         if (clickTimer.current !== null) { clearTimeout(clickTimer.current); clickTimer.current = null }
         startRename(node)
       }
-      if (!canToggle) return props
-      if (node.status === 'done') props.className += ' done'
-      else if (node.status === 'dropped') props.className += ' dropped'
-      props.onClick = () => {
-        if (clickTimer.current !== null) return
-        clickTimer.current = setTimeout(() => {
-          clickTimer.current = null
-          setTodo(node.id, toggleStatus(node.status))
-        }, 200)
+      // 完成态的视觉（删线 / 灰字）只跟状态走，与「能不能点开」无关——
+      // 所以这一段不再兼作「能不能点」的开关。
+      if (canToggle) {
+        if (node.status === 'done') props.className += ' done'
+        else if (node.status === 'dropped') props.className += ' dropped'
+      }
+      if (opts.noOpen !== true) {
+        props.onClick = () => {
+          if (clickTimer.current !== null) return
+          clickTimer.current = setTimeout(() => {
+            clickTimer.current = null
+            openEdit(node)
+          }, 200)
+        }
       }
       return props
     }
@@ -1516,13 +1533,19 @@ function apply(ctx) {
       return h('span', titleProps(node, base, opts || {}), node.title)
     }
 
-    /** 重要程度徽章：点击在高 → 中 → 低之间循环。 */
+    /**
+     * 重要程度徽章：**纯展示**。
+     *
+     * 以前点一下就在高 / 中 / 低之间循环——但 `priority` 在本项目是**管控强度**
+     * （决定这个节点要走多少流程），不是「重要程度」标签。把它做成行内一点就换挡，
+     * 等于把一个会改变流程要求的决定，藏在一个没有确认、也不在详情页里的角落，
+     * 代价与它的低调外表完全不成比例。换档统一回详情页。
+     */
     const priBadge = (node) => {
       const p = node.priority === 'high' || node.priority === 'low' ? node.priority : 'normal'
       return h('span', {
         className: 'dsh-wb-pri ' + p,
-        title: '重要程度：' + priorityLabel(p) + '（点击切换）',
-        onClick: (e) => { e.preventDefault(); e.stopPropagation(); setPriority(node.id, nextPriority(p)) },
+        title: '重要程度：' + priorityLabel(p) + '（在详情页里改）',
       }, priorityLabel(p))
     }
 
@@ -2205,7 +2228,10 @@ function apply(ctx) {
         }, o.label))),
       )
 
+      // 渐进披露：body = 一级（简单信息，默认可见）；more = 二级（低频 / 复杂，
+      // 收在「更多」里）。点开一条任务不该像开工单——高频项与低频项不能平权重。
       const body = []
+      const more = []
 
       body.push(h('div', { className: 'dsh-wb-field', key: 'title' },
         h('span', { className: 'dsh-wb-label' }, '标题'),
@@ -2232,18 +2258,17 @@ function apply(ctx) {
         seg('priority', '重要程度', PRIORITIES.map((p) => ({ value: p, label: priorityLabel(p) }))),
       ))
 
-      body.push(h('div', { className: 'dsh-wb-grid2', key: 'when' },
-        field('owner', '负责人', { placeholder: '谁负责（可空）' }),
-        isPlan
-          ? h('div', { className: 'dsh-wb-field', key: 'f-period' },
-            h('span', { className: 'dsh-wb-label' }, '周期'),
-            h('div', { className: 'dsh-wb-seg' },
-              h('input', { className: 'dsh-wb-inp', type: 'date', value: d.start, onChange: (e) => patchForm('start', e.target.value) }),
-              h('input', { className: 'dsh-wb-inp', type: 'date', value: d.end, onChange: (e) => patchForm('end', e.target.value) })))
-          : field('due', '截止日期', { type: 'date' }),
-      ))
+      // 一级只留「什么时候到期」——这是点开一条任务最想确认的；负责人是低频项，进「更多」。
+      body.push(isPlan
+        ? h('div', { className: 'dsh-wb-field', key: 'f-period' },
+          h('span', { className: 'dsh-wb-label' }, '周期'),
+          h('div', { className: 'dsh-wb-seg' },
+            h('input', { className: 'dsh-wb-inp', type: 'date', value: d.start, onChange: (e) => patchForm('start', e.target.value) }),
+            h('input', { className: 'dsh-wb-inp', type: 'date', value: d.end, onChange: (e) => patchForm('end', e.target.value) })))
+        : field('due', '截止日期', { type: 'date' }))
+      more.push(field('owner', '负责人', { placeholder: '谁负责（可空）' }))
 
-      body.push(h('div', { className: 'dsh-wb-field', key: 'metric' },
+      more.push(h('div', { className: 'dsh-wb-field', key: 'metric' },
         h('span', { className: 'dsh-wb-label' }, '量化进度（可空：留空就按子项 / 状态算）'),
         h('div', { className: 'dsh-wb-grid3' },
           h('input', { className: 'dsh-wb-inp', type: 'number', placeholder: '目标', value: d.target, onChange: (e) => patchForm('target', e.target.value) }),
@@ -2259,7 +2284,7 @@ function apply(ctx) {
           onChange: (e) => patchForm('note', e.target.value),
         })))
 
-      body.push(h('div', { className: 'dsh-wb-grid2', key: 'deleg' },
+      more.push(h('div', { className: 'dsh-wb-grid2', key: 'deleg' },
         field('to', '委派给', { placeholder: '人名 / agent（可空）' }),
         field('expectAt', '期望完成', { type: 'date' }),
       ))
@@ -2276,7 +2301,7 @@ function apply(ctx) {
             .filter((it) => it.type === 'plan')
             .map((it) => ({ id: it.node.id, title: it.node.title, depth: it.depth })))
           : [inboxOpt].concat(moveTargets(plan, node).map((t) => ({ id: t.id, title: t.title, depth: t.depth })))
-        body.push(h('div', { className: 'dsh-wb-field', key: 'move' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'move' },
           h('span', { className: 'dsh-wb-label' }, isNew ? '放在' : '位置'),
           h('div', { className: 'dsh-wb-fadd' },
             h('select', {
@@ -2297,7 +2322,7 @@ function apply(ctx) {
       // 草稿要简单，也不会出现「建了一半失败」的中间态。
       if (!isNew) {
         const evs = evidenceList(node)
-        body.push(h('div', { className: 'dsh-wb-field', key: 'ev' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'ev' },
           evs.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, evs.map((e, i) => h('div', { className: 'dsh-wb-formrow', key: 'ev' + i },
               h('span', { className: 'dsh-wb-fmeta' }, evidenceLabel(e.kind)),
@@ -2326,7 +2351,7 @@ function apply(ctx) {
           )))
 
         const files = filesList(node)
-        body.push(h('div', { className: 'dsh-wb-field', key: 'files' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'files' },
           h('span', { className: 'dsh-wb-label' }, '关联资料（' + files.length + '）'),
           files.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, files.map((f, i) => {
@@ -2364,7 +2389,7 @@ function apply(ctx) {
         const depChoices = flattenNodes(plan).filter((it) => it.type === 'todo'
           && String(it.node.id) !== String(node.id)
           && !deps.includes(String(it.node.id)))
-        body.push(h('div', { className: 'dsh-wb-field', key: 'deps' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'deps' },
           h('span', { className: 'dsh-wb-label' }, '依赖（这些做完才能做这条）'),
           depNodes.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, depNodes.map((d) => h('div', { className: 'dsh-wb-formrow', key: d.id },
@@ -2386,25 +2411,53 @@ function apply(ctx) {
             }, '添加'),
           )))
 
-        // 重复 + 星标：都即时写（列表式改动不等保存，与证据 / 关联一致）。
-        body.push(h('div', { className: 'dsh-wb-grid2', key: 'flags' },
-          h('div', { className: 'dsh-wb-field', key: 'recur' },
-            h('span', { className: 'dsh-wb-label' }, '重复（完成时自动生成下一条并顺推截止）'),
-            h('div', { className: 'dsh-wb-seg' },
-              [['', '不重复'], ['week', '每周'], ['month', '每月']].map(([k, label]) => h('button', {
-                key: k,
-                className: ((node.recur !== null && node.recur !== undefined && node.recur.kind) || '') === k ? 'on' : '',
-                onClick: () => setRecurOn(node, k === '' ? 'none' : k),
-              }, label)))),
-          h('div', { className: 'dsh-wb-field', key: 'star' },
-            h('span', { className: 'dsh-wb-label' }, '标记'),
-            h('div', { className: 'dsh-wb-seg' },
-              h('button', {
-                className: node.starred === true ? 'on' : '',
-                title: '星标：执行清单里置顶',
-                onClick: () => setStarOn(node, node.starred !== true),
-              }, '★ 我正在做 / 接下来做')))))
+        // 星标是高频（「我正在做 / 接下来做」），留在一级；重复是低频，进「更多」。
+        // 两者都即时写（列表式改动不等保存，与证据 / 关联一致）。
+        body.push(h('div', { className: 'dsh-wb-field', key: 'star' },
+          h('span', { className: 'dsh-wb-label' }, '标记'),
+          h('div', { className: 'dsh-wb-seg' },
+            h('button', {
+              className: node.starred === true ? 'on' : '',
+              title: '星标：执行清单里置顶',
+              onClick: () => setStarOn(node, node.starred !== true),
+            }, '★ 我正在做 / 接下来做'))))
+        more.push(h('div', { className: 'dsh-wb-field', key: 'recur' },
+          h('span', { className: 'dsh-wb-label' }, '重复（完成时自动生成下一条并顺推截止）'),
+          h('div', { className: 'dsh-wb-seg' },
+            [['', '不重复'], ['week', '每周'], ['month', '每月']].map(([k, label]) => h('button', {
+              key: k,
+              className: ((node.recur !== null && node.recur !== undefined && node.recur.kind) || '') === k ? 'on' : '',
+              onClick: () => setRecurOn(node, k === '' ? 'none' : k),
+            }, label)))))
 
+      }
+
+      // 删除：破坏性操作，不和「保存 / 取消」并排（误触代价太高），收进「更多」。
+      if (node !== null) {
+        more.push(h('div', { className: 'dsh-wb-field', key: 'del' },
+          h('span', { className: 'dsh-wb-label' }, '危险操作'),
+          h('button', {
+            className: 'dsh-wb-aibtn',
+            title: '删除这个节点',
+            onClick: () => {
+              const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
+              if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
+              write('node-remove', { node: node.id }, () => { flash('已删除'); closeForm() })
+            },
+          }, '删除')))
+      }
+
+      // 「更多」折叠条。窄面板放不下长标签，所以按钮上只写「更多 ▾」，
+      // 具体含哪些项交给 title 悬停——既省宽度又不丢信息。
+      if (more.length > 0) {
+        const moreLabel = '负责人 / 量化进度 / 委派 / 位置 / 证据 / 关联资料 / 依赖 / 重复 / 删除'
+        body.push(h('button', {
+          className: 'dsh-wb-morebtn',
+          key: 'morebtn',
+          title: (moreOpen ? '收起：' : '展开：') + moreLabel,
+          onClick: () => setMoreOpen((v) => !v),
+        }, moreOpen ? '收起更多 ▴' : '更多 ▾'))
+        if (moreOpen) for (let mi = 0; mi < more.length; mi++) body.push(more[mi])
       }
 
       const rows = []
@@ -2428,18 +2481,6 @@ function apply(ctx) {
             onClick: saveForm,
           }, formSaving ? '保存中…' : '保存'),
           h('button', { className: 'dsh-wb-aibtn', onClick: closeForm }, '取消'),
-          h('span', { className: 'spacer' }),
-          node !== null
-            ? h('button', {
-              className: 'dsh-wb-aibtn',
-              title: '删除这个节点',
-              onClick: () => {
-                const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
-                if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
-                write('node-remove', { node: node.id }, () => { flash('已删除'); closeForm() })
-              },
-            }, '删除')
-            : null,
         ),
         errs.length > 0 ? h('div', { className: 'dsh-wb-formerr', key: 'errs' }, errs.join('；')) : null,
       ))
