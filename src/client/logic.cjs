@@ -659,7 +659,7 @@ var FILTERS = [
   { id: 'all', label: '全部' },
   { id: 'high', label: '重要度高' },
   { id: 'delegated', label: '我委派出去的' },
-  { id: 'week', label: '本周到期' },
+  { id: 'week', label: '未来 7 天' },
   { id: 'overdue', label: '逾期' },
   { id: 'behind', label: '落后' },
   { id: 'unverified', label: '无证据的完成项' }
@@ -723,6 +723,80 @@ function filterCounts(plan, today) {
     out[id] = focusList(plan, id, today).length
   }
   return out
+}
+
+// ------------------------------------------------------------ 未来日程（Upcoming）
+
+/** 「9月17日 周三」——按天分组时每段的标题。日期串来自节点自己的 due/end。 */
+function dayLabel(dateStr) {
+  var d = new Date(String(dateStr) + 'T00:00:00Z')
+  if (isNaN(d.getTime())) return String(dateStr)
+  var week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getUTCDay()]
+  return (d.getUTCMonth() + 1) + '月' + d.getUTCDate() + '日 ' + week
+}
+
+/**
+ * **未来日程**（对齐 Things 3 的 Upcoming）：把「本周到期」从一句数字变成
+ * 可逐日展开的清单，回答的是「下周三我有什么事」。
+ *
+ * 三条纪律：
+ *   1. **判定读服务端标注**（`overdue` / `dueSoon`），客户端只拿节点自身的
+ *      `due`（或容器的 `end`）**分组**——日期口径只有在 `store.isDueWithin`
+ *      一处实现，重算就会出现「面板与服务端算出不同答案」而没人知道哪个对。
+ *      窗口因此与 `dueSoon` 一致（7 天），不开放 `days` 参数：开放了就等于
+ *      逼客户端重算。
+ *   2. **逾期单独成段**，不混进「今天」：逾期（该做没做）与今天到期（正要做）
+ *      是两种信号，混在一起会让人误判——与「被挡的单独折叠」同一个思路。
+ *   3. 已结束（done / dropped）的不进来：这是「未来要做的」，不是账本。
+ *
+ * 返回 `{ overdue: [item], days: [{ date, label, items }] }`；`days` 只含有事项
+ * 的那些天（空天不占一行——面板空间很贵，空白列表只会让真正有事的那些天更难找）。
+ */
+function upcomingByDay(plan, today) {
+  var t = typeof today === 'string' && today !== '' ? today : todayStr()
+  var flat = flattenNodes(plan)
+  var overdue = []
+  var byDate = {}
+  var order = []
+  for (var i = 0; i < flat.length; i++) {
+    var x = flat[i]
+    var n = x.node
+    if (!isOpen(n)) continue
+    var isOver = n.overdue === true || (n.overdue === undefined && overdueFallback(n, t))
+    var date = typeof n.due === 'string' && n.due !== '' ? n.due
+      : (typeof n.end === 'string' && n.end !== '' ? n.end : '')
+    if (isOver) { overdue.push(x); continue }
+    if (n.dueSoon !== true || date === '') continue
+    if (byDate[date] === undefined) { byDate[date] = []; order.push(date) }
+    byDate[date].push(x)
+  }
+  var rank = function (x) {
+    var o = overdueFallback(x.node, t) ? 0 : 1
+    return [x.node.starred === true ? 0 : 1, priorityRank(x.node.priority), o]
+  }
+  var cmp = function (a, b) {
+    var ra = rank(a)
+    var rb = rank(b)
+    return (ra[0] - rb[0]) || (ra[1] - rb[1]) || (ra[2] - rb[2])
+  }
+  // 逾期段：拖得越久越靠前（due 升序），星标 / 高管控仍优先。
+  overdue.sort(function (a, b) {
+    var ra = rank(a)
+    var rb = rank(b)
+    if (ra[0] !== rb[0]) return ra[0] - rb[0]
+    if (ra[1] !== rb[1]) return ra[1] - rb[1]
+    var ad = String(a.node.due || a.node.end || '')
+    var bd = String(b.node.due || b.node.end || '')
+    return ad.localeCompare(bd)
+  })
+  order.sort()
+  var days = []
+  for (var k = 0; k < order.length; k++) {
+    var items = byDate[order[k]]
+    items.sort(cmp)
+    days.push({ date: order[k], label: dayLabel(order[k]), items: items })
+  }
+  return { overdue: overdue, days: days }
 }
 
 // -------------------------------------------------------------- 看板分列
@@ -1116,6 +1190,8 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     FILTERS: FILTERS,
     focusList: focusList,
     filterCounts: filterCounts,
+    upcomingByDay: upcomingByDay,
+    dayLabel: dayLabel,
     boardColumns: boardColumns,
     moveTargets: moveTargets,
     COLLAPSE_KEY: COLLAPSE_KEY,

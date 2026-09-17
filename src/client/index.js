@@ -12,7 +12,7 @@
  *   · 委派标记（对象 · 回执状态 · 期望时间，逾期标红）
  *   · 落后标记（进度没跟上周期的节点，徽章显示差多少个百分点）
  *   · 完成证据标记（📎n 已附证据 / ⊘ 已完成但无证据，等人核验）
- *   · 筛选条（重要度高 / 我委派出去的 / 本周到期 / 逾期 / 落后 / 无证据的完成项）
+ *   · 筛选条（重要度高 / 我委派出去的 / 未来 7 天（按天分组）/ 逾期 / 落后 / 无证据的完成项）
  *   · 就地编辑：双击改名、拖拽排序与归位、折叠展开（层级深了要能收）
  *
  * 勾选、徽章、归位、删除、改名、排序都直接回写 plan.json，所以面板与 agent
@@ -292,6 +292,12 @@ const CSS = [
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
   '.dsh-wb-path{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
   '.dsh-wb-empty{padding:var(--wb-sp-5);text-align:center;color:var(--wb-fg-2);line-height:1.8;}',
+  // ── 未来日程（按天分组）────────────────────────────────────────────
+  // 日期标题比正文小一号、次级色：它是**分组标记**，不是内容；要一眼看得出
+  // 「这几条属于同一天」，又不能和待办标题抢注意力。
+  '.dsh-wb-daygroup{margin-top:var(--wb-sp-4);}',
+  '.dsh-wb-dayhead{font:var(--dsw-font-xxxs-11);font-weight:500;color:var(--wb-fg-2);padding:var(--wb-sp-1) var(--wb-sp-2);letter-spacing:.02em;}',
+  '.dsh-wb-dayhead.late{color:var(--wb-danger);}',
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
@@ -2576,20 +2582,14 @@ function apply(ctx) {
     }
 
     if (state.filter !== 'all') {
-      // 聚焦列表：筛选结果通常跨层级，摊平并带上路径比树形更好读。
-      const items = focusList(plan, state.filter, todayStr())
-      const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
-      if (items.length === 0) {
-        body.push(h('div', { className: 'dsh-wb-empty', key: 'nofocus' },
-          h('div', null, '「' + label + '」下没有未完成的事项。')))
-      }
-      for (const item of items) {
+      // 聚焦行：扁平列表与未来日程共用（两处各画一遍，迟早会长出不一致）。
+      const focusRow = (item) => {
         const node = item.node
         const isLeaf = item.type === 'todo'
         // 完成语义一体化：叶子计划（无子项）也能勾选完成，只是通路不同
         // （计划走 /node-set 的 status，待办走 /todo-set）。
         const canCheck = isLeaf || childrenOf(node).length === 0
-        body.push(h('div', { className: 'dsh-wb-focus', key: item.path },
+        return h('div', { className: 'dsh-wb-focus', key: item.path },
           canCheck
             ? h('input', {
               type: 'checkbox',
@@ -2612,8 +2612,40 @@ function apply(ctx) {
             title: '编辑全部信息',
             onClick: () => openEdit(node),
           }, '✎'),
-        ))
+        )
       }
+
+      // 「本周到期」是一个**时间视角**，不是一个筛选结果：同一批事项按天摊开
+      // 才回答得了「下周三我有什么事」。所以这一档走按天分组（逾期单独置顶），
+      // 其余筛选器仍是扁平列表。
+      if (state.filter === 'week') {
+        const up = upcomingByDay(plan, todayStr())
+        if (up.overdue.length === 0 && up.days.length === 0) {
+          body.push(h('div', { className: 'dsh-wb-empty', key: 'noup' },
+            h('div', null, '未来 7 天没有安排。')))
+        }
+        if (up.overdue.length > 0) {
+          body.push(h('div', { className: 'dsh-wb-daygroup', key: 'late' },
+            h('div', { className: 'dsh-wb-dayhead late' }, '逾期（' + up.overdue.length + '）'),
+            up.overdue.map(focusRow)))
+        }
+        for (const d of up.days) {
+          body.push(h('div', { className: 'dsh-wb-daygroup', key: d.date },
+            h('div', { className: 'dsh-wb-dayhead' }, d.label + (d.date === todayStr() ? ' · 今天' : '')),
+            d.items.map(focusRow)))
+        }
+        rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+        if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+        return h('div', { className: 'dsh-wb-wrap' }, rows)
+      }
+
+      const items = focusList(plan, state.filter, todayStr())
+      const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
+      if (items.length === 0) {
+        body.push(h('div', { className: 'dsh-wb-empty', key: 'nofocus' },
+          h('div', null, '「' + label + '」下没有未完成的事项。')))
+      }
+      for (const item of items) body.push(focusRow(item))
       rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)

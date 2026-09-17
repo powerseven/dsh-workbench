@@ -1766,3 +1766,50 @@ test('已纳入工作计划的叶子：进工作计划栏、有勾选框、可�
     planPayload = keep
   }
 })
+
+// ------------------------------------------------- 未来日程（按天分组，Things 3 形态）
+
+/** 相对今天偏移 offset 天的 YYYY-MM-DD（与 todayStr 同为本地时区口径）。 */
+function dayFromNow(offset) {
+  const d = new Date()
+  d.setDate(d.getDate() + offset)
+  const m = String(d.getMonth() + 1).padStart(2, '0')
+  const day = String(d.getDate()).padStart(2, '0')
+  return d.getFullYear() + '-' + m + '-' + day
+}
+const monthDay = (offset) => {
+  const d = new Date()
+  d.setDate(d.getDate() + offset)
+  return (d.getMonth() + 1) + '月' + d.getDate() + '日'
+}
+
+test('「未来 7 天」按天分组：逾期单独置顶，空天不占行', async () => {
+  const keep = planPayload
+  const tmp = await mkdtemp(join(tmpdir(), 'dsh-wb-up-'))
+  try {
+    const call = hostCall(tmp)
+    await call('plan_node_add', { title: '拖了两天的活', due: dayFromNow(-2) })
+    await call('plan_node_add', { title: '明天要交的活', due: dayFromNow(1) })
+    await call('plan_node_add', { title: '三天后的事', due: dayFromNow(3) })
+    planPayload = (await call('plan_show')).plan
+
+    const { render, view } = await mount()
+    const chip = byClass(view, 'dsh-wb-chip').find((c) => textOf(c).includes('未来 7 天'))
+    assert.ok(chip !== undefined, '筛选条上应有「未来 7 天」芯片')
+    chip.props.onClick(ev())
+
+    const page = render()
+    const heads = byClass(page, 'dsh-wb-dayhead').map((h) => textOf(h))
+    assert.equal(heads[0], '逾期（1）', '逾期单独一段，且排在最前')
+    assert.equal(heads.length, 3, '逾期 + 明天 + 三天后；中间那天没有事项就不占行')
+    assert.ok(heads[1].includes(monthDay(1)), '第二天是「明天」那一组：' + heads[1])
+    assert.ok(heads[2].includes(monthDay(3)), '第三天是「三天后」那一组：' + heads[2])
+    // 逾期段里的那条不该再出现在「今天/明天」组里（同一个节点只出现一次）。
+    const tasks = byClass(page, 'dsh-wb-focus').map((r) => textOf(r))
+    assert.equal(tasks.filter((t) => t.includes('拖了两天的活')).length, 1)
+    assert.ok(classesOf(byClass(page, 'dsh-wb-dayhead')[0]).includes('late'), '逾期标题要标出来')
+  } finally {
+    planPayload = keep
+    await rm(tmp, { recursive: true, force: true })
+  }
+})
