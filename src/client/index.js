@@ -1670,8 +1670,15 @@ function apply(ctx) {
       return h('span', { className: 'dsh-wb-deleg' + (d.overdueReceipt ? ' late' : ''), title: lines.join('\n') }, text)
     }
 
-    /** 管控缺口提示（重要度为高但缺周期/负责人等）。 */
+    /**
+     * 管控缺口提示。**只在「高」档显示**：normal 档那条是「建议补一个截止日期」，
+     * 而绝大多数待办本来就没有截止日期——于是它变成常驻噪声，反而没人看它
+     * （真机反馈：「那个感叹号是什么意思」）。high 档才是显式承诺了完整流程的，
+     * 缺周期 / 缺负责人 / 完成没证据都值得摆出来。
+     */
     const warnBadge = (node) => {
+      const p = node.priority === 'high' || node.priority === 'low' ? node.priority : 'normal'
+      if (p !== 'high') return null
       const list = Array.isArray(node.warnings) ? node.warnings : []
       if (list.length === 0) return null
       return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, '⚠︎')
