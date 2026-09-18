@@ -108,8 +108,11 @@ test('别名层落在面板自己的根上，不在 :root', () => {
   // 浅色算死，body[data-ds-dark-theme] 的暗色映射传不下来——这正是「换了主题
   // 面板不跟着变」的成因。声明在 .dsh-wb-wrap 才随上下文一起翻转。
   const { flat } = cssBlock()
+  // 允许写成选择器列表：手机浮球注册在宿主的 shell.overlay 里、不在 .dsh-wb-wrap
+  // 之下，所以它必须自己带一份别名层。要求只有两条：列表里必须有 .dsh-wb-wrap，
+  // 且一律不许写在 :root 上。
   assert.ok(
-    flat.includes('.dsh-wb-wrap{--wb-fg:var(--dsw-alias-label-primary)'),
+    /\.dsh-wb-wrap[^{}]*\{--wb-fg:var\(--dsw-alias-label-primary\)/.test(flat),
     '别名层没有声明在 .dsh-wb-wrap 上',
   )
   assert.ok(!flat.includes(':root{'), '别名层不应声明在 :root 上')

@@ -43,7 +43,10 @@ const CSS = [
   // 替换的，写在 :root(html) 会按 html 的浅色算死，body 换成暗色也传不下来——
   // 那正是「换了主题面板不跟着变」的成因。落在自己的根上才随上下文一起翻转，
   // 顺带不污染全局命名空间。
-  '.dsh-wb-wrap{'
+  // 别名层同时声明在「面板根」和「浮球根」上：浮球虽然渲染在面板树里，但它是
+  // position:fixed 的独立根，自己带一份别名层最稳（与坑 #18 同源：var() 在声明它的
+  // 那个元素上就完成替换）。
+  '.dsh-wb-wrap,.dsh-wb-fab{'
   + '--wb-fg:var(--dsw-alias-label-primary);'
   + '--wb-fg-2:var(--dsw-alias-label-secondary);'
   // 只用两级文字。面板字号全在 11–13px，宿主更浅的两级灰（tertiary 3.7:1、
@@ -57,6 +60,9 @@ const CSS = [
   // 于是「蓝」在面板里恒等于「可交互 / 正在进行」，不再有第二、第三种含义。
   + '--wb-accent:var(--dsw-alias-link);'
   + '--wb-accent-soft:var(--dsw-alias-state-business-tertiary);'
+  // 浮层/浮球的底：宿主的「浮层与气泡」底。面板自身不用它（面板跟着宿主栏背景），
+  // 但悬浮在内容之上的东西必须自己有不透明的底，否则底下的字会透上来。
+  + '--wb-bg:var(--dsw-alias-bg-overlay);'
   // 语义色里只有 danger 在白底够 4.5:1，可以直接上文字；warn 只有 2.8:1、
   // success 只有 2.3:1，所以它俩只做软底，文字一律走中性。
   + '--wb-danger:var(--dsw-alias-state-error-primary);'
@@ -67,8 +73,21 @@ const CSS = [
   + '--wb-sp-1:2px;--wb-sp-2:4px;--wb-sp-3:6px;--wb-sp-4:8px;--wb-sp-5:12px;'
   + '--wb-r-1:4px;--wb-r-2:6px;--wb-r-3:8px;--wb-pill:999px;'
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
-  + 'display:flex;flex-direction:column;height:100%;min-height:0;'
   + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
+  // 面板自身的布局单独一条。浮球不要这些：它是 fixed 定位的独立根，
+  // 套上 height:100% 会把整个浮层铺满，还会挡掉下面的点击。
+  '.dsh-wb-wrap{display:flex;flex-direction:column;height:100%;min-height:0;}',
+  // ── 手机快速记录（面板树里的一部分，打开「工作计划」时才存在）──────────
+  // 只在触摸设备渲染；固定在底部居中并让出安全区。
+  '.dsh-wb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--wb-sp-5) + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:var(--wb-sp-2);pointer-events:auto;z-index:2147483000;}',
+  '.dsh-wb-fabball{width:48px;height:48px;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-fabitem{border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;white-space:nowrap;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-3) var(--wb-sp-5);}',
+  '.dsh-wb-fabitem.primary{border-color:var(--wb-accent);background:var(--wb-accent-soft);font-weight:600;}',
+  // 输入浮层：用 fixed 而不是跟着浮球走，方便按键盘高度整体上移（visualViewport）。
+  '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
+  '.dsh-wb-fabsheet .dsh-wb-fabrow{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  '.dsh-wb-fabhead{font:var(--dsw-font-xxs-strong-12);flex:1;min-width:0;}',
+  '.dsh-wb-fabnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;white-space:pre-wrap;}',
   // 面板内统一按 border-box 算盒模型。缺了这条时，`width:100%` 且带 padding/border
   // 的输入框（.dsh-wb-inp / .dsh-wb-atextarea）会**实打实多出** 12px padding + 2px
   // 边框：详情页里每个字段都被撑出 14px，输入框还会越过面板右边界。宿主没有全局
@@ -2491,6 +2510,17 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
+    // 手机快速记录：**无条件调用**（钩子顺序必须与视图无关——详情页/设置页会提前
+    // return，那时少调一次就会少几个钩子，React 会报「渲染的钩子数不一致」）。
+    // 它自己只在触摸设备上返回元素；这里只决定要不要把它挂进树里（只挂主视图）。
+    const touchNow = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
+      && window.matchMedia('(pointer: coarse)').matches
+    const quickEntry = QuickEntry({
+      sessionId,
+      touch: touchNow,
+      mic: (setter) => micButton(setter, 'mic'),
+    })
+
     // 详情编辑页与设置页优先：打开时它们本身就是一屏，不必再往下走树 / 看板的组装。
     if (form !== null) return detailPage()
     if (state.showSettings === true) return h('div', { className: 'dsh-wb-wrap' }, settingsPage())
@@ -2848,7 +2878,131 @@ function apply(ctx) {
     }, body))
     if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
 
-    return h('div', { className: 'dsh-wb-wrap' }, rows)
+    return h('div', { className: 'dsh-wb-wrap' }, rows, quickEntry)
+  }
+
+  // ========================================================== 手机快速记录
+  // 渲染在**面板自己**的树里（不是宿主主界面）：只有打开「工作计划」时才存在，
+  // 会话页/设置页都不出现。触摸设备上固定在底部居中。
+  //
+  // 交互刻意只有一个输入框：**不分「记待办 / 问 AI」**，一律交给 /ai-parse——
+  // 它一次调用同时回 { reply, tasks }，由模型判断你想干什么（问就答，报事就给草稿）。
+  // 零新增工具、零新增路由：解析走既有路由，采纳仍走 /node-add。
+  const QuickEntry = (props) => {
+    const sessionId = props.sessionId
+    const [open, setOpen] = React.useState(false)
+    const [draft, setDraft] = React.useState('')
+    const [note, setNote] = React.useState('')
+    const [tasks, setTasks] = React.useState([])
+    const [busy, setBusy] = React.useState(false)
+    const [gap, setGap] = React.useState(0)   // 键盘占掉的高度
+
+    // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
+    React.useEffect(() => {
+      const vv = typeof window === 'undefined' ? undefined : window.visualViewport
+      if (vv === undefined || vv === null) return undefined
+      const onShift = () => setGap(Math.max(0, window.innerHeight - vv.height - vv.offsetTop))
+      vv.addEventListener('resize', onShift)
+      vv.addEventListener('scroll', onShift)
+      onShift()
+      return () => { vv.removeEventListener('resize', onShift); vv.removeEventListener('scroll', onShift) }
+    }, [open])
+
+    const send = async (method, args) => {
+      const res = await fetch('/api/workbench/' + method, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify(Object.assign({ sessionId }, args || {})),
+      })
+      let payload = null
+      try { payload = await res.json() } catch (e) { /* 非 JSON 响应，落到状态码分支 */ }
+      if (!res.ok || payload === null || payload.ok === false) {
+        throw new Error(payload !== null && payload.error ? payload.error : 'HTTP ' + res.status)
+      }
+      return payload
+    }
+
+    const close = () => { setOpen(false); setDraft(''); setNote(''); setTasks([]) }
+
+    const submit = async () => {
+      const text = draft.trim()
+      if (text === '' || busy) return
+      setBusy(true)
+      setNote('')
+      setTasks([])
+      try {
+        const r = await send('ai-parse', { text })
+        const reply = r.reply === undefined || r.reply === null ? '' : String(r.reply)
+        setNote(reply === '' ? '（没有回复）' : reply)
+        setTasks(Array.isArray(r.tasks) ? r.tasks : [])
+        setDraft('')
+      } catch (e) {
+        setNote('失败：' + (e !== null && e !== undefined && e.message ? e.message : String(e)))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    /** AI 给了草稿就顺手能落库（逐条走既有 /node-add）——采纳与否仍由人点。 */
+    const adopt = async () => {
+      if (busy || tasks.length === 0) return
+      setBusy(true)
+      try {
+        for (const t of tasks) {
+          if (t === null || t === undefined || t.title === undefined) continue
+          await send('node-add', { title: String(t.title), due: t.due, priority: t.priority })
+        }
+        setNote('已把 ' + tasks.length + ' 条记进收件箱')
+        setTasks([])
+      } catch (e) {
+        setNote('失败：' + (e !== null && e !== undefined && e.message ? e.message : String(e)))
+      } finally {
+        setBusy(false)
+      }
+    }
+
+    if (props.touch !== true) return null
+    if (open !== true) {
+      return h('div', { className: 'dsh-wb-fab' },
+        h('button', {
+          className: 'dsh-wb-fabball',
+          title: '说一句：AI 帮你记下或回答',
+          onClick: () => { setOpen(true); setNote(''); setTasks([]) },
+        }, '＋'))
+    }
+    return h('div', { className: 'dsh-wb-fab' },
+      h('div', {
+        className: 'dsh-wb-fabsheet',
+        style: { bottom: 'calc(' + (12 + gap) + 'px + env(safe-area-inset-bottom,0px))' },
+      },
+      h('div', { className: 'dsh-wb-fabrow' },
+        h('span', { className: 'dsh-wb-fabhead' }, '说一句（AI 判断是记录还是回答）'),
+        h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: close }, '×'),
+      ),
+      h('div', { className: 'dsh-wb-fabrow' },
+        h('input', {
+          className: 'dsh-wb-inp',
+          autoFocus: true,
+          value: draft,
+          placeholder: '比如「明天提醒我交电费」，或「哪些逾期了」…',
+          onChange: (e) => setDraft(e.target.value),
+          onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } },
+        }),
+        props.mic === undefined ? null : props.mic(setDraft),
+        h('button', {
+          className: 'dsh-wb-aibtn primary',
+          disabled: busy || draft.trim() === '',
+          onClick: submit,
+        }, busy ? '…' : '问'),
+      ),
+      note === '' ? null : h('div', { className: 'dsh-wb-fabnote' }, note),
+      tasks.length > 0
+        ? h('div', { className: 'dsh-wb-fabrow' },
+          h('button', { className: 'dsh-wb-aibtn', disabled: busy, onClick: adopt },
+            '把 ' + tasks.length + ' 条记进收件箱'))
+        : null,
+      ),
+    )
   }
 
   ctx.effect(() => betterSidebar.registerTab({

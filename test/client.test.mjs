@@ -254,10 +254,18 @@ beforeEach(() => {
  */
 async function mount() {
   let tab = null
+  const slotEntries = []
+  const slots = {
+    inject: (key, cb) => { cb(); return () => {} },
+    register: (options, component) => { slotEntries.push({ options, component }); return () => {} },
+  }
   wbModule.apply({
-    get: (name) => (name === 'slots' ? {} : name === 'betterSidebar'
+    get: (name) => (name === 'slots' ? slots : name === 'betterSidebar'
       ? { registerTab: (def) => { tab = def; return () => {} } }
       : undefined),
+    // Cordis 里 `ctx.slots` 是注入后的服务属性，替身必须也把它摆出来——只给 get()
+    // 的话 `ctx.slots.inject` 会直接抛（真实运行时有，测试里没有，就会假失败）。
+    slots,
     // Cordis 的 effect 是**立即执行**回调（返回值当清理函数），注册 tab 就发生在
     // 某个 effect 里——写成空函数会让面板静默不注册，而报错却是「面板应注册成
     // 一个 tab」，看不出是替身的错。
@@ -278,7 +286,7 @@ async function mount() {
   }
   render()
   await flush()
-  return { render, view: render(), badge: () => tab.badge() }
+  return { render, view: render(), badge: () => tab.badge(), slotEntries }
 }
 
 // ------------------------------------------------------------ 元素树工具
@@ -1863,4 +1871,54 @@ test('「未来 7 天」按天分组：逾期滚入今日组，空天不占行',
     planPayload = keep
     await rm(tmp, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------- 手机快速记录
+
+/** matchMedia 替身：浮球按 (pointer: coarse) 决定自己出不出来。 */
+function stubCoarse(matches) {
+  const old = globalThis.window.matchMedia
+  globalThis.window.matchMedia = (q) => ({
+    matches: matches === true && String(q).indexOf('coarse') >= 0,
+    addEventListener: () => {},
+    removeEventListener: () => {},
+  })
+  return () => { globalThis.window.matchMedia = old }
+}
+
+test('快速记录长在面板树里：触摸设备才出现，且不往宿主插槽注册任何东西', async () => {
+  let restore = stubCoarse(true)
+  const touchMount = await mount()
+  assert.ok(byClass(touchMount.view, 'dsh-wb-fabball').length > 0, '触摸设备上面板里应有浮球')
+  // 它是面板树的一部分（打开计划面板才存在），不是注册到宿主的框架级浮层。
+  assert.equal(touchMount.slotEntries.length, 0, '不该往宿主插槽注册东西')
+  restore()
+
+  restore = stubCoarse(false)
+  const deskMount = await mount()
+  assert.equal(byClass(deskMount.view, 'dsh-wb-fabball').length, 0, '非触摸设备不该有浮球')
+  restore()
+})
+
+test('快速记录只有一个输入框：说一句统一走 /ai-parse，由模型判断是记录还是回答', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { render, view } = await mount()
+    assert.ok(byClass(view, 'dsh-wb-fabball').length > 0, '触摸设备应有浮球')
+
+    byClass(view, 'dsh-wb-fabball')[0].props.onClick(ev())
+    const opened = render()
+    const input = byClass(opened, 'dsh-wb-inp')
+      .find((i) => String(i.props.placeholder || '').indexOf('比如') >= 0)
+    assert.ok(input !== undefined, '打开后应当只有一个「说一句」的输入框')
+    assert.equal(byClass(opened, 'dsh-wb-fabitem').length, 0, '不再有「记待办 / 问 AI」的分岔按钮')
+
+    input.props.onChange({ target: { value: '哪些逾期了' } })
+    requests = []
+    byText(render(), 'dsh-wb-aibtn', '问').props.onClick(ev())
+    await settle()
+    assert.equal(requests.length, 1, '一次提交 = 一次调用')
+    assert.ok(String(requests[0].path).endsWith('/ai-parse'), '统一走 /ai-parse')
+    assert.equal(requests[0].body.text, '哪些逾期了')
+  } finally { restore() }
 })
