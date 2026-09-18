@@ -338,6 +338,7 @@ const CSS = [
   '.dsh-wb-aibtn:disabled{opacity:.4;cursor:default;}',
   // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
   '.dsh-wb-aibtn.primary{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-aibtn.mic.on{background:var(--wb-accent-soft);color:var(--wb-fg);}',
   '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
   '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
@@ -739,7 +740,11 @@ function apply(ctx) {
       if (SR === null) return null
       return h('button', {
         key,
-        className: 'dsh-wb-mic' + (listening ? ' on' : ''),
+        // 同时挂 dsh-wb-aibtn：麦克风与旁边那颗「＋」「↑」是同一排控件，
+        // 必须共用同一套外观。只写 dsh-wb-mic 的话，它那份样式只定义在
+        // .dsh-wb-add 之下——在顶部这行里它会退回浏览器默认按钮（灰底+描边，
+        // 真机反馈：「话筒不该有个框，应该跟旁边的加号一样」）。
+        className: 'dsh-wb-aibtn dsh-wb-mic' + (listening ? ' on' : ''),
         title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
       }, listening ? icon('stop') : icon('mic'))
