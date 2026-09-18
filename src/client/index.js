@@ -308,6 +308,12 @@ const CSS = [
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
   // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
   '@media (hover:none){.dsh-wb-act{opacity:1;}.dsh-wb-task,.dsh-wb-focus{padding:var(--wb-sp-3) var(--wb-sp-2);}}',
+  // 窄屏（手机）：标题占住第一行，后面那串徽章与行内动作整体折到第二行。
+  // 不动 DOM 是因为病根就在 flex 本身——标题是 `flex:1`（basis 0，可被压到 0），
+  // 而它后面跟着最多 5 个徽章 + 截止日期 + 6 个 `flex:none` 的动作按钮：窄屏上
+  // 标题只剩一个字宽，中文又能任意断行，于是标题**竖着排下来**（手机上实测如此）。
+  // 给标题一个 60% 的 flex-basis 并允许换行，一行装不下的自然落到下一行。
+  '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle,.dsh-wb-plantitle{flex:1 1 60%;min-width:0;}}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
@@ -1750,7 +1756,7 @@ function apply(ctx) {
       const rows = [h('div', Object.assign({
         className: 'dsh-wb-task' + dragClass(node.id),
         key: 'row',
-        style: { marginLeft: (10 + depth * 16) + 'px' },
+        style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' },
         title: statusLabel(node.status) + (node.note ? '\n' + node.note : '')
           + '\n（单击切换完成 · 双击改名 · 拖动可排序或归位）',
       }, dragOnto(node, false)),
@@ -1816,7 +1822,7 @@ function apply(ctx) {
       rows.push(filesBlock(node))
       // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
       if (state.adding === node.id) {
-        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -1874,7 +1880,7 @@ function apply(ctx) {
       const head = h('div', Object.assign({
         className: 'dsh-wb-planhead' + dragClass(node.id),
         key: 'head',
-        style: { marginLeft: (depth * 16) + 'px' },
+        style: { marginLeft: 'min(' + (depth * 16) + 'px, 12%)' },
         // id 不再显示出来：它是等宽不定的（`n3` 与 `n12` 宽度不同），摆在标题前
         // 会让**每条计划的标题起始位置都不一样**，看着就是「上下没对齐」。
         // 保留成 data-id，定位/排查时仍然拿得到。
@@ -1927,7 +1933,7 @@ function apply(ctx) {
       const body = [head]
       if (open) {
         if (meta.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 16) + 'px' } },
+          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: 'min(' + (depth * 16) + 'px, 12%)' } },
             meta.map((x, i) => h('span', { key: i }, x))))
         }
         // 不再画计划进度条。它横贯整行，紧贴在计划标题下面、子计划上面，读起来
@@ -1942,7 +1948,7 @@ function apply(ctx) {
           if (title === '') return
           addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
-        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
+        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' } },
           h('input', {
             type: 'text',
             autoFocus: true,
