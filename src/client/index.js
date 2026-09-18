@@ -1898,7 +1898,9 @@ function apply(ctx) {
           title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
           onClick: (e) => { e.stopPropagation(); setStarOn(node, node.starred !== true) },
         }, '★'),
-        // 这里不再有「编辑」按钮：单击标题就是打开详情编辑页（见 titleProps），
+        // 这里不再有「编辑 / 关联资料 / 删除」按钮：单击标题就是打开详情编辑页，
+        // 资料关联与删除都在详情页里（见 titleProps），
+        // 原标题：
         // 行内再放一个 ✎ 是同一个入口的第二遍，还白占窄屏上宝贵的宽度。
         h('button', {
           className: 'dsh-wb-act',
@@ -1910,16 +1912,6 @@ function apply(ctx) {
           title: '加子项：往下拆，它会自动变成计划',
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, '＋'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '关联资料：Obsidian 文件 / 文件夹',
-          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '⎘'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '删除',
-          onClick: (e) => { e.stopPropagation(); doRemove(node) },
-        }, '×'),
         ),
       )]
       if (state.moving === node.id) rows.push(movePick(node))
@@ -2000,7 +1992,8 @@ function apply(ctx) {
         priBadge(node),
         q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
         h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
-        // 与待办行同理：点标题即打开详情，行内不再放 ✎。
+        // 与待办行同理：点标题即打开详情。行内也不再放「关联资料」与「删除」——
+        // 这两件都在详情页里（破坏性与资料关联不该在列表里误触）。
         h('button', {
           className: 'dsh-wb-act',
           title: '在这个计划下加一项',
@@ -2008,11 +2001,6 @@ function apply(ctx) {
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, '＋'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '关联资料：Obsidian 文件 / 文件夹',
-          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '⎘'),
         // 只有「已纳入工作计划的叶子」才有这一手：把它退回收件箱。纳入不该是单向门。
         filedOf(node)
           ? h('button', {
@@ -2021,11 +2009,6 @@ function apply(ctx) {
             onClick: (e) => { e.stopPropagation(); setFiledOn(node, false) },
           }, '↩')
           : null,
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '删除这个计划（连同子项）',
-          onClick: (e) => { e.stopPropagation(); doRemove(node) },
-        }, '×'),
         ),
       )
 

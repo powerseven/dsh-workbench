@@ -1148,34 +1148,9 @@ test('节点挂了文件关联：渲染出行，点 ✕ 写 node-set(fileRemove)
   }
 })
 
-test('点行内「⎘」展开内联表单，填入并点「关联」写 node-set(fileRef+fileKind)', async () => {
-  const { render, view } = await mount()
-  const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('表层待办'))[0]
-  assert.ok(row !== undefined, '应找到该待办行')
-  // 入口在行内的 .dsh-wb-act 组里（与 ✎/× 同级）：那里悬停才出现，且不占纵向空间。
-  // 早先它是一个独立的 .dsh-wb-files 块，块本身恒占 18px+4px，即使按钮 opacity:0。
-  const addBtn = byClass(row, 'dsh-wb-act').find((b) => textOf(b) === '⎘')
-  assert.ok(addBtn !== undefined, '行内应有「⎘ 关联资料」按钮')
-  addBtn.props.onClick(ev())
-  const withForm = render()
-  const fadd = byClass(withForm, 'dsh-wb-fadd')[0]
-  assert.ok(fadd !== undefined, '展开后应有内联表单')
-
-  const input = inputOf(fadd)
-  input.props.onChange({ target: { value: '需求.md' } })
-  const select = fadd.children.find((c) => c.type === 'select')
-  select.props.onChange({ target: { value: 'folder' } })
-
-  const fadd2 = byClass(render(), 'dsh-wb-fadd')[0]
-  requests = []
-  const linkBtn = fadd2.children.find((c) => c.type === 'button' && textOf(c) === '关联')
-  assert.ok(linkBtn !== undefined)
-  linkBtn.props.onClick(ev())
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].path, '/api/workbench/todo-set')
-  assert.equal(requests[0].body.fileRef, '需求.md')
-  assert.equal(requests[0].body.fileKind, 'folder')
-})
+// 行内的「⎘ 关联资料」与「× 删除」已撤掉：这两件事都收进详情页（破坏性操作与
+// 资料关联不该在列表里误触）。写路径本身没变——nl 的 fileRef/fileKind 仍走
+// /node-set，vault 渲染与核验由下面那条测试继续守着。
 
 test('配置 vault 后文件渲染成可点 obsidian:// 链接；文件不存在标 missing 且不渲染链接', async () => {
   const keep = planPayload
