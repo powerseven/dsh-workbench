@@ -371,19 +371,20 @@ test('tab 角标显示未完成数', async () => {
   assert.equal(badge(), 3, '三条待办都还没完成')
 })
 
-test('空工作区也能记下第一件事（不被迫去开对话；它就是第一个节点）', async () => {
+test('空工作区也能记下第一件事（入口在顶部；它就是第一个节点）', async () => {
   const keep = planPayload
   planPayload = { schema: 2, version: 1, title: '空', nodes: [] }
   try {
     const { render, view } = await mount()
-    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /记下第一件事/)
+    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /在上面跟 AI 说一句/)
 
-    // 收件箱输入框常驻在顶部：空工作区的入口是它 + AI，不再有单独的「建计划」。
-    const addRow = byClass(render(), 'dsh-wb-add')[0]
-    inputOf(addRow).props.onChange({ target: { value: '新主线' } })
+    // 入口只剩顶部那一行。没有模型服务时它退化成纯输入框——这条走的正是那条路。
+    const input = byClass(render(), 'dsh-wb-aiinput')[0]
+    assert.ok(input !== undefined, '空工作区也必须有录入入口')
+    input.props.onChange({ target: { value: '新主线' } })
 
     requests = []
-    inputOf(byClass(render(), 'dsh-wb-add')[0]).props.onKeyDown(ev({ key: 'Enter' }))
+    byClass(render(), 'dsh-wb-aiinput')[0].props.onKeyDown(ev({ key: 'Enter' }))
     await settle()
     assert.equal(requests.length, 1)
     assert.equal(requests[0].path, '/api/workbench/node-add')
@@ -625,20 +626,19 @@ function fakeSpeech() {
   return state
 }
 
-/** 收件箱那一行：输入框 + 语音按钮 + 记下（与「建计划」那一行靠按钮文案区分）。 */
-const inboxRow = (root) => byClass(root, 'dsh-wb-add')
-  .find((d) => d.children.some((c) => c.type === 'button' && textOf(c) === '记下'))
-const micOf = (row) => row.children.find((c) => classesOf(c).includes('dsh-wb-mic')) ?? null
+/** 收件箱那个常驻输入框已删除：顶部那行（AI 行，或没模型时的退化输入框）是唯一
+ *  入口，麦克风也只剩它那一个。递归找，不按直接子元素——挪一层就会静默找不到。 */
+const micOfPanel = (root) => byClass(root, 'dsh-wb-mic')[0] ?? null
 
 test('浏览器不支持语音时不渲染麦克风（不给一个永远点不亮的按钮）', async () => {
   const { view } = await mount()
-  assert.equal(micOf(inboxRow(view)), null)
+  assert.equal(micOfPanel(view), null)
 })
 
-test('语音结果写进输入框，回车即可记账——提交走的还是原来那条路', async () => {
+test('语音结果写进输入框——填的是顶部那个唯一入口', async () => {
   const sp = fakeSpeech()
   const { render } = await mount()
-  const mic = micOf(inboxRow(render()))
+  const mic = micOfPanel(render())
   assert.ok(mic !== null, '应当渲染出麦克风按钮')
 
   mic.props.onClick(ev())
@@ -646,21 +646,15 @@ test('语音结果写进输入框，回车即可记账——提交走的还是�
 
   // 中间结果也实时灌进输入框：用户说话时能看见字在长，而不是说完才一下子出现。
   sp.inst.onresult({ results: [[{ transcript: '补充核心表的负责人信息' }]] })
-  const after = inboxRow(render())
-  assert.equal(inputOf(after).props.value, '补充核心表的负责人信息')
-
-  // 关键：语音**只填输入框**，不新增写入通路。
-  requests = []
-  inputOf(after).props.onKeyDown(ev({ key: 'Enter' }))
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].path, '/api/workbench/node-add')
-  assert.equal(requests[0].body.title, '补充核心表的负责人信息')
+  const filled = byClass(render(), 'dsh-wb-aiinput')
+    .find((i) => i.props.value === '补充核心表的负责人信息')
+  assert.ok(filled !== undefined, '语音结果应当落在输入框里')
 })
 
 test('麦克风没授权时把原因说出来，不静默失败', async () => {
   const sp = fakeSpeech()
   const { render } = await mount()
-  micOf(inboxRow(render())).props.onClick(ev())
+  micOfPanel(render()).props.onClick(ev())
   sp.inst.onerror({ error: 'not-allowed' })
   // 「没授权」与「没听见」必须分开：前者要改浏览器设置，后者再试一次就行，
   // 混成一句「语音失败」等于什么都没说。
@@ -741,40 +735,9 @@ test('归位建议排在归位选择器最前，一点就归位，理由看得�
   }
 })
 
-test('记入收件箱后：有建议就自动展开选择器，没建议就不展开', async () => {
-  const { tmp, plan } = await planWithSuggestion()
-  const keep = planPayload
-  try {
-    // ① 有建议：记完立刻摊开，因为它是**行内**的，不打断连着记几条。
-    planPayload = plan
-    nodeEcho = { id: plan.nodes.find((n) => n.type === 'todo').id, type: 'todo', title: '补充核心表的负责人与更新频率' }
-    {
-      const { render } = await mount()
-      inputOf(inboxRow(render())).props.onChange({ target: { value: '补充核心表的负责人与更新频率' } })
-      inputOf(inboxRow(render())).props.onKeyDown(ev({ key: 'Enter' }))
-      await flush()
-      assert.ok(firstByClass(render(), 'dsh-wb-movepick') !== null, '有建议 → 自动展开')
-    }
-    // ② 没建议：白占一行就是噪声，不该弹。
-    planPayload = keep
-    const shared = planPayload.nodes.find((n) => n.type === 'todo')
-    nodeEcho = { id: shared.id, type: 'todo', title: shared.title }
-    {
-      const { render } = await mount()
-      const fresh = planPayload.nodes.find((n) => n.type === 'todo')
-      assert.ok(fresh !== undefined, '共享 fixture 应当有一条收件箱待办')
-      assert.deepEqual(fresh.parentSuggestions, [], '共享 fixture 这条应当没有建议')
-      inputOf(inboxRow(render())).props.onChange({ target: { value: shared.title } })
-      inputOf(inboxRow(render())).props.onKeyDown(ev({ key: 'Enter' }))
-      await flush()
-      assert.equal(firstByClass(render(), 'dsh-wb-movepick'), null, '没有建议 → 不展开')
-    }
-  } finally {
-    planPayload = keep
-    nodeEcho = null
-    await rm(tmp, { recursive: true, force: true })
-  }
-})
+// 「记完立刻展开归位建议」原先挂在收件箱常驻输入框的回调上，随那个输入框一起退场。
+// 归位选择器本身（含建议排序与理由）由上面那条测试继续守着；若之后要恢复
+// 「记完自动摊开」，应挂到顶部 AI 行采纳草稿成功之后。
 
 // ================================================================ AI 入口
 
@@ -804,10 +767,15 @@ const chipsOf = (view, i) => {
 
 const withAi = () => { aiStatus = { available: true, provider: 'deepseek', model: 'deepseek-chat' } }
 
-test('宿主没有模型服务时，AI 入口根本不渲染（不给点不亮的按钮）', async () => {
+test('宿主没有模型服务时：不给 AI 入口，但退化成能记事的纯输入框', async () => {
   const { view } = await mount()
-  assert.equal(aiEntry(view), null)
-  assert.equal(firstByClass(view, 'dsh-wb-ai'), null)
+  // AI 独有的那些（快捷问法 / 草稿 / 发送）一律不渲染——不给点不亮的按钮。
+  assert.equal(firstByClass(view, 'dsh-wb-ai'), null, 'AI 块不渲染')
+  assert.equal(byClass(view, 'dsh-wb-aibtn').length, 0, '不该有 AI 的发送按钮')
+  // 但录入必须还能做：零摩擦把事收进来是这个插件的立身之本，不能依赖模型。
+  const fallback = byClass(view, 'dsh-wb-aiinput')[0]
+  assert.ok(fallback !== undefined, '应当留一个退化输入框')
+  assert.match(String(fallback.props.placeholder), /记一条待办/)
 })
 
 test('AI 可用时顶部**常驻**一行输入（第一入口，不用先点开）', async () => {
@@ -819,9 +787,18 @@ test('AI 可用时顶部**常驻**一行输入（第一入口，不用先点开�
   assert.equal(firstByClass(render(), 'dsh-wb-aitask'), null, '还没解析，不该有草稿')
 })
 
-test('宿主没有模型服务时，AI 那一块整个不渲染', async () => {
-  const { render } = await mount()
-  assert.equal(aiEntry(render()), null, '点不亮的输入框不如不给')
+test('没有模型时的退化输入框：回车直接把事记进收件箱（不经过模型）', async () => {
+  const { render, view } = await mount()
+  const input = byClass(view, 'dsh-wb-aiinput')[0]
+  assert.ok(input !== undefined, '退化输入框应当存在')
+  input.props.onChange({ target: { value: '买牛奶' } })
+  requests = []
+  byClass(render(), 'dsh-wb-aiinput')[0].props.onKeyDown(ev({ key: 'Enter' }))
+  await settle()
+  assert.equal(requests.length, 1, '一次提交 = 一次写入')
+  assert.ok(String(requests[0].path).endsWith('/node-add'), '直接走 /node-add，不绕模型')
+  assert.equal(requests[0].body.title, '买牛奶')
+  assert.equal('parent' in requests[0].body, false, '顶层待办不带 parent')
 })
 
 test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
@@ -1166,14 +1143,14 @@ test('节点挂了文件关联：渲染出行，点 ✕ 写 node-set(fileRemove)
   }
 })
 
-test('点行内「🔗」展开内联表单，填入并点「关联」写 node-set(fileRef+fileKind)', async () => {
+test('点行内「⎘」展开内联表单，填入并点「关联」写 node-set(fileRef+fileKind)', async () => {
   const { render, view } = await mount()
   const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('表层待办'))[0]
   assert.ok(row !== undefined, '应找到该待办行')
   // 入口在行内的 .dsh-wb-act 组里（与 ✎/× 同级）：那里悬停才出现，且不占纵向空间。
   // 早先它是一个独立的 .dsh-wb-files 块，块本身恒占 18px+4px，即使按钮 opacity:0。
-  const addBtn = byClass(row, 'dsh-wb-act').find((b) => textOf(b) === '🔗')
-  assert.ok(addBtn !== undefined, '行内应有「🔗 关联资料」按钮')
+  const addBtn = byClass(row, 'dsh-wb-act').find((b) => textOf(b) === '⎘')
+  assert.ok(addBtn !== undefined, '行内应有「⎘ 关联资料」按钮')
   addBtn.props.onClick(ev())
   const withForm = render()
   const fadd = byClass(withForm, 'dsh-wb-fadd')[0]
@@ -1417,26 +1394,8 @@ test('面板跟着形态走：有子项渲染成计划行，无子项渲染成�
   planPayload = keep
 })
 
-test('表头「＋ 新建」打开新建表单，保存走 node-add 且带上位置', async () => {
-  const { render, view } = await mount()
-  byClass(view, 'dsh-wb-icon').find((b) => textOf(b) === '＋ 新建').props.onClick(ev())
-  await settle()
-  const page = render()
-  assert.equal(textOf(firstByClass(page, 'dsh-wb-formtitle')), '新建待办')
-
-  inpByPh(page, '要做什么').props.onChange({ target: { value: '表单里新建的一条' } })
-  // 放在：选到「工作主线」下
-  const place = firstByClass(render(), 'dsh-wb-fadd')
-  place.children[0].props.onChange({ target: { value: idOf('工作主线') } })
-  requests = []
-  btnByText(render(), '保存').props.onClick(ev())
-  await settle()
-
-  const add = requests.find((r) => r.path === '/api/workbench/node-add')
-  assert.equal(add.body.title, '表单里新建的一条')
-  assert.equal(add.body.type, 'todo')
-  assert.equal(add.body.parent, idOf('工作主线'), '表单里选的位置要传出去')
-})
+// 这条依赖已删除的入口（表头「＋ 新建」）；新建改由顶部 AI 行的草稿承载，
+// 详情表单本身仍由其它用例覆盖。
 
 test('详情页能删一条完成证据（面板此前只能加不能删）', async () => {
   const keep = planPayload
@@ -1478,12 +1437,8 @@ test('详情页渐进披露：编辑时「更多」默认收起，点开才展�
   assert.ok(byText(render(), 'dsh-wb-morebtn', '收起更多') !== null, '按钮变成「收起更多」')
 })
 
-test('新建表单默认展开「更多」：要一次填完，不该再让人多点一下', async () => {
-  const { render, view } = await mount()
-  byClass(view, 'dsh-wb-icon').find((b) => textOf(b) === '＋ 新建').props.onClick(ev())
-  await settle()
-  assert.ok(byText(render(), 'dsh-wb-morebtn', '收起更多') !== null, '新建：更多默认展开')
-})
+// 这条依赖已删除的入口（表头「＋ 新建」）；新建改由顶部 AI 行的草稿承载，
+// 详情表单本身仍由其它用例覆盖。
 
 test('返回 = 放弃改动，不发任何写入', async () => {
   const { render, view } = await mount()

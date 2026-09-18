@@ -11,7 +11,7 @@
  *   · 重要程度徽章（点击在高/中/低之间循环）
  *   · 委派标记（对象 · 回执状态 · 期望时间，逾期标红）
  *   · 落后标记（进度没跟上周期的节点，徽章显示差多少个百分点）
- *   · 完成证据标记（📎n 已附证据 / ⊘ 已完成但无证据，等人核验）
+ *   · 完成证据标记（⎘n 已附证据 / ⊘ 已完成但无证据，等人核验）
  *   · 筛选条（重要度高 / 我委派出去的 / 未来 7 天（按天分组）/ 逾期 / 落后 / 无证据的完成项）
  *   · 就地编辑：双击改名、拖拽排序与归位、折叠展开（层级深了要能收）
  *
@@ -232,7 +232,7 @@ const CSS = [
   // ── 落后于周期 ──────────────────────────────────────────────────────────
   // 琥珀软底已砍；落后靠字重 + 「落后 N%」文字本身表意，不靠颜色。
   '.dsh-wb-behind{flex:none;font:var(--dsw-font-xxxs-strong-11);white-space:nowrap;color:var(--wb-fg);font-weight:600;cursor:help;}',
-  // ── 完成证据：📎n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
+  // ── 完成证据：⎘n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
   // 两者都自带符号，颜色冗余，统一中性；缺失证据靠字重强调。
   '.dsh-wb-evid{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
   '.dsh-wb-evid.bad{color:var(--wb-fg);font-weight:600;}',
@@ -341,7 +341,7 @@ const CSS = [
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
-  // 节点上的「做这件事要看的资料」。与证据（📎）刻意区分：资料是文件夹也能挂的
+  // 节点上的「做这件事要看的资料」。与证据（⎘）刻意区分：资料是文件夹也能挂的
   // 开放式清单，不进「无证据完成项」那条审查线。
   '.dsh-wb-files{display:flex;flex-direction:column;gap:var(--wb-sp-2);margin:var(--wb-sp-2) 0 0;padding-left:var(--wb-sp-3);}',
   '.dsh-wb-file{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
@@ -549,12 +549,15 @@ function apply(ctx) {
     const state = useSnapshot()
     const sessionId = props.sessionId
     // 输入框用组件本地状态：不放进 store，否则每敲一个字都要重渲整棵计划树。
-    // 一个常驻（收件箱）+ 一个按需（节点下加子项），一次只会有后者一个。
-    const [draft, setDraft] = React.useState('')
+    // 现在只剩「按需」那一个（在某条计划下加子项），一次只会有它一个——
+    // 收件箱那个常驻输入框已经删掉：面板顶部的 AI 输入行就是唯一入口。
     const [nodeDraft, setNodeDraft] = React.useState('')
     // 就地编辑的三份状态也放本地，理由同上：拖拽时鼠标每动一下都要更新落点，
     // 放进全局 store 会让 tab 角标跟着重算（它订阅 store.get），白烧一遍整棵树。
     const [collapsed, setCollapsed] = React.useState(() => loadCollapsed())
+    // 宿主没有模型服务时，顶部那行退化成**纯输入框**（直接 /node-add 进收件箱）。
+    // 没有它，删掉收件箱常驻输入框之后，那种机器上的面板会「只能看、不能记」。
+    const [plainDraft, setPlainDraft] = React.useState('')
     // 视图切换（树 / 看板）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
     const [view, setView] = React.useState(() => loadView())
     const setViewPersist = (v) => { setView(v); saveView(v) }
@@ -673,7 +676,7 @@ function apply(ctx) {
         className: 'dsh-wb-mic' + (listening ? ' on' : ''),
         title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
-      }, listening ? '■' : '🎙')
+      }, listening ? '■' : '◉')
     }
 
     // ============================================================== AI 助手
@@ -926,7 +929,32 @@ function apply(ctx) {
      */
     const aiBlock = () => {
       const ai = state.ai === null || state.ai === undefined ? { available: false } : state.ai
-      if (ai.available !== true) return null
+      // 没有模型服务：不整块消失，退化成「记一条待办」的纯输入框。
+      // 记仍然要走得通——「零摩擦把事收进来」是这个插件的立身之本，不能依赖模型。
+      if (ai.available !== true) {
+        const submitPlain = () => {
+          const title = plainDraft.trim()
+          if (title === '') return
+          addNode({ title }, () => { setPlainDraft(''); flash('已记入收件箱') })
+        }
+        return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' },
+          h('div', { className: 'dsh-wb-aibar' },
+            h('input', {
+              className: 'dsh-wb-aiinput',
+              placeholder: '记一条待办，回车入收件箱…',
+              value: plainDraft,
+              onChange: (e) => setPlainDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitPlain() } },
+            }),
+            micButton(setPlainDraft, 'mic'),
+            h('button', {
+              className: 'dsh-wb-iconbtn',
+              title: '记入收件箱',
+              disabled: plainDraft.trim() === '',
+              onClick: submitPlain,
+            }, '＋'),
+          ))
+      }
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
       const hasChat = aiTurns.length > 0 || aiTasks.length > 0
       const open = aiOpen === true || hasChat
@@ -991,7 +1019,7 @@ function apply(ctx) {
       if (aiPics.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aipics', key: 'pics' },
           aiPics.map((p, i) => h('span', { className: 'dsh-wb-aipic', key: 'p' + i },
-            '🖼 ' + p.name,
+            '▢ ' + p.name,
             h('button', {
               title: '去掉这张',
               onClick: () => setAiPics(aiPics.filter((_, j) => j !== i)),
@@ -1058,7 +1086,7 @@ function apply(ctx) {
         }, '×'),
       ),
       typeof task.advice === 'string' && task.advice !== ''
-        ? h('div', { className: 'dsh-wb-advice', key: 'adv' }, '💡 ' + task.advice) : null,
+        ? h('div', { className: 'dsh-wb-advice', key: 'adv' }, '※ ' + task.advice) : null,
       Array.isArray(task.history) && task.history.length > 0
         ? h('div', { className: 'dsh-wb-aihist', key: 'hist' },
           task.history.map((x, i) => h('div', { key: 'h' + i },
@@ -1589,8 +1617,8 @@ function apply(ctx) {
       const lines = ['委派给 ' + String(d.to) + '：' + delegateLabel(d.status)]
       if (d.expectAt !== null && d.expectAt !== undefined) lines.push('期望完成：' + d.expectAt)
       if (d.at !== null && d.at !== undefined) lines.push('委派时间：' + String(d.at).slice(0, 10))
-      if (d.overdueReceipt) lines.push('⚠ 已逾期未回执')
-      else if (d.overdueWork) lines.push('⚠ 已逾期未完成')
+      if (d.overdueReceipt) lines.push('⚠︎ 已逾期未回执')
+      else if (d.overdueWork) lines.push('⚠︎ 已逾期未完成')
       return h('span', { className: 'dsh-wb-deleg' + (d.overdueReceipt ? ' late' : ''), title: lines.join('\n') }, text)
     }
 
@@ -1598,7 +1626,7 @@ function apply(ctx) {
     const warnBadge = (node) => {
       const list = Array.isArray(node.warnings) ? node.warnings : []
       if (list.length === 0) return null
-      return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, '⚠')
+      return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, '⚠︎')
     }
 
     /**
@@ -1623,7 +1651,7 @@ function apply(ctx) {
 
     /**
      * 完成证据。两种形态，回答的是同一个问题——「这条完成，凭什么信」：
-     *   📎n  附了 n 条证据，悬停列出来；文件类证据若服务端核验不存在，标红
+     *   ⎘n  附了 n 条证据，悬停列出来；文件类证据若服务端核验不存在，标红
      *   ⊘    已完成但没有证据 → 会进「无证据的完成项」筛选，等人核验
      * 这里没有「补证据」的输入框：证据的自然生产者是 agent（它才知道自己
      * 产出了哪个文件、跑过什么命令），手填一份的代价高于让 agent 补。
@@ -1642,13 +1670,13 @@ function apply(ctx) {
       return h('span', {
         className: 'dsh-wb-evid' + (bad.length > 0 ? ' bad' : ''),
         title: '证据 ' + list.length + ' 条\n' + lines.join('\n')
-          + (bad.length > 0 ? '\n⚠ ' + bad.join('\n⚠ ') : ''),
-      },       (bad.length > 0 ? '⚠' : '📎') + list.length)
+          + (bad.length > 0 ? '\n⚠︎ ' + bad.join('\n⚠︎ ') : ''),
+      },       (bad.length > 0 ? '⚠︎' : '⎘') + list.length)
     }
 
     /**
      * 文件库关联块：列出节点挂到 Obsidian vault 的资料（文件 / 文件夹）。
-     * 与证据（📎）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
+     * 与证据（⎘）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
      * 无关，也不进「无证据的完成项」那条审查线。
      * vault 已配置时渲染可点的 obsidian:// 链接；host 算好的 fileWarnings 命中
      * 则标红（文件可能被挪走了）。
@@ -1690,7 +1718,7 @@ function apply(ctx) {
           key: 'f-' + ref,
           className: 'dsh-wb-file' + (missingRefs.has(ref) ? ' missing' : ''),
         },
-          h('span', { className: 'dsh-wb-fkind' }, isFolder ? '📁' : '📄'),
+          h('span', { className: 'dsh-wb-fkind' }, isFolder ? '▤' : '▢'),
           inner,
           f.note ? h('span', { className: 'dsh-wb-fnote', title: f.note }, '· ' + f.note) : null,
           h('button', {
@@ -1806,7 +1834,7 @@ function apply(ctx) {
           ? h('span', {
             className: 'dsh-wb-taskdue',
             title: '被挡住：等 ' + node.blocked.join('、'),
-          }, '🔒') : null,
+          }, '⊠') : null,
         // 「纳入工作计划」只在**收件箱那一层**（depth 0）出现，而且做得常显而不是
         // 悬停才出：它的意义就是催人把收件箱清空，藏起来等于不做。措辞用「纳入计划」
         // 而不是「提升为计划」——它并不改变节点的形态，只是不再待在收件箱。
@@ -1838,7 +1866,7 @@ function apply(ctx) {
           className: 'dsh-wb-act',
           title: '关联资料：Obsidian 文件 / 文件夹',
           onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '🔗'),
+        }, '⎘'),
         h('button', {
           className: 'dsh-wb-act',
           title: '删除',
@@ -1936,7 +1964,7 @@ function apply(ctx) {
           className: 'dsh-wb-act',
           title: '关联资料：Obsidian 文件 / 文件夹',
           onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '🔗'),
+        }, '⎘'),
         // 只有「已纳入工作计划的叶子」才有这一手：把它退回收件箱。纳入不该是单向门。
         filedOf(node)
           ? h('button', {
@@ -2092,12 +2120,12 @@ function apply(ctx) {
       rows.push(h('div', { className: 'dsh-wb-formlist', key: 'open' }, open.map((x, i) => row(x, i))))
       if (blocked.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aihead', key: 'bh' },
-          h('span', null, '🔒 被挡住的（' + blocked.length + '）'),
+          h('span', null, '⊠ 被挡住的（' + blocked.length + '）'),
           h('span', { className: 'dsh-wb-formnote' }, '它们等的前置还没做完'),
         ))
         rows.push(h('div', { className: 'dsh-wb-formlist', key: 'blocked' }, blocked.map((x, i) =>
           h('div', { className: 'dsh-wb-task', key: x.node.id },
-            h('span', { className: 'dsh-wb-todoseq' }, '🔒'),
+            h('span', { className: 'dsh-wb-todoseq' }, '⊠'),
             titleNode(x.node, 'dsh-wb-tasktitle', { canToggle: false }),
             h('span', { className: 'dsh-wb-path' }, '等 ' + x.blockers.join('、')),
             h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(x.node) }, '✎'),
@@ -2122,7 +2150,7 @@ function apply(ctx) {
       const colsView = cols.map((col) => {
         const head = h('div', { className: 'dsh-wb-colhead', key: 'h' },
           col.kind === 'inbox'
-            ? h('span', { className: 'dsh-wb-coltitle' }, '📥 收件箱')
+            ? h('span', { className: 'dsh-wb-coltitle' }, '▤ 收件箱')
             : h('span', { className: 'dsh-wb-coltitle' }, String(col.title)),
           col.kind === 'plan'
             ? h('span', { className: 'dsh-wb-colpct' }, pct(col.progress))
@@ -2425,7 +2453,7 @@ function apply(ctx) {
           h('span', { className: 'dsh-wb-label' }, '依赖（这些做完才能做这条）'),
           depNodes.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, depNodes.map((d) => h('div', { className: 'dsh-wb-formrow', key: d.id },
-              h('span', { className: 'dsh-wb-fmeta' }, d.status === 'done' ? '✓ 已完成' : '⏳ 未完成'),
+              h('span', { className: 'dsh-wb-fmeta' }, d.status === 'done' ? '✓ 已完成' : '◷ 未完成'),
               h('span', { className: 'dsh-wb-fref' }, String(d.title)),
               h('button', { className: 'dsh-wb-fbtn', title: '移除依赖', onClick: () => removeDepOn(node, d.id) }, '×'),
             )))
@@ -2562,20 +2590,18 @@ function apply(ctx) {
         }, '看板'),
       ),
       h('div', { className: 'dsh-wb-headright' },
-        // 「＋ 新建」打开完整表单（可一次填全负责人 / 周期 / 指标 / 备注）。
-        // 它**不取代**底部那行快速输入——「随手记一条」的成本必须趋近于零，
-        // 记的时候想不起来负责人是正常的，事后再补。
-        h('button', {
-          className: 'dsh-wb-icon',
-          key: 'new',
-          title: '新建计划或待办（打开完整表单）',
-          onClick: () => openNew('todo', null),
-        }, '＋ 新建'),
-        h('span', { className: 'dsh-wb-pct' }, pct(sum.progress)),
+        // 这里不再有「＋ 新建」：新建的入口就是顶部那行 AI 输入（说一句，模型给草稿，
+        // 计划与待办都在草稿里成形），表头只留「看/管」这类控件。
         // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
-        sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部收起（只看主线）', onClick: collapseAll }, '⊟') : null,
-        sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部展开', onClick: () => applyCollapse([]) }, '⊞') : null,
-        h('button', { className: 'dsh-wb-icon', title: '留档一个版本', onClick: snapshot, disabled: !sum.hasPlan }, '⤓'),
+        // 收起 / 展开合成**一个**按钮：同一个位子按当前状态切换，图标与提示都跟着变
+        // （还折着东西时给「全部展开」，否则给「全部收起」）。表头按钮已经够多了。
+        sum.depth >= 2 ? h('button', {
+          className: 'dsh-wb-icon',
+          title: collapsed.length > 0 ? '全部展开' : '全部收起（只看主线）',
+          onClick: () => (collapsed.length > 0 ? applyCollapse([]) : collapseAll()),
+        }, collapsed.length > 0 ? '⊞' : '⊟') : null,
+        // 表头不再显示整体完成度，也不放「留档一个版本」——版本留档是自动的
+        // （每次写入前都会归档），要手动留档让 agent 调 plan_snapshot 即可。
         h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, '⟳'),
         // 设置：工作区级配置收拢到一个界面（vault、AI 人设……）。
         h('button', {
@@ -2685,7 +2711,7 @@ function apply(ctx) {
         const items = viewItems(plan, v.ids)
         body.push(h('div', { className: 'dsh-wb-customview', key: 'cv' },
           h('div', { className: 'dsh-wb-aihead' },
-            h('span', null, '📋 ' + v.name + '（' + items.length + '）'),
+            h('span', null, '≡ ' + v.name + '（' + items.length + '）'),
             h('button', {
               className: 'dsh-wb-aibtn',
               title: '删除这个视图（只删本机的视图定义，不动任务）',
@@ -2787,61 +2813,20 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    // 收件箱：先记下来，之后再归位（↳）。没有它，「收不进来」这条就一直成立。
-    //
-    // 记入收件箱走这一个函数。回车与「记下」按钮原来各写了一遍提交逻辑——两份就会
-    // 有一份漏掉后面的「展开建议」，于是键盘记的没有建议、点按钮记的才有。
-    const submitInbox = () => {
-      const title = draft.trim()
-      if (title === '') return
-      addNode({ title, type: 'todo' }, (res) => {
-        setDraft('')
-        // 记完立刻把「该归到哪」摊开。它是**行内**的（不是弹窗），不打断连着记几条
-        // 的节奏；没有够格的建议就不弹，免得白占一行。
-        const fresh = freshNode(res)
-        const sug = fresh !== null && Array.isArray(fresh.parentSuggestions) ? fresh.parentSuggestions : []
-        if (sug.length > 0) {
-          store.set({ moving: fresh.id })
-          flash('已记入收件箱 · 建议归到「' + sug[0].title + '」')
-        } else {
-          flash('已记入收件箱')
-        }
-      })
-    }
     const inboxRows = []
     inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-      h('span', { className: 'dsh-wb-planid' }, '📥'),
+      h('span', { className: 'dsh-wb-planid' }, '▤'),
       h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
       h('span', { className: 'dsh-wb-count' }, inbox.length > 0
         ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
         : '空'),
-    ))
-    inboxRows.push(h('div', { className: 'dsh-wb-add', key: 'add' },
-      h('input', {
-        type: 'text',
-        placeholder: '记一条待办，回车入收件箱…',
-        value: draft,
-        onChange: (e) => setDraft(e.target.value),
-        onKeyDown: (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault()
-            submitInbox()
-          }
-        },
-      }),
-      micButton(setDraft, 'mic'),
-      h('button', {
-        onClick: submitInbox,
-        disabled: draft.trim() === '',
-        title: '记入收件箱',
-      }, '记下'),
     ))
     for (const todo of sortNodes(inbox)) inboxRows.push(renderTodo(todo, 0))
     body.push(h('div', { className: 'dsh-wb-inbox', key: 'inbox' }, inboxRows))
 
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-        h('div', null, '记下第一件事，或在上面跟 AI 说一句——'),
+        h('div', null, '在上面跟 AI 说一句就行——'),
         h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
           '「帮我把这个季度的工作拆成计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } },
@@ -3020,7 +3005,7 @@ function apply(ctx) {
   ctx.effect(() => betterSidebar.registerTab({
     id: 'dsh-workbench:plan',
     title: '工作计划',
-    icon: (size) => h('span', { style: { fontSize: size, lineHeight: '1' } }, '🎯'),
+    icon: (size) => h('span', { style: { fontSize: size, lineHeight: '1' } }, '◎'),
     order: 40,
     single: true,
     badge: () => {
