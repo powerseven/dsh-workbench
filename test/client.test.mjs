@@ -289,6 +289,26 @@ async function mount() {
   return { render, view: render(), badge: () => tab.badge(), slotEntries }
 }
 
+/**
+ * 挂载面板并点开 AI 浮球。
+ *
+ * AI 入口**只有浮球那一个**（面板顶部原来那行常驻输入已经撤掉），所以凡是测
+ * AI 的用例，起点都是「先点开浮球」。返回的形状与 mount() 一样——`view` 换成
+ * 展开后的树，后续的 `render()` 照旧（浮层开着这件事是组件状态，不会自己关）。
+ *
+ * 不手写「浮层里应该有什么」：这里只断言点得开、看得见输入框；浮层的内容由
+ * 各用例自己按 title / 稳定类名去找。
+ */
+async function mountAi() {
+  const ctx = await mount()
+  const ball = firstByClass(ctx.view, 'dsh-wb-fabball')
+  assert.ok(ball !== null, '应有浮球（AI 的唯一入口）')
+  ball.props.onClick(ev())
+  const view = ctx.render()
+  assert.ok(firstByClass(view, 'dsh-wb-aiinput') !== null, '点开浮球后应看到输入框')
+  return Object.assign(ctx, { view })
+}
+
 // ------------------------------------------------------------ 元素树工具
 
 /** 取一棵元素树的全部文本（用于「这一行显示的是什么」这类断言）。 */
@@ -374,14 +394,14 @@ test('tab 角标显示未完成数', async () => {
   assert.equal(badge(), 3, '三条待办都还没完成')
 })
 
-test('空工作区也能记下第一件事（入口在顶部；它就是第一个节点）', async () => {
+test('空工作区也能记下第一件事（入口在浮球里；它就是第一个节点）', async () => {
   const keep = planPayload
   planPayload = { schema: 2, version: 1, title: '空', nodes: [] }
   try {
-    const { render, view } = await mount()
-    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /在上面跟 AI 说一句/)
+    const { render, view } = await mountAi()
+    assert.match(textOf(firstByClass(view, 'dsh-wb-empty')), /浮球/)
 
-    // 入口只剩顶部那一行。没有模型服务时它退化成纯输入框——这条走的正是那条路。
+    // 录入入口只有浮球那一个。没有模型服务时浮层里是纯输入框——这条走的正是那条路。
     const input = byClass(render(), 'dsh-wb-aiinput')[0]
     assert.ok(input !== undefined, '空工作区也必须有录入入口')
     input.props.onChange({ target: { value: '新主线' } })
@@ -634,13 +654,13 @@ function fakeSpeech() {
 const micOfPanel = (root) => byClass(root, 'dsh-wb-mic')[0] ?? null
 
 test('浏览器不支持语音时不渲染麦克风（不给一个永远点不亮的按钮）', async () => {
-  const { view } = await mount()
+  const { view } = await mountAi()
   assert.equal(micOfPanel(view), null)
 })
 
-test('语音结果写进输入框——填的是顶部那个唯一入口', async () => {
+test('语音结果写进输入框——填的是浮层里那个唯一入口', async () => {
   const sp = fakeSpeech()
-  const { render } = await mount()
+  const { render } = await mountAi()
   const mic = micOfPanel(render())
   assert.ok(mic !== null, '应当渲染出麦克风按钮')
 
@@ -656,7 +676,7 @@ test('语音结果写进输入框——填的是顶部那个唯一入口', async
 
 test('麦克风没授权时把原因说出来，不静默失败', async () => {
   const sp = fakeSpeech()
-  const { render } = await mount()
+  const { render } = await mountAi()
   micOfPanel(render()).props.onClick(ev())
   sp.inst.onerror({ error: 'not-allowed' })
   // 「没授权」与「没听见」必须分开：前者要改浏览器设置，后者再试一次就行，
@@ -756,8 +776,7 @@ const settle = async () => {
   for (let i = 0; i < 6; i++) await new Promise((r) => setTimeout(r, 0))
 }
 
-/** 表头那颗「✨ AI」按钮。不可用时不该存在。 */
-// AI 现在是**常驻**的一行输入（第一入口），不再藏在 ✨ 按钮后面。
+/** 浮层里的 AI 输入框。入口只有这一个（面板顶部那行已经撤掉）。 */
 const aiEntry = (view) => firstByClass(view, 'dsh-wb-aiinput')
 /** AI 行的按钮：按文字找；发送键已换成内联 SVG（没有文字），用它稳定的类名兜住——
  *  这样各处继续写 aiBtn(view, '↑') 也不必逐个改。 */
@@ -773,8 +792,16 @@ const chipsOf = (view, i) => {
 
 const withAi = () => { aiStatus = { available: true, provider: 'deepseek', model: 'deepseek-chat' } }
 
-test('宿主没有模型服务时：不给 AI 入口，但退化成能记事的纯输入框', async () => {
+test('收起时只有一颗浮球：不占面板的行，也不渲染任何 AI 内容', async () => {
+  withAi()
   const { view } = await mount()
+  assert.ok(firstByClass(view, 'dsh-wb-fabball') !== null, '应有浮球')
+  assert.equal(firstByClass(view, 'dsh-wb-aiinput'), null, '没点开时不该有输入框')
+  assert.equal(firstByClass(view, 'dsh-wb-aibtn'), null, '没点开时不该有 AI 按钮')
+})
+
+test('宿主没有模型服务时：不给 AI 能力，但退化成能记事的纯输入框', async () => {
+  const { view } = await mountAi()
   // AI 独有的那些（快捷问法 / 草稿 / 发送）一律不渲染——不给点不亮的按钮。
   assert.equal(firstByClass(view, 'dsh-wb-ai'), null, 'AI 块不渲染')
   assert.equal(byClass(view, 'dsh-wb-aibtn').length, 0, '不该有 AI 的发送按钮')
@@ -784,17 +811,17 @@ test('宿主没有模型服务时：不给 AI 入口，但退化成能记事的�
   assert.match(String(fallback.props.placeholder), /记一条待办/)
 })
 
-test('AI 可用时顶部**常驻**一行输入（第一入口，不用先点开）', async () => {
+test('AI 可用时浮层里是问句式输入框（浮球仍是唯一入口）', async () => {
   withAi()
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   const entry = aiEntry(view)
-  assert.ok(entry !== null, '打开面板就该看见输入框，而不是先找个按钮')
+  assert.ok(entry !== null, '点开浮球就该看见输入框')
   assert.match(String(entry.props.placeholder), /问一句|问一问|要做什么/)
   assert.equal(firstByClass(render(), 'dsh-wb-aitask'), null, '还没解析，不该有草稿')
 })
 
 test('没有模型时的退化输入框：回车直接把事记进收件箱（不经过模型）', async () => {
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   const input = byClass(view, 'dsh-wb-aiinput')[0]
   assert.ok(input !== undefined, '退化输入框应当存在')
   input.props.onChange({ target: { value: '买牛奶' } })
@@ -810,7 +837,7 @@ test('没有模型时的退化输入框：回车直接把事记进收件箱（�
 test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
   withAi()
   aiReply = { tasks: [] }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
 
   const box = aiEntry(render())
@@ -828,7 +855,7 @@ test('点解析：发 /ai-parse，带上文本与 sessionId', async () => {
 
 test('没有内容点解析：不发请求，只提示', async () => {
   withAi()
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   requests = []
   aiBtn(render(), '↑').props.onClick(ev())
@@ -850,7 +877,7 @@ test('解析结果渲染成草稿；点建议**不直接落库**，而是填进�
       ],
     }],
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
@@ -897,7 +924,7 @@ test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', a
       candidates: [{ kind: 'inbox', title: '收件箱', why: '先记下来' }, { kind: 'new', title: '', why: '' }],
     }],
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
@@ -932,7 +959,7 @@ test('选「新建计划」= 先建容器（一次写入），待办仍等人在
       ],
     }],
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
@@ -979,7 +1006,7 @@ test('新建计划没名字就先不动：不建空壳计划，也不建待办',
       candidates: [{ kind: 'inbox', title: '收件箱', why: '' }, { kind: 'new', title: '', why: '' }],
     }],
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   // 先给点素材：空输入会直接被拦下（见「没有内容点解析」那条），
   // 不填的话这条用例其实什么都没测。
@@ -997,7 +1024,7 @@ test('新建计划没名字就先不动：不建空壳计划，也不建待办',
 test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
   withAi()
   aiReply = { tasks: [] }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
 
   const file = {
@@ -1027,7 +1054,7 @@ test('语音按钮在 AI 输入框旁边，识别结果写进 AI 文本域', asy
     this.start = () => { this.onresult({ results: [[{ transcript: '下周三前把台账补完' }]] }) }
     this.stop = () => { this.onend() }
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   const opened = render()
   const mic = firstByClass(opened, 'dsh-wb-mic')
@@ -1455,7 +1482,7 @@ test('保存放在头栏里，不随表单滚动——手机上输入法盖不�
 test('只提问：回复渲染成对话，且下一轮带上历史（接着聊）', async () => {
   withAi()
   aiReply = { reply: '目前 1 件逾期：补台账。', tasks: [] }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '哪些逾期了' } })
   aiBtn(render(), '↑').props.onClick(ev())
@@ -1482,7 +1509,7 @@ test('只提问：回复渲染成对话，且下一轮带上历史（接着聊�
 test('快捷问法：点一下就把问题发出去（不用想怎么问）', async () => {
   withAi()
   aiReply = { reply: '该做：补台账', tasks: [] }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   requests = []
   const quick = byClass(render(), 'dsh-wb-quick')
@@ -1506,7 +1533,7 @@ test('草稿卡给出专家意见与历史依据（新增时要结合当前与�
       candidates: [{ kind: 'plan', id: idOf('工作主线'), title: '工作主线', why: '模型判断' }],
     }],
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
   aiBtn(render(), '↑').props.onClick(ev())
@@ -1529,7 +1556,7 @@ test('点选项：把它的 patch 并进草稿再打开表单，不直接建', a
       candidates: [{ kind: 'inbox', title: '收件箱', why: '先记下来' }],
     }],
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '把台账补完' } })
   aiBtn(render(), '↑').props.onClick(ev())
@@ -1621,7 +1648,7 @@ test('AI 清单卡：渲染 items 与命中情况，可一键存为视图并出�
       { title: '不存在的活', id: null, ok: false },
     ] },
   }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '明天在家能做什么' } })
   aiBtn(render(), '↑').props.onClick(ev())
@@ -1647,7 +1674,7 @@ test('AI 清单卡：渲染 items 与命中情况，可一键存为视图并出�
 test('存下的视图出现在筛选条，点开只列清单里还活着的任务', async () => {
   withAi()
   aiReply = { reply: 'ok', tasks: [], list: { title: '周末冲刺', items: [{ title: '深层待办', id: idOf('深层待办'), ok: true }] } }
-  const { render, view } = await mount()
+  const { render, view } = await mountAi()
   aiEntry(view).props.onFocus(ev())
   aiEntry(render()).props.onChange({ target: { value: '组个清单' } })
   aiBtn(render(), '↑').props.onClick(ev())
@@ -1817,9 +1844,10 @@ test('「未来 7 天」按天分组：逾期滚入今日组，空天不占行',
   }
 })
 
-// ---------------------------------------------------------------- 手机快速记录
+// ---------------------------------------------------------------- 浮球（AI 唯一入口）
 
-/** matchMedia 替身：浮球按 (pointer: coarse) 决定自己出不出来。 */
+/** matchMedia 替身：旧版本里浮球按 (pointer: coarse) 决定出不出来，现在所有设备
+ *  都出。留着这个替身是为了**证明**这一点：不管粗指针还是细指针，浮球都在。 */
 function stubCoarse(matches) {
   const old = globalThis.window.matchMedia
   globalThis.window.matchMedia = (q) => ({
@@ -1830,7 +1858,7 @@ function stubCoarse(matches) {
   return () => { globalThis.window.matchMedia = old }
 }
 
-test('快速记录长在面板树里：触摸设备才出现，且不往宿主插槽注册任何东西', async () => {
+test('浮球长在面板树里，且**所有设备**都出现（它不再只是手机形态）', async () => {
   let restore = stubCoarse(true)
   const touchMount = await mount()
   assert.ok(byClass(touchMount.view, 'dsh-wb-fabball').length > 0, '触摸设备上面板里应有浮球')
@@ -1840,29 +1868,43 @@ test('快速记录长在面板树里：触摸设备才出现，且不往宿主�
 
   restore = stubCoarse(false)
   const deskMount = await mount()
-  assert.equal(byClass(deskMount.view, 'dsh-wb-fabball').length, 0, '非触摸设备不该有浮球')
+  assert.ok(byClass(deskMount.view, 'dsh-wb-fabball').length > 0,
+    '桌面端也要有浮球——面板顶部那行 AI 输入已经撤掉，这是唯一入口')
   restore()
 })
 
-test('快速记录只有一个输入框：说一句统一走 /ai-parse，由模型判断是记录还是回答', async () => {
-  const restore = stubCoarse(true)
-  try {
-    const { render, view } = await mount()
-    assert.ok(byClass(view, 'dsh-wb-fabball').length > 0, '触摸设备应有浮球')
+test('浮球点开就是一个输入框：说一句统一走 /ai-parse，由模型判断是记录还是回答', async () => {
+  withAi()
+  aiReply = { tasks: [], reply: '没有逾期。' }
+  const { render, view } = await mountAi()
+  assert.ok(byClass(view, 'dsh-wb-fabball').length === 0, '展开后不再显示球本身')
+  assert.ok(firstByClass(view, 'dsh-wb-fabsheet') !== null, '点开的是浮层')
+  assert.equal(byClass(view, 'dsh-wb-fabitem').length, 0, '不再有「记待办 / 问 AI」的分岔按钮')
 
-    byClass(view, 'dsh-wb-fabball')[0].props.onClick(ev())
-    const opened = render()
-    const input = byClass(opened, 'dsh-wb-inp')
-      .find((i) => String(i.props.placeholder || '').indexOf('比如') >= 0)
-    assert.ok(input !== undefined, '打开后应当只有一个「说一句」的输入框')
-    assert.equal(byClass(opened, 'dsh-wb-fabitem').length, 0, '不再有「记待办 / 问 AI」的分岔按钮')
+  const input = aiEntry(view)
+  input.props.onChange({ target: { value: '哪些逾期了' } })
+  requests = []
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+  assert.equal(requests.length, 1, '一次提交 = 一次调用')
+  assert.ok(String(requests[0].path).endsWith('/ai-parse'), '统一走 /ai-parse')
+  assert.equal(requests[0].body.text, '哪些逾期了')
+})
 
-    input.props.onChange({ target: { value: '哪些逾期了' } })
-    requests = []
-    byText(render(), 'dsh-wb-aibtn', '问').props.onClick(ev())
-    await settle()
-    assert.equal(requests.length, 1, '一次提交 = 一次调用')
-    assert.ok(String(requests[0].path).endsWith('/ai-parse'), '统一走 /ai-parse')
-    assert.equal(requests[0].body.text, '哪些逾期了')
-  } finally { restore() }
+test('浮层里的「收起」把浮球还回来，会话不丢', async () => {
+  withAi()
+  aiReply = { tasks: [], reply: '没什么要紧的。' }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '今天怎么样' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  aiBtn(render(), '收起').props.onClick(ev())
+  const folded = render()
+  assert.ok(firstByClass(folded, 'dsh-wb-fabball') !== null, '收起后回到浮球')
+  assert.equal(firstByClass(folded, 'dsh-wb-fabsheet'), null, '浮层不再在树里')
+
+  // 再点开：刚才那轮对话还在——它只活在这次会话里，收起不该等于清空。
+  firstByClass(folded, 'dsh-wb-fabball').props.onClick(ev())
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-chat')), /没什么要紧的/)
 })

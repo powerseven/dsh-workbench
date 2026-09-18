@@ -128,22 +128,26 @@ const CSS = [
   // 面板自身的布局单独一条。浮球不要这些：它是 fixed 定位的独立根，
   // 套上 height:100% 会把整个浮层铺满，还会挡掉下面的点击。
   '.dsh-wb-wrap{display:flex;flex-direction:column;height:100%;min-height:0;}',
-  // ── 手机快速记录（面板树里的一部分，打开「工作计划」时才存在）──────────
-  // 只在触摸设备渲染；固定在底部居中并让出安全区。
+  // ── 浮球：AI 的唯一入口（面板树里的一部分，打开「工作计划」时才存在）──────
+  // 固定在底部居中并让出安全区。**所有设备都渲染**——它不再只是手机形态：
+  // 面板顶部那行 AI 输入已经撤掉，桌面端也靠它进。
   '.dsh-wb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--wb-sp-5) + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:var(--wb-sp-2);pointer-events:auto;z-index:2147483000;}',
   '.dsh-wb-fabball{width:48px;height:48px;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--wb-f1s);}',
-  '.dsh-wb-fabitem{border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;white-space:nowrap;font:var(--wb-f2);padding:var(--wb-sp-3) var(--wb-sp-5);}',
-  '.dsh-wb-fabitem.primary{border-color:var(--wb-accent);background:var(--wb-accent-soft);font-weight:600;}',
   // 输入浮层：用 fixed 而不是跟着浮球走，方便按键盘高度整体上移（visualViewport）。
-  '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
+  // 它现在装的是一整块 AI 内容（输入行 + 问答 + 草稿卡 + 清单卡），所以自己滚，
+  // 而不是把浮层撑出屏幕——手机上它已经占满整个视口宽度了（390px）。
+  '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));max-height:min(72vh,560px);overflow-y:auto;overscroll-behavior:contain;background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
   '.dsh-wb-fabsheet .dsh-wb-fabrow{display:flex;align-items:center;gap:var(--wb-sp-2);}',
   '.dsh-wb-fabhead{font:var(--wb-f2s);flex:1;min-width:0;}',
-  '.dsh-wb-fabnote{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;white-space:pre-wrap;}',
+  // AI 内容块搬进浮层后要交出「面板里那条横幅」的样式：上下留白与外框归浮层，
+  // 否则同一块内容会套上两层边框、两圈 padding。
+  '.dsh-wb-fabsheet .dsh-wb-aiwrap{padding:0;border-bottom:none;}',
   // 面板内统一按 border-box 算盒模型。缺了这条时，`width:100%` 且带 padding/border
   // 的输入框（.dsh-wb-inp / .dsh-wb-atextarea）会**实打实多出** 12px padding + 2px
   // 边框：详情页里每个字段都被撑出 14px，输入框还会越过面板右边界。宿主没有全局
   // reset（实测 body 的 box-sizing 就是 content-box），所以这一层必须自己声明。
-  '.dsh-wb-wrap,.dsh-wb-wrap *,.dsh-wb-wrap *::before,.dsh-wb-wrap *::after{box-sizing:border-box;}',
+  '.dsh-wb-wrap,.dsh-wb-wrap *,.dsh-wb-wrap *::before,.dsh-wb-wrap *::after,'
+  + '.dsh-wb-fab,.dsh-wb-fab *{box-sizing:border-box;}',
   // 焦点环。此前全表没有一条 :focus-visible，键盘用户完全看不出停在哪。
   // outline 不参与布局，所以出现时行不会跳。
   '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
@@ -333,9 +337,11 @@ const CSS = [
   '.dsh-wb-aitext::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-aitext:focus{border-color:var(--wb-accent);}',
   // 无描边、软底：宿主 composer 里的图标按钮就是这个样子（真机反馈：一排描边方框很山寨）。
-  '.dsh-wb-aibtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-aibtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
-  '.dsh-wb-aibtn:disabled{opacity:.4;cursor:default;}',
+  // dsh-wb-iconbtn 是**没有模型时**那颗「记入收件箱」的提交键——它跟发送键是同一个
+  // 位子上的同一件事，外观必须共用一套；单独写一份迟早会走形。
+  '.dsh-wb-aibtn,.dsh-wb-iconbtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-aibtn:hover:not(:disabled),.dsh-wb-iconbtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
+  '.dsh-wb-aibtn:disabled,.dsh-wb-iconbtn:disabled{opacity:.4;cursor:default;}',
   // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
   '.dsh-wb-aibtn.primary{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-aibtn.mic.on{background:var(--wb-accent-soft);color:var(--wb-fg);}',
@@ -617,12 +623,12 @@ function apply(ctx) {
     const sessionId = props.sessionId
     // 输入框用组件本地状态：不放进 store，否则每敲一个字都要重渲整棵计划树。
     // 现在只剩「按需」那一个（在某条计划下加子项），一次只会有它一个——
-    // 收件箱那个常驻输入框已经删掉：面板顶部的 AI 输入行就是唯一入口。
+    // 收件箱那个常驻输入框已经删掉，录入只有浮球那一个入口（见 fab()）。
     const [nodeDraft, setNodeDraft] = React.useState('')
     // 就地编辑的三份状态也放本地，理由同上：拖拽时鼠标每动一下都要更新落点，
     // 放进全局 store 会让 tab 角标跟着重算（它订阅 store.get），白烧一遍整棵树。
     const [collapsed, setCollapsed] = React.useState(() => loadCollapsed())
-    // 宿主没有模型服务时，顶部那行退化成**纯输入框**（直接 /node-add 进收件箱）。
+    // 宿主没有模型服务时，浮层里的输入行退化成**纯输入框**（直接 /node-add 进收件箱）。
     // 没有它，删掉收件箱常驻输入框之后，那种机器上的面板会「只能看、不能记」。
     const [plainDraft, setPlainDraft] = React.useState('')
     // 视图切换（树 / 看板）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
@@ -752,15 +758,32 @@ function apply(ctx) {
 
     // ============================================================== AI 助手
     //
-    // 它是**第一入口**：面板最上面那一行，既能问（「哪些逾期了」「这个计划有哪些资料」），
-    // 也能记（说一件事 → 拆成草稿 → 人确认才落库）。问答与录入是同一次调用的
-    // 两种产出，模型回 `{ reply, tasks }`，面板两种都渲染。
+    // 它是**第一入口**，而入口只有一个：底部那颗浮球。点开是一块输入浮层，
+    // 既能问（「哪些逾期了」「这个计划有哪些资料」），也能记（说一件事 →
+    // 拆成草稿 → 人确认才落库）。问答与录入是同一次调用的两种产出，
+    // 模型回 `{ reply, tasks }`，浮层两种都渲染。
+    //
+    // 「面板顶部原来那行常驻输入」已经撤掉：同一件事有两个入口，人就得先想
+    // 「我该用哪个」，而那个问题的答案对用户毫无价值。
     //
     // 三件不改的事：
     //   ① **解析不写入**——中途改主意没有任何副作用，也就不需要「撤销 AI 导入」；
     //   ② **草稿先进表单**——AI 给的是草稿不是决定；
     //   ③ **对话只活在这次会话**——它是「接着聊」用的，不是档案（不进 plan.json）。
-    const [aiOpen, setAiOpen] = React.useState(false)
+    const [fabOpen, setFabOpen] = React.useState(false)
+    const [fabGap, setFabGap] = React.useState(0)     // 键盘占掉的高度
+    // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
+    // 放在面板自己身上（而不是浮球子组件）：面板本来就常驻，多一个 effect
+    // 比多一个只为拿键盘高度而存在的子组件便宜。
+    React.useEffect(() => {
+      const vv = typeof window === 'undefined' ? undefined : window.visualViewport
+      if (vv === undefined || vv === null) return undefined
+      const onShift = () => setFabGap(Math.max(0, window.innerHeight - vv.height - vv.offsetTop))
+      vv.addEventListener('resize', onShift)
+      vv.addEventListener('scroll', onShift)
+      onShift()
+      return () => { vv.removeEventListener('resize', onShift); vv.removeEventListener('scroll', onShift) }
+    }, [fabOpen])
     const [aiText, setAiText] = React.useState('')
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
@@ -904,7 +927,6 @@ function apply(ctx) {
       api('persona-set', { sessionId, text: aiPersonaDraft })
         .then((r) => {
           setAiPersona(typeof r.text === 'string' ? r.text : '')
-          setAiPersonaOpen(false)
           flash('人设已保存，下次提问就生效')
         })
         .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
@@ -961,7 +983,7 @@ function apply(ctx) {
         queue.push(aiDraftOf(task, parent))
       }
       setAiTasks([])
-      setAiOpen(false)
+      setFabOpen(false)
       if (queue.length === 0) return
       setAiQueue(queue.slice(1))
       openDraft(queue[0])
@@ -993,11 +1015,11 @@ function apply(ctx) {
       }))
 
     /**
-     * AI 助手：**第一入口**。
+     * AI 助手的**内容块**——渲染在浮球浮层里，不再占面板的一行。
      *
-     * 形态：面板最上面常驻一行输入（问一句 / 说件事 / 贴一张图都能进），
-     * 有内容时展开成这次会话的问答与草稿。宿主没有模型服务时**整块不渲染**——
-     * 给一个点不亮的输入框，不如不给。
+     * 形态：一行输入（问一句 / 说件事 / 贴一张图都能进），下面接着这次会话的
+     * 问答、草稿卡与清单卡。宿主没有模型服务时退化成**纯输入框**而不是消失：
+     * 「零摩擦把事收进来」是这个插件的立身之本，不能依赖模型在不在。
      */
     const aiBlock = () => {
       const ai = state.ai === null || state.ai === undefined ? { available: false } : state.ai
@@ -1028,8 +1050,6 @@ function apply(ctx) {
           ))
       }
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
-      const hasChat = aiTurns.length > 0 || aiTasks.length > 0
-      const open = aiOpen === true || hasChat
 
       const rows = []
       rows.push(h('div', { className: 'dsh-wb-aibar', key: 'bar' },
@@ -1037,7 +1057,7 @@ function apply(ctx) {
           className: 'dsh-wb-aiinput',
           placeholder: '问一句（「哪些逾期了」），或直接说要做什么…',
           value: aiText,
-          onFocus: () => { setAiOpen(true); if (aiPersona === '') loadPersona() },
+          onFocus: () => { if (aiPersona === '') loadPersona() },
           onChange: (e) => setAiText(e.target.value),
           onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runAi() } },
         }),
@@ -1053,8 +1073,6 @@ function apply(ctx) {
         }, aiBusy === true ? '…' : icon('send')),
       ))
 
-      if (open !== true) return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
-
       // 快捷问法：把「助手能干什么」直接摆在眼前。它同时是最短的那条学习路径。
       rows.push(h('div', { className: 'dsh-wb-quick', key: 'quick' },
         QUICK_ASKS.map((q) => h('button', {
@@ -1062,7 +1080,7 @@ function apply(ctx) {
           className: 'dsh-wb-chip',
           title: '问一句：' + q,
           disabled: aiBusy === true,
-          onClick: () => { setAiOpen(true); runAi(q) },
+          onClick: () => runAi(q),
         }, q)),
         h('span', { className: 'dsh-wb-aimodel', key: 'm' }, model),
         h('button', {
@@ -1074,7 +1092,8 @@ function apply(ctx) {
         h('button', {
           key: 'fold',
           className: 'dsh-wb-aibtn',
-          onClick: () => { setAiOpen(false); setAiPersonaOpen(false) },
+          title: '收起浮层（会话不会丢，再点浮球还在）',
+          onClick: () => setFabOpen(false),
         }, '收起'),
       ))
 
@@ -1136,6 +1155,36 @@ function apply(ctx) {
       }
 
       return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
+    }
+
+    /**
+     * 浮球：AI 的**唯一入口**。
+     *
+     * 收起时是一颗球，点开是一块输入浮层。选这个形态而不是面板里的一行，是因为
+     * 面板住在一个又宽又矮的地方——常驻一行输入等于每屏少一条任务，而「问一句」
+     * 是个低频动作，它不配占这种地方。手机与桌面同一个入口，不必各记一套。
+     */
+    const fab = () => {
+      if (fabOpen !== true) {
+        return h('div', { className: 'dsh-wb-fab', key: 'fab' },
+          h('button', {
+            className: 'dsh-wb-fabball',
+            title: '问一句，或说一件事——AI 负责回答或记成草稿',
+            onClick: () => setFabOpen(true),
+          }, icon('bulb', 20)))
+      }
+      return h('div', { className: 'dsh-wb-fab', key: 'fab' },
+        h('div', {
+          className: 'dsh-wb-fabsheet',
+          // 键盘弹起来时整块上移（visualViewport 差值），否则输入框被输入法盖住。
+          style: { bottom: 'calc(' + (12 + fabGap) + 'px + env(safe-area-inset-bottom,0px))' },
+        },
+        h('div', { className: 'dsh-wb-fabrow' },
+          h('span', { className: 'dsh-wb-fabhead' }, 'AI 助手'),
+          h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: () => setFabOpen(false) }, icon('close')),
+        ),
+        aiBlock(),
+      ))
     }
 
     /**
@@ -2617,18 +2666,9 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    // 手机快速记录：**无条件调用**（钩子顺序必须与视图无关——详情页/设置页会提前
-    // return，那时少调一次就会少几个钩子，React 会报「渲染的钩子数不一致」）。
-    // 它自己只在触摸设备上返回元素；这里只决定要不要把它挂进树里（只挂主视图）。
-    const touchNow = typeof window !== 'undefined' && typeof window.matchMedia === 'function'
-      && window.matchMedia('(pointer: coarse)').matches
-    const quickEntry = QuickEntry({
-      sessionId,
-      touch: touchNow,
-      mic: (setter) => micButton(setter, 'mic'),
-    })
-
     // 详情编辑页与设置页优先：打开时它们本身就是一屏，不必再往下走树 / 看板的组装。
+    // （浮球只在主视图那一个 return 里挂——详情页/设置页是整屏，浮球压在上面
+    //   既不合适、也会挡住表单底部的字段。）
     if (form !== null) return detailPage()
     if (state.showSettings === true) return h('div', { className: 'dsh-wb-wrap' }, settingsPage())
 
@@ -2675,7 +2715,8 @@ function apply(ctx) {
           className: 'dsh-wb-icon',
           title: '设置：Obsidian vault、AI 人设',
           onClick: () => {
-            store.set({ showSettings: true, aiOpen: false })
+            store.set({ showSettings: true })
+            setFabOpen(false)
             if (aiPersona === '') loadPersona()
           },
         }, icon('gear')),
@@ -2718,12 +2759,8 @@ function apply(ctx) {
         unfinished.map(shutdownRow)))
     }
 
-    // AI 助手是**第一入口**：放在筛选条之上——打开面板第一眼就该看见
-    // 「可以问、可以说」。宿主没有模型服务时整块不渲染（见 aiBlock）。
-    {
-      const block = aiBlock()
-      if (block !== null) rows.push(block)
-    }
+    // (AI 入口不在这里——它整体搬到了底部那颗浮球上，见 fab()。
+    //  面板顶部不再有一个常驻输入行：又把纵向空间还给了任务列表。)
 
     // 筛选条：只显示「有货」的筛选器，窄侧栏里不堆一排空按钮。
     const chips = [h('button', {
@@ -2893,7 +2930,7 @@ function apply(ctx) {
 
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-        h('div', null, '在上面跟 AI 说一句就行——'),
+        h('div', null, '点右下角那颗浮球，跟 AI 说一句就行——'),
         h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
           '「帮我把这个季度的工作拆成计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } },
@@ -2942,161 +2979,7 @@ function apply(ctx) {
     }, body))
     if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
 
-    return h('div', { className: 'dsh-wb-wrap' }, rows, quickEntry)
-  }
-
-  // ========================================================== 手机快速记录
-  // 渲染在**面板自己**的树里（不是宿主主界面）：只有打开「工作计划」时才存在，
-  // 会话页/设置页都不出现。触摸设备上固定在底部居中。
-  //
-  // 交互刻意只有一个输入框：**不分「记待办 / 问 AI」**，一律交给 /ai-parse——
-  // 它一次调用同时回 { reply, tasks }，由模型判断你想干什么（问就答，报事就给草稿）。
-  // 零新增工具、零新增路由：解析走既有路由，采纳仍走 /node-add。
-  const QuickEntry = (props) => {
-    const sessionId = props.sessionId
-    const [open, setOpen] = React.useState(false)
-    const [draft, setDraft] = React.useState('')
-    const [note, setNote] = React.useState('')
-    const [tasks, setTasks] = React.useState([])
-    const [busy, setBusy] = React.useState(false)
-    const [gap, setGap] = React.useState(0)   // 键盘占掉的高度
-    const [pics, setPics] = React.useState([])   // 待随这一问一起发出去的图片
-
-    // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
-    React.useEffect(() => {
-      const vv = typeof window === 'undefined' ? undefined : window.visualViewport
-      if (vv === undefined || vv === null) return undefined
-      const onShift = () => setGap(Math.max(0, window.innerHeight - vv.height - vv.offsetTop))
-      vv.addEventListener('resize', onShift)
-      vv.addEventListener('scroll', onShift)
-      onShift()
-      return () => { vv.removeEventListener('resize', onShift); vv.removeEventListener('scroll', onShift) }
-    }, [open])
-
-    const send = async (method, args) => {
-      const res = await fetch('/api/workbench/' + method, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify(Object.assign({ sessionId }, args || {})),
-      })
-      let payload = null
-      try { payload = await res.json() } catch (e) { /* 非 JSON 响应，落到状态码分支 */ }
-      if (!res.ok || payload === null || payload.ok === false) {
-        throw new Error(payload !== null && payload.error ? payload.error : 'HTTP ' + res.status)
-      }
-      return payload
-    }
-
-    /** 选图：与面板顶部那行同一套数据面（图片读成 base64 随 /ai-parse 一起发）。 */
-    const pickImages = async (e) => {
-      const files = Array.from((e.target && e.target.files) || [])
-      const out = []
-      for (const f of files) {
-        if (typeof f.type !== 'string' || f.type.indexOf('image/') !== 0) continue
-        let buf = null
-        try { buf = await f.arrayBuffer() } catch (err) { buf = null }
-        if (buf === null) continue
-        const bytes = new Uint8Array(buf)
-        let bin = ''
-        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
-        out.push({ mediaType: f.type, data: btoa(bin), name: f.name })
-      }
-      setPics((prev) => prev.concat(out).slice(0, 4))
-      if (e.target) e.target.value = ''
-    }
-
-    const close = () => { setOpen(false); setDraft(''); setNote(''); setTasks([]); setPics([]) }
-
-    const submit = async () => {
-      const text = draft.trim()
-      if (text === '' || busy) return
-      setBusy(true)
-      setNote('')
-      setTasks([])
-      try {
-        const r = await send('ai-parse', { text, images: pics })
-        setPics([])
-        const reply = r.reply === undefined || r.reply === null ? '' : String(r.reply)
-        setNote(reply === '' ? '（没有回复）' : reply)
-        setTasks(Array.isArray(r.tasks) ? r.tasks : [])
-        setDraft('')
-      } catch (e) {
-        setNote('失败：' + (e !== null && e !== undefined && e.message ? e.message : String(e)))
-      } finally {
-        setBusy(false)
-      }
-    }
-
-    /** AI 给了草稿就顺手能落库（逐条走既有 /node-add）——采纳与否仍由人点。 */
-    const adopt = async () => {
-      if (busy || tasks.length === 0) return
-      setBusy(true)
-      try {
-        for (const t of tasks) {
-          if (t === null || t === undefined || t.title === undefined) continue
-          await send('node-add', { title: String(t.title), due: t.due, priority: t.priority })
-        }
-        setNote('已把 ' + tasks.length + ' 条记进收件箱')
-        setTasks([])
-      } catch (e) {
-        setNote('失败：' + (e !== null && e !== undefined && e.message ? e.message : String(e)))
-      } finally {
-        setBusy(false)
-      }
-    }
-
-    if (props.touch !== true) return null
-    if (open !== true) {
-      return h('div', { className: 'dsh-wb-fab' },
-        h('button', {
-          className: 'dsh-wb-fabball',
-          title: '说一句：AI 帮你记下或回答',
-          onClick: () => { setOpen(true); setNote(''); setTasks([]) },
-        }, '＋'))
-    }
-    return h('div', { className: 'dsh-wb-fab' },
-      h('div', {
-        className: 'dsh-wb-fabsheet',
-        style: { bottom: 'calc(' + (12 + gap) + 'px + env(safe-area-inset-bottom,0px))' },
-      },
-      h('div', { className: 'dsh-wb-fabrow' },
-        h('span', { className: 'dsh-wb-fabhead' }, '说一句（AI 判断是记录还是回答）'),
-        h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: close }, icon('close')),
-      ),
-      h('div', { className: 'dsh-wb-fabrow' },
-        h('input', {
-          className: 'dsh-wb-inp',
-          autoFocus: true,
-          value: draft,
-          placeholder: '比如「明天提醒我交电费」，或「哪些逾期了」…',
-          onChange: (e) => setDraft(e.target.value),
-          onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } },
-        }),
-        // 加文件：和语音、发送排在一起——这个浮层是唯一入口，三件事都得有。
-        h('label', { className: 'dsh-wb-aibtn dsh-wb-pic', title: '上传图片（多模态识别）' },
-          icon('plus'),
-          h('input', {
-            type: 'file',
-            accept: 'image/*',
-            multiple: true,
-            style: { display: 'none' },
-            onChange: pickImages,
-          })),
-        props.mic === undefined ? null : props.mic(setDraft),
-        h('button', {
-          className: 'dsh-wb-aibtn primary',
-          disabled: busy || draft.trim() === '',
-          onClick: submit,
-        }, busy ? '…' : '问'),
-      ),
-      note === '' ? null : h('div', { className: 'dsh-wb-fabnote' }, note),
-      tasks.length > 0
-        ? h('div', { className: 'dsh-wb-fabrow' },
-          h('button', { className: 'dsh-wb-aibtn', disabled: busy, onClick: adopt },
-            '把 ' + tasks.length + ' 条记进收件箱'))
-        : null,
-      ),
-    )
+    return h('div', { className: 'dsh-wb-wrap' }, rows, fab())
   }
 
   ctx.effect(() => betterSidebar.registerTab({
