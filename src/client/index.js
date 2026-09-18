@@ -1097,7 +1097,7 @@ function apply(ctx) {
             h('button', {
               title: '去掉这张',
               onClick: () => setAiPics(aiPics.filter((_, j) => j !== i)),
-            }, '×'),
+            }, icon('close')),
           ))))
       }
 
@@ -1119,7 +1119,7 @@ function apply(ctx) {
                 h('span', { className: 'dsh-wb-fmeta' }, String(i + 1)),
                 h('span', { className: 'dsh-wb-fref' }, String(it.title) + (it.ok === true ? '' : '（没对上任务）')),
                 n !== null
-                  ? h('button', { className: 'dsh-wb-fbtn', title: '打开这条任务', onClick: () => openEdit(n) }, '✎')
+                  ? h('button', { className: 'dsh-wb-fbtn', title: '打开这条任务', onClick: () => openEdit(n) }, icon('edit'))
                   : null,
               )
             })),
@@ -1157,7 +1157,7 @@ function apply(ctx) {
           className: 'dsh-wb-aibtn',
           title: '丢弃这条',
           onClick: () => setAiTasks((prev) => prev.filter((t) => t.key !== task.key)),
-        }, '×'),
+        }, icon('close')),
       ),
       typeof task.advice === 'string' && task.advice !== ''
         ? h('div', { className: 'dsh-wb-advice', key: 'adv' }, '※ ' + task.advice) : null,
@@ -1806,7 +1806,7 @@ function apply(ctx) {
             className: 'dsh-wb-fx',
             title: '移除这条关联',
             onClick: (e) => { e.stopPropagation(); unlinkFile(node, ref) },
-          }, '×'),
+          }, icon('close')),
         ))
       }
       // 内联「添加关联」表单：仅在该节点处于 linking 态时展开。
@@ -2040,7 +2040,7 @@ function apply(ctx) {
             className: 'dsh-wb-act',
             title: '退回收件箱（它不再是工作计划栏里的独立条目）',
             onClick: (e) => { e.stopPropagation(); setFiledOn(node, false) },
-          }, '↩')
+          }, icon('move'))
           : null,
         ),
       )
@@ -2133,7 +2133,7 @@ function apply(ctx) {
           key: 'edit',
           title: '编辑全部信息',
           onClick: () => openEdit(node),
-        }, '✎'),
+        }, icon('edit')),
       )
     }
 
@@ -2174,7 +2174,7 @@ function apply(ctx) {
             title: x.starred ? '取消星标' : '星标：接下来做（清单置顶）',
             onClick: () => setStarOn(node, x.starred !== true),
           }, icon('star')),
-          h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(node) }, '✎'),
+          h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(node) }, icon('edit')),
         )
       }
       rows.push(h('div', { className: 'dsh-wb-aihead', key: 'oh' },
@@ -2192,7 +2192,7 @@ function apply(ctx) {
             h('span', { className: 'dsh-wb-todoseq' }, '⊠'),
             titleNode(x.node, 'dsh-wb-tasktitle', { canToggle: false }),
             h('span', { className: 'dsh-wb-path' }, '等 ' + x.blockers.join('、')),
-            h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(x.node) }, '✎'),
+            h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(x.node) }, icon('edit')),
           ))))
       }
       return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
@@ -2455,8 +2455,11 @@ function apply(ctx) {
               h('button', {
                 className: 'dsh-wb-fbtn',
                 title: '删除这条证据',
+                // 补 title：这个按钮原先没有可读名称（图标按钮必须自述），
+                // 而且测试也不该再按字形找它。
+                title: '删除这条证据',
                 onClick: () => removeEvidenceFrom(node, e.ref, e.kind),
-              }, '×'),
+              }, icon('close')),
             )))
             : null,
           h('div', { className: 'dsh-wb-fadd' },
@@ -2485,7 +2488,7 @@ function apply(ctx) {
                 href !== null
                   ? h('a', { className: 'dsh-wb-fref', href, title: '在 Obsidian 里打开' }, String(f.ref))
                   : h('span', { className: 'dsh-wb-fref' }, String(f.ref)),
-                h('button', { className: 'dsh-wb-fbtn', title: '移除关联', onClick: () => unlinkFile(node, f.ref) }, '×'),
+                h('button', { className: 'dsh-wb-fbtn', title: '移除关联', onClick: () => unlinkFile(node, f.ref) }, icon('close')),
               )
             }))
             : null,
@@ -2519,7 +2522,7 @@ function apply(ctx) {
             ? h('div', { className: 'dsh-wb-formlist' }, depNodes.map((d) => h('div', { className: 'dsh-wb-formrow', key: d.id },
               h('span', { className: 'dsh-wb-fmeta' }, d.status === 'done' ? '✓ 已完成' : '◷ 未完成'),
               h('span', { className: 'dsh-wb-fref' }, String(d.title)),
-              h('button', { className: 'dsh-wb-fbtn', title: '移除依赖', onClick: () => removeDepOn(node, d.id) }, '×'),
+              h('button', { className: 'dsh-wb-fbtn', title: '移除依赖', onClick: () => removeDepOn(node, d.id) }, icon('close')),
             )))
             : null,
           h('div', { className: 'dsh-wb-fadd' },
@@ -2790,7 +2793,7 @@ function apply(ctx) {
             : h('div', { className: 'dsh-wb-formlist' }, items.map((n, i) => h('div', { className: 'dsh-wb-formrow', key: n.id },
               h('span', { className: 'dsh-wb-fmeta' }, String(i + 1)),
               titleNode(n, 'dsh-wb-tasktitle', { canToggle: true, draggable: false }),
-              h('button', { className: 'dsh-wb-fbtn', title: '打开详情', onClick: () => openEdit(n) }, '✎'),
+              h('button', { className: 'dsh-wb-fbtn', title: '打开详情', onClick: () => openEdit(n) }, icon('edit')),
             ))),
         ))
       }
@@ -2832,7 +2835,7 @@ function apply(ctx) {
             className: 'dsh-wb-act',
             title: '编辑全部信息',
             onClick: () => openEdit(node),
-          }, '✎'),
+          }, icon('edit')),
         )
       }
 
@@ -3058,7 +3061,7 @@ function apply(ctx) {
       },
       h('div', { className: 'dsh-wb-fabrow' },
         h('span', { className: 'dsh-wb-fabhead' }, '说一句（AI 判断是记录还是回答）'),
-        h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: close }, '×'),
+        h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: close }, icon('close')),
       ),
       h('div', { className: 'dsh-wb-fabrow' },
         h('input', {

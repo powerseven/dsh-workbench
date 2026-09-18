@@ -1397,7 +1397,8 @@ test('详情页能删一条完成证据（面板此前只能加不能删）', as
     const row = byClass(render(), 'dsh-wb-formrow').find((r) => textOf(r).includes('a.md'))
     assert.ok(row !== undefined, '证据要在详情页里列出来')
     requests = []
-    byClass(row, 'dsh-wb-fbtn').find((b) => textOf(b) === '×').props.onClick(ev())
+    byClass(row, 'dsh-wb-fbtn')
+      .find((b) => String(b.props.title || '').includes('删除这条证据')).props.onClick(ev())
     await settle()
     const body = requests.find((r) => r.path === '/api/workbench/node-set').body
     assert.equal(body.evidenceRemove, 'a.md')
@@ -1753,7 +1754,8 @@ test('已纳入工作计划的叶子：进工作计划栏、有勾选框、可�
     // 它是叶子，所以必须还能勾完成（完成语义与形态脱钩）。
     assert.ok(byClass(planRow, 'dsh-wb-plantitle')[0] !== undefined)
 
-    const back = byClass(planRow, 'dsh-wb-act').find((b) => textOf(b) === '↩')
+    const back = byClass(planRow, 'dsh-wb-act')
+      .find((b) => String(b.props.title || '').includes('退回收件箱'))
     assert.ok(back !== undefined, '纳入不该是单向门：要有退回入口')
     requests = []
     back.props.onClick(ev())
