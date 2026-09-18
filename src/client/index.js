@@ -116,22 +116,29 @@ const CSS = [
   // 命名出来是为了让「不许写随手值」这条能被一眼检查。
   + '--wb-sp-1:2px;--wb-sp-2:4px;--wb-sp-3:6px;--wb-sp-4:8px;--wb-sp-5:12px;'
   + '--wb-r-1:4px;--wb-r-2:6px;--wb-r-3:8px;--wb-pill:999px;'
+  // 字号别名：面板只用到宿主的 11/12/13 三档，而宿主手机档的正文是 14/16——
+  // 于是面板在手机上恒定「小一号」（真机反馈：装了 zen 的手机适配插件后更明显，
+  // 因为 zen 只改宿主自己的类名，碰不到第三方插件的类）。抬一档放在别名层做，
+  // 值仍然全部取自宿主阶梯（不写自定 px）。
+  + '--wb-f1:var(--dsw-font-xs-13);--wb-f1s:var(--dsw-font-xs-strong-13);'
+  + '--wb-f2:var(--dsw-font-xxs-12);--wb-f2s:var(--dsw-font-xxs-strong-12);'
+  + '--wb-f3:var(--dsw-font-xxxs-11);--wb-f3s:var(--dsw-font-xxxs-strong-11);'
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
-  + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
+  + 'font:var(--wb-f1);color:var(--wb-fg);}',
   // 面板自身的布局单独一条。浮球不要这些：它是 fixed 定位的独立根，
   // 套上 height:100% 会把整个浮层铺满，还会挡掉下面的点击。
   '.dsh-wb-wrap{display:flex;flex-direction:column;height:100%;min-height:0;}',
   // ── 手机快速记录（面板树里的一部分，打开「工作计划」时才存在）──────────
   // 只在触摸设备渲染；固定在底部居中并让出安全区。
   '.dsh-wb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--wb-sp-5) + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:var(--wb-sp-2);pointer-events:auto;z-index:2147483000;}',
-  '.dsh-wb-fabball{width:48px;height:48px;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--dsw-font-xs-strong-13);}',
-  '.dsh-wb-fabitem{border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;white-space:nowrap;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-3) var(--wb-sp-5);}',
+  '.dsh-wb-fabball{width:48px;height:48px;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--wb-f1s);}',
+  '.dsh-wb-fabitem{border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;white-space:nowrap;font:var(--wb-f2);padding:var(--wb-sp-3) var(--wb-sp-5);}',
   '.dsh-wb-fabitem.primary{border-color:var(--wb-accent);background:var(--wb-accent-soft);font-weight:600;}',
   // 输入浮层：用 fixed 而不是跟着浮球走，方便按键盘高度整体上移（visualViewport）。
   '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
   '.dsh-wb-fabsheet .dsh-wb-fabrow{display:flex;align-items:center;gap:var(--wb-sp-2);}',
-  '.dsh-wb-fabhead{font:var(--dsw-font-xxs-strong-12);flex:1;min-width:0;}',
-  '.dsh-wb-fabnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;white-space:pre-wrap;}',
+  '.dsh-wb-fabhead{font:var(--wb-f2s);flex:1;min-width:0;}',
+  '.dsh-wb-fabnote{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;white-space:pre-wrap;}',
   // 面板内统一按 border-box 算盒模型。缺了这条时，`width:100%` 且带 padding/border
   // 的输入框（.dsh-wb-inp / .dsh-wb-atextarea）会**实打实多出** 12px padding + 2px
   // 边框：详情页里每个字段都被撑出 14px，输入框还会越过面板右边界。宿主没有全局
@@ -145,12 +152,12 @@ const CSS = [
   '.dsh-wb-chip,.dsh-wb-rootdrop{corner-shape:round;}',
   // ── 表头 ────────────────────────────────────────────────────────────────
   '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
-  '.dsh-wb-title{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-title{font:var(--wb-f1s);}',
   '.dsh-wb-headright{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-1);}',
   // 总进度是最重要的一个数，所以给它最高层级（近黑 + 等宽数字）。以前是蓝色
   // 小字：既压不过标题，又在白底只有 4.2:1。把强调色让给「可交互」之后，
   // 数字回到中性反而更醒目。
-  '.dsh-wb-pct{font:var(--dsw-font-xs-strong-13);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
+  '.dsh-wb-pct{font:var(--wb-f1s);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
   '.dsh-wb-svg{display:block;flex:none;}',
   '.dsh-wb-icon{border:1px solid transparent;background:transparent;border-radius:var(--wb-r-2);padding:var(--wb-sp-1) var(--wb-sp-3);font:inherit;color:var(--wb-fg-2);cursor:pointer;line-height:1.5;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-icon:hover{background:var(--wb-hover);color:var(--wb-fg);}',
@@ -164,7 +171,7 @@ const CSS = [
   // 加上 5 个 4px 间隙是 403px——筛选行可用宽只要低于这个数就会折成两行，而第二行
   // 只挂一个孤零零的芯片，整块高度还会从 37px 涨到 49px。用 sp-4(8px) 时 6 个芯片
   // 各宽 4px，实测就会折行。纵向补回 2px 是为了让 11px 的字有正常行高，不与折行冲突。
-  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--dsw-font-xxxs-11);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--wb-f3);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
   '.dsh-wb-chip.on{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);font-weight:600;}',
@@ -182,9 +189,9 @@ const CSS = [
   '.dsh-wb-col{flex:0 0 210px;min-width:210px;max-width:210px;display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
   // 列头用一条上边线把它和相邻列分开；收窄内边距，让一列里多塞下几张卡片。
   '.dsh-wb-colhead{display:flex;align-items:baseline;gap:var(--wb-sp-2);padding:var(--wb-sp-1) var(--wb-sp-2) var(--wb-sp-2);border-top:2px solid var(--wb-line);}',
-  '.dsh-wb-coltitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
-  '.dsh-wb-colpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-colcount{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-coltitle{flex:1;font:var(--wb-f1s);word-break:break-word;}',
+  '.dsh-wb-colpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-colcount{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-cards{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
   // 卡片：复用行密度思路——纵向内边距给很小，靠 hover 底色连成一片。
   '.dsh-wb-card{border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);transition:background var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
@@ -196,31 +203,31 @@ const CSS = [
   '.dsh-wb-cardtitle{flex:1;word-break:break-word;cursor:pointer;}',
   '.dsh-wb-cardtitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
   // 卡片上的上下文路径：说明这张卡属于哪个子计划（列只代表顶层计划）。
-  '.dsh-wb-cardpath{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
+  '.dsh-wb-cardpath{font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
   '.dsh-wb-cardmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--wb-sp-2);}',
   // ── 视图切换（树 / 看板）───────────────────────────────────────────────
   // 段控：和筛选芯片同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
   '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
-  '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
+  '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
   '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-icon.on{background:var(--wb-accent-soft);color:var(--wb-fg);border-color:var(--wb-accent);}',
   '.dsh-wb-shutdown{background:var(--wb-hover);border-radius:var(--wb-r-2);margin:var(--wb-sp-2) var(--wb-sp-2) 0;padding:var(--wb-sp-2) var(--wb-sp-3);}',
-  '.dsh-wb-shutdown-head{display:flex;align-items:center;justify-content:space-between;font:var(--dsw-font-xxxs-11);font-weight:500;color:var(--wb-fg-2);margin-bottom:var(--wb-sp-1);}',
+  '.dsh-wb-shutdown-head{display:flex;align-items:center;justify-content:space-between;font:var(--wb-f3);font-weight:500;color:var(--wb-fg-2);margin-bottom:var(--wb-sp-1);}',
   '.dsh-wb-shrow{display:flex;align-items:center;gap:var(--wb-sp-2);padding:var(--wb-sp-1) 0;border-top:1px solid var(--wb-border-tertiary);}',
   '.dsh-wb-shrow .dsh-wb-tasktitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-shact{display:flex;gap:var(--wb-sp-1);flex:none;}',
-  '.dsh-wb-shact .dsh-wb-act{padding:2px var(--wb-sp-2);font:var(--dsw-font-xxxs-11);border-radius:var(--wb-r-2);border:1px solid var(--wb-border-secondary);background:var(--wb-bg);color:var(--wb-fg-2);cursor:pointer;}',
+  '.dsh-wb-shact .dsh-wb-act{padding:2px var(--wb-sp-2);font:var(--wb-f3);border-radius:var(--wb-r-2);border:1px solid var(--wb-border-secondary);background:var(--wb-bg);color:var(--wb-fg-2);cursor:pointer;}',
   '.dsh-wb-shact .dsh-wb-act.done{color:var(--wb-success);border-color:var(--wb-success);}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
   '.dsh-wb-plan{margin-bottom:var(--wb-sp-2);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
   '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
-  '.dsh-wb-planid{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
-  '.dsh-wb-plantitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
-  '.dsh-wb-planpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-planq{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
-  '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
+  '.dsh-wb-planid{flex:none;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
+  '.dsh-wb-plantitle{flex:1;font:var(--wb-f1s);word-break:break-word;}',
+  '.dsh-wb-planpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-planq{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);}',
+  '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--wb-f3);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
   // 计划级进度条已删除（原先两条 .dsh-wb-planbar 规则在此）：它横在计划标题与
   // 子计划之间，读起来就是一条「下划线」，而完成度在标题行右侧的百分比里已经
   // 说清楚了。层级关系改由缩进表达。
@@ -232,7 +239,7 @@ const CSS = [
   // 待办行按「密」来配：这个面板住在底部工作台里，纵向空间是最稀缺的资源，
   // 一行省 3px、11 行就能多露出一条半任务。所以纵向内边距只给 2px、行间距给 0，
   // 行与行的分隔交给 hover 底色——顺带得到「整列连成一片」的列表观感。
-  // 行高不在这里写死，直接吃 .dsh-wb-wrap 的 var(--dsw-font-xs-13)（13px/20px），
+  // 行高不在这里写死，直接吃 .dsh-wb-wrap 的 var(--wb-f1)（13px/20px），
   // 与宿主自己的列表同一套行高标尺。
   '.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);margin:0;transition:background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-task:hover{background:var(--wb-hover);}',
@@ -244,7 +251,7 @@ const CSS = [
   // 完成态用「变灰」而不是 opacity：叠透明度会把对比度一起压下去。
   '.dsh-wb-tasktitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
   '.dsh-wb-tasktitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
-  '.dsh-wb-taskdue{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);white-space:nowrap;}',
+  '.dsh-wb-taskdue{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);white-space:nowrap;}',
   // 逾期日期是全表唯一「红字」——有意保留，但要说清它的真实数字：宿主的 error
   // token 在浅色下是 #ec1313，对面板底色 4.49:1，严格按不四舍五入的算法差 0.01
   // 不到 AA 的 4.5:1（这里底色是纯底，没有软底再往下压，所以比胶囊那两处好）。
@@ -253,7 +260,7 @@ const CSS = [
   '.dsh-wb-taskdue.overdue{color:var(--wb-danger);font-weight:600;}',
   // 行内动作按钮：以前 opacity:0 只在 hover 现身，键盘与触屏完全够不到。
   // 现在键盘用 :focus-within 揭示，触屏用 @media (hover:none) 常驻。
-  '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act,.dsh-wb-card:hover .dsh-wb-act,.dsh-wb-card:focus-within .dsh-wb-act,.dsh-wb-focus:hover .dsh-wb-act,.dsh-wb-focus:focus-within .dsh-wb-act{opacity:1;}',
   '.dsh-wb-act:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── 重要程度徽章 ────────────────────────────────────────────────────────
@@ -261,7 +268,7 @@ const CSS = [
   // 留白纪律（Superlist / Google Tasks）：砍掉描边 / 软底 / 圆角，降级为纯文字。
   // AA 对比度是硬约束——红 / 琥珀文字在浅色下都够不到 4.5:1，所以「高」不再靠红，
   // 改靠字重；中 / 低走中性灰。盒子去掉后，强调只由字号、字重与间隔承担。
-  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);user-select:none;color:var(--wb-fg-2);}',
+  '.dsh-wb-pri{flex:none;font:var(--wb-f3s);user-select:none;color:var(--wb-fg-2);}',
   '.dsh-wb-pri.normal{color:var(--wb-fg-2);}',
   '.dsh-wb-pri.low{color:var(--wb-fg-2);}',
   '.dsh-wb-pri.medium{color:var(--wb-fg);}',
@@ -270,38 +277,38 @@ const CSS = [
   // ── 委派标记 ────────────────────────────────────────────────────────────
   // 纯文字：正常态走强调色（链接语义，AA 安全）；逾期回执只靠字重 + tooltip，
   // 不再用红软底做盒子。
-  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;color:var(--wb-accent);cursor:help;}',
+  '.dsh-wb-deleg{flex:none;font:var(--wb-f3);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;color:var(--wb-accent);cursor:help;}',
   '.dsh-wb-deleg.late{color:var(--wb-fg);font-weight:600;}',
   // ── 管控缺口 ────────────────────────────────────────────────────────────
-  '.dsh-wb-warn{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
+  '.dsh-wb-warn{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);cursor:help;}',
   // ── 落后于周期 ──────────────────────────────────────────────────────────
   // 琥珀软底已砍；落后靠字重 + 「落后 N%」文字本身表意，不靠颜色。
-  '.dsh-wb-behind{flex:none;font:var(--dsw-font-xxxs-strong-11);white-space:nowrap;color:var(--wb-fg);font-weight:600;cursor:help;}',
+  '.dsh-wb-behind{flex:none;font:var(--wb-f3s);white-space:nowrap;color:var(--wb-fg);font-weight:600;cursor:help;}',
   // ── 完成证据：⎘n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
   // 两者都自带符号，颜色冗余，统一中性；缺失证据靠字重强调。
-  '.dsh-wb-evid{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
+  '.dsh-wb-evid{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);cursor:help;}',
   '.dsh-wb-evid.bad{color:var(--wb-fg);font-weight:600;}',
-  '.dsh-wb-unverif{flex:none;font:var(--dsw-font-xxxs-strong-11);color:var(--wb-fg-2);cursor:help;}',
+  '.dsh-wb-unverif{flex:none;font:var(--wb-f3s);color:var(--wb-fg-2);cursor:help;}',
   // ── 收件箱 ──────────────────────────────────────────────────────────────
   '.dsh-wb-inbox{margin-bottom:var(--wb-sp-5);padding-bottom:var(--wb-sp-4);border-bottom:1px dashed var(--wb-line-2);}',
   '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-3);}',
-  '.dsh-wb-inboxtitle{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-inboxtitle{font:var(--wb-f1s);}',
   // 「工作计划」分栏标题。刻意**不要**收件箱那条虚线：虚线是「收件箱到此为止」的
   // 分隔，而工作计划是与它并列的另一栏，不是收件箱的延续。
   '.dsh-wb-secthead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);}',
-  '.dsh-wb-secttitle{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-secttitle{font:var(--wb-f1s);}',
   // 收件箱行上的「纳入计划」。常显而非悬停才出——它的意义就是催人清空收件箱，
   // 藏起来等于没做（这也是本面板里唯一常显的行内按钮）。
   // 尺寸与同行徽章（.dsh-wb-pri 的 font/padding/border 三件套）严格一致，
   // 高度才会一样；先前写了 line-height:1.7，它是全行最高的一块，看着就不齐。
-  '.dsh-wb-adopt{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);cursor:pointer;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-adopt{flex:none;font:var(--wb-f3);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);cursor:pointer;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-adopt:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-line);}',
-  '.dsh-wb-count{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-count{font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-add{display:flex;gap:var(--wb-sp-2);margin:0 0 var(--wb-sp-2);}',
   '.dsh-wb-add input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-add input::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-add input:focus{border-color:var(--wb-accent);}',
-  '.dsh-wb-add button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-add button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-add button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-add button:disabled{opacity:.4;cursor:default;}',
   // 语音按钮：外壳沿用提交按钮那一套，只是里面只放一个符号，所以横向收窄。
@@ -312,39 +319,39 @@ const CSS = [
   '.dsh-wb-add .dsh-wb-mic.on{border-color:var(--wb-accent);background:var(--wb-accent-soft);color:var(--wb-fg);}',
   // ── 归位选择器 ──（同样收进强调色，不再另开一个紫色）
   '.dsh-wb-movepick{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-1) 0 var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px dashed var(--wb-accent);}',
-  '.dsh-wb-movepicklabel{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-movepicklabel{font:var(--wb-f3);color:var(--wb-fg-2);}',
   // ── AI 入口 ─────────────────────────────────────────────────────────────
   // 整块用「强调色虚线框 + 软底」：这一区的内容**不是用户手打的**，是模型给的，
   // 一眼要能分辨。虚线也顺带说明「还没落定」——点过采纳才会真写进计划。
   '.dsh-wb-ai{margin:0 var(--wb-sp-5) var(--wb-sp-4);padding:var(--wb-sp-4);border:1px dashed var(--wb-accent);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);}',
-  '.dsh-wb-aihead{display:flex;align-items:center;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);font:var(--dsw-font-xxs-strong-12);}',
+  '.dsh-wb-aihead{display:flex;align-items:center;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);font:var(--wb-f2s);}',
   // 模型名摆在标题行右端：建议是谁给的、用的是哪个模型，不应该藏起来。
-  '.dsh-wb-aimodel{margin-left:auto;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-aimodel{margin-left:auto;font:var(--wb-f3);color:var(--wb-fg-2);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-airow{display:flex;gap:var(--wb-sp-2);align-items:flex-start;}',
   // 多行文本域：口述转写往往是一整段，一行输入框装不下也不好改。
   '.dsh-wb-aitext{flex:1;min-width:0;font:inherit;color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);min-height:48px;resize:vertical;}',
   '.dsh-wb-aitext::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-aitext:focus{border-color:var(--wb-accent);}',
   // 无描边、软底：宿主 composer 里的图标按钮就是这个样子（真机反馈：一排描边方框很山寨）。
-  '.dsh-wb-aibtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-aibtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-aibtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-aibtn:disabled{opacity:.4;cursor:default;}',
   // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
   '.dsh-wb-aibtn.primary{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
-  '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
   '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
   '.dsh-wb-aitask{padding:var(--wb-sp-3) 0;border-top:1px dashed var(--wb-line-2);}',
   '.dsh-wb-aititle{display:flex;gap:var(--wb-sp-3);align-items:baseline;}',
   '.dsh-wb-aititle > span{flex:1;word-break:break-word;}',
-  '.dsh-wb-aimeta{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);white-space:nowrap;}',
+  '.dsh-wb-aimeta{font:var(--wb-f3);color:var(--wb-fg-2);white-space:nowrap;}',
   // 新建计划的输入框就放在候选行里：它是「候选之一」，不是另一块表单——
   // 用户的心智是「挑一个去处」，不是「先选模式再填表」。
-  '.dsh-wb-ainew{flex:none;width:9em;min-width:0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-1) var(--wb-sp-3);}',
+  '.dsh-wb-ainew{flex:none;width:9em;min-width:0;font:var(--wb-f3);color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-1) var(--wb-sp-3);}',
   '.dsh-wb-ainew::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-ainew:focus{border-color:var(--wb-accent);}',
   // ── 折叠控点（无子节点时占位不可点，让同层标题左边缘对齐）──────────────
-  '.dsh-wb-caret{flex:none;width:12px;text-align:center;cursor:pointer;color:var(--wb-fg-2);user-select:none;font:var(--dsw-font-xxxs-11);border-radius:var(--wb-r-1);}',
+  '.dsh-wb-caret{flex:none;width:12px;text-align:center;cursor:pointer;color:var(--wb-fg-2);user-select:none;font:var(--wb-f3);border-radius:var(--wb-r-1);}',
   '.dsh-wb-caret:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-caret.none{visibility:hidden;cursor:default;}',
   // ── 就地改名（输入框沿用标题的字号与字重，换进去时行高不跳）────────────
@@ -361,17 +368,17 @@ const CSS = [
   '.dsh-wb-focus:hover{background:var(--wb-hover);}',
   '.dsh-wb-focus input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
-  '.dsh-wb-path{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
+  '.dsh-wb-path{flex:none;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
   '.dsh-wb-empty{padding:var(--wb-sp-5);text-align:center;color:var(--wb-fg-2);line-height:1.8;}',
   // ── 未来日程（按天分组）────────────────────────────────────────────
   // 日期标题比正文小一号、次级色：它是**分组标记**，不是内容；要一眼看得出
   // 「这几条属于同一天」，又不能和待办标题抢注意力。
   '.dsh-wb-daygroup{margin-top:var(--wb-sp-4);}',
-  '.dsh-wb-dayhead{font:var(--dsw-font-xxxs-11);font-weight:500;color:var(--wb-fg-2);padding:var(--wb-sp-1) var(--wb-sp-2);letter-spacing:.02em;}',
+  '.dsh-wb-dayhead{font:var(--wb-f3);font-weight:500;color:var(--wb-fg-2);padding:var(--wb-sp-1) var(--wb-sp-2);letter-spacing:.02em;}',
   '.dsh-wb-dayhead.today{color:var(--wb-accent);}',
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
-  '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
+  '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;}',
   // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
   // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
@@ -383,6 +390,12 @@ const CSS = [
   // 给标题一个 60% 的 flex-basis 并允许换行，一行装不下的自然落到下一行。
   // 窄屏（手机）：标题独占第一行，后面的徽章与动作整体折到第二行——**确定性**版式，
   // 不再取决于标题多长。标题本身太长时自然折成两行，元信息仍在它下面。
+  // 手机档把字号整体抬一档：与宿主手机界面对齐（宿主手机正文是 s-14/base-16 那两档，
+  // 面板原来最高只到 xs-13，所以一直显得小一号）。
+  '@media (max-width:767px){.dsh-wb-wrap,.dsh-wb-fab{'
+  + '--wb-f1:var(--dsw-font-s-14);--wb-f1s:var(--dsw-font-s-strong-14);'
+  + '--wb-f2:var(--dsw-font-xs-13);--wb-f2s:var(--dsw-font-xs-strong-13);'
+  + '--wb-f3:var(--dsw-font-xxs-12);--wb-f3s:var(--dsw-font-xxs-strong-12);}}',
   '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle,.dsh-wb-plantitle{flex:1 1 auto;min-width:0;}.dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
@@ -390,7 +403,7 @@ const CSS = [
   // 节点上的「做这件事要看的资料」。与证据（⎘）刻意区分：资料是文件夹也能挂的
   // 开放式清单，不进「无证据完成项」那条审查线。
   '.dsh-wb-files{display:flex;flex-direction:column;gap:var(--wb-sp-2);margin:var(--wb-sp-2) 0 0;padding-left:var(--wb-sp-3);}',
-  '.dsh-wb-file{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-file{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-file a{color:var(--wb-accent);text-decoration:none;word-break:break-word;}',
   '.dsh-wb-file a:hover{text-decoration:underline;}',
   '.dsh-wb-file .dsh-wb-fkind{flex:none;color:var(--wb-fg-2);}',
@@ -405,31 +418,31 @@ const CSS = [
   '.dsh-wb-fadd input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);}',
   '.dsh-wb-fadd input:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-fadd select{flex:none;font:inherit;padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);}',
-  '.dsh-wb-fadd button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-3);white-space:nowrap;}',
+  '.dsh-wb-fadd button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-1) var(--wb-sp-3);white-space:nowrap;}',
   '.dsh-wb-fadd button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-fadd button:disabled{opacity:.4;cursor:default;}',
   // 「关联」按钮：平时藏起来，hover 整行时才出现，和行内动作（↳ × 等）一致。
-  '.dsh-wb-fbtn{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;}',
+  '.dsh-wb-fbtn{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;}',
   '.dsh-wb-task:hover .dsh-wb-fbtn,.dsh-wb-planhead:hover .dsh-wb-fbtn,.dsh-wb-task:focus-within .dsh-wb-fbtn,.dsh-wb-planhead:focus-within .dsh-wb-fbtn{opacity:1;}',
   '.dsh-wb-fbtn:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── vault 配置块 ──────────────────────────────────────────────────────
   '.dsh-wb-vault{display:flex;flex-direction:column;gap:var(--wb-sp-2);padding:var(--wb-sp-4) var(--wb-sp-5);border-top:1px dashed var(--wb-line-2);flex:none;}',
-  '.dsh-wb-vaulthead{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-strong-12);}',
-  '.dsh-wb-vaulthead .dsh-wb-vpath{flex:1;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;}',
+  '.dsh-wb-vaulthead{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--wb-f2s);}',
+  '.dsh-wb-vaulthead .dsh-wb-vpath{flex:1;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;}',
   '.dsh-wb-vault .dsh-wb-add{margin:0;}',
-  '.dsh-wb-vaultempty{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
+  '.dsh-wb-vaultempty{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;}',
   // ── 详情编辑页 ────────────────────────────────────────────────────────
   // 面板整体换成一张表单：节点字段有十几个，塞进抽屉或行内都放不下，
   // 而「所有信息都能改」这件事一旦要靠滚动+折叠去找，就等于没做。
   '.dsh-wb-formhead{display:flex;align-items:center;gap:var(--wb-sp-3);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
-  '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--dsw-font-xs-strong-13);}',
-  '.dsh-wb-formhead .dsh-wb-formsub{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--wb-f1s);}',
+  '.dsh-wb-formhead .dsh-wb-formsub{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-form{flex:1;min-height:0;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);display:flex;flex-direction:column;}',
   // 详情页内容给一个合理的阅读宽度：桌面上面板约 1000px 宽，而「标题」「负责人」
   // 这类标量输入拉满整屏既难读也显得散。手机是 390px，这条对手机是空操作。
   '.dsh-wb-form > *{max-width:680px;}',
   '.dsh-wb-field{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-bottom:var(--wb-sp-4);}',
-  '.dsh-wb-label{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-label{font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-inp{width:100%;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-inp:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-inp::placeholder{color:var(--wb-fg-2);}',
@@ -437,27 +450,27 @@ const CSS = [
   // 拆掉外框：一个套着边框的「格子控件」在手机上一眼看就是网页表单，不像宿主的东西。
   // 改成无框 + 选中项软底胶囊。
   '.dsh-wb-seg{display:inline-flex;gap:var(--wb-sp-1);border:0;border-radius:0;overflow:visible;align-self:flex-start;flex-wrap:wrap;}',
-  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-pill);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-pill);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-seg button.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-seg button:disabled{opacity:.4;cursor:default;}',
   // 固定 1fr 1fr / 1fr 1fr 1fr 在窄屏上会把每格压到 120px 上下（日期框放不下），
   // 改成按可用宽度自动折行：宽屏仍是多列，手机自动落到一两列。
   '.dsh-wb-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--wb-sp-4);}',
   '.dsh-wb-grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--wb-sp-4);}',
-  '.dsh-wb-formnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
-  '.dsh-wb-formerr{font:var(--dsw-font-xxxs-11);color:var(--wb-danger);line-height:1.6;}',
+  '.dsh-wb-formnote{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;}',
+  '.dsh-wb-formerr{font:var(--wb-f3);color:var(--wb-danger);line-height:1.6;}',
   // 保存放在**头栏**里：头栏是 flex:none、不参与滚动，表单区才是会滚的那块。
   // 手机上输入法弹出时盖住的正是滚动区底部——保存留在最底下，等于要求人先把
   // 键盘收起来才能点它（真机反馈）。
   '.dsh-wb-formacts{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-2);flex:none;}',
   // 「更多」折叠条：文左对齐、无框，靠 hover 下划线提示可点——窄面板里不再多一个胶囊。
-  '.dsh-wb-morebtn{align-self:flex-start;margin-top:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) 0;cursor:pointer;}',
+  '.dsh-wb-morebtn{align-self:flex-start;margin-top:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);font:var(--wb-f3);padding:var(--wb-sp-1) 0;cursor:pointer;}',
   '.dsh-wb-morebtn:hover{color:var(--wb-fg);text-decoration:underline;}',
   '.dsh-wb-formlist{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-top:var(--wb-sp-2);}',
-  '.dsh-wb-formrow{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);}',
+  '.dsh-wb-formrow{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--wb-f2);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);}',
   '.dsh-wb-formrow:hover{background:var(--wb-hover);}',
   '.dsh-wb-formrow .dsh-wb-fref{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.dsh-wb-formrow .dsh-wb-fmeta{flex:none;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);}',
+  '.dsh-wb-formrow .dsh-wb-fmeta{flex:none;color:var(--wb-fg-2);font:var(--wb-f3);}',
   // ── AI 助手（第一入口） ──────────────────────────────────────────────
   // 常驻一行：它是「记」与「问」的共同入口，不该藏在按钮后面。
   '.dsh-wb-aiwrap{display:flex;flex-direction:column;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
@@ -468,16 +481,16 @@ const CSS = [
   '.dsh-wb-quick{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
   // 对话：自己的话靠右、助手的靠左，靠**位置**而不是颜色区分（颜色要留给语义色）。
   '.dsh-wb-chat{display:flex;flex-direction:column;gap:var(--wb-sp-2);max-height:180px;overflow-y:auto;}',
-  '.dsh-wb-msg{font:var(--dsw-font-xxs-12);line-height:1.6;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-3);max-width:88%;white-space:pre-wrap;}',
+  '.dsh-wb-msg{font:var(--wb-f2);line-height:1.6;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-3);max-width:88%;white-space:pre-wrap;}',
   '.dsh-wb-msg.me{align-self:flex-end;background:var(--wb-accent-soft);}',
   '.dsh-wb-msg.ai{align-self:flex-start;border:1px solid var(--wb-line);}',
-  '.dsh-wb-advice{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
-  '.dsh-wb-aihist{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
+  '.dsh-wb-advice{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
+  '.dsh-wb-aihist{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
   '.dsh-wb-persona{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
-  '.dsh-wb-atextarea{width:100%;font:var(--dsw-font-xxxs-11);line-height:1.7;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);resize:vertical;}',
+  '.dsh-wb-atextarea{width:100%;font:var(--wb-f3);line-height:1.7;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);resize:vertical;}',
   '.dsh-wb-atextarea:focus{border-color:var(--wb-accent);}',
   // ── 执行清单（MLO 的 TODO 视图） ─────────────────────────────────────
-  '.dsh-wb-todoseq{flex:none;min-width:18px;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);text-align:right;}',
+  '.dsh-wb-todoseq{flex:none;min-width:18px;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);text-align:right;}',
   '.dsh-wb-act.star{color:var(--wb-fg-2);}',
   '.dsh-wb-act.star.on{color:var(--wb-accent);font-weight:700;}',
   '.dsh-wb-task.starred{background:var(--wb-accent-soft);}',
