@@ -484,6 +484,14 @@ agent 少传一个参数就把数据抹了。
     （`grep -n setXxx`），别只看 `const [x, setX]` 那一行；顺手把「点了它会发生什么」
     写进测试——没被点到的分支等于没测。
 
+28. **`<button>` 里的图标不会自动居中。** `.dsh-wb-svg` 是 `display:block`，而 button
+    的默认 `text-align:center` **只对行内内容生效**——块级子元素会贴着内容盒的左边
+    排。真机反馈「话筒要居中」，量出来图标比圆心偏左约 9px（上下也偏），就是这条。
+    凡是要在按钮里放单个图标的（浮球、表头图标、行内动作），容器的
+    `display:flex;align-items:center;justify-content:center` 才是可靠做法。
+    **别靠肉眼判断「看着挺正」**：把截图按 DPR 放大后量中心点，或者直接
+    `getBoundingClientRect` 比「容器的中心 vs 图标的中心」，两个偏差都该是 0。
+
 ## 约定
 
 - **零构建期依赖**。`scripts/build.mjs` 只做拷贝 + 文本内联，不压缩不转译。

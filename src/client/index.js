@@ -131,8 +131,14 @@ const CSS = [
   // ── 浮球：AI 的唯一入口（面板树里的一部分，打开「工作计划」时才存在）──────
   // 固定在底部居中并让出安全区。**所有设备都渲染**——它不再只是手机形态：
   // 面板顶部那行 AI 输入已经撤掉，桌面端也靠它进。
-  '.dsh-wb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(var(--wb-sp-5) + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:var(--wb-sp-2);pointer-events:auto;z-index:2147483000;}',
-  '.dsh-wb-fabball{width:48px;height:48px;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--wb-f1s);}',
+  // 抬到 24px 而不是 12px：真机反馈「位置要高一点」——原来那颗球紧贴屏底，
+  // 压住了面板自己的路径行、也贴着手机的返回手势条，手指够着不舒服。
+  // 浮层（.dsh-wb-fabsheet）的定位基准就是这个盒子，所以它跟着一起抬高。
+  '.dsh-wb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:var(--wb-sp-2);pointer-events:auto;z-index:2147483000;}',
+  // 球里的图标必须**真的居中**：`.dsh-wb-svg` 是 display:block，而 button 默认只对
+  // 行内内容做 text-align 居中——块级子元素会贴着内容盒左边排。真机上量出来图标
+  // 比圆心偏左约 9px（上下也偏），就是这条来的。flex 两端居中最稳。
+  '.dsh-wb-fabball{width:48px;height:48px;display:flex;align-items:center;justify-content:center;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--wb-f1s);}',
   // 输入浮层：用 fixed 而不是跟着浮球走，方便按键盘高度整体上移（visualViewport）。
   // 它现在装的是一整块 AI 内容（输入行 + 问答 + 草稿卡 + 清单卡），所以自己滚，
   // 而不是把浮层撑出屏幕——手机上它已经占满整个视口宽度了（390px）。
@@ -1169,9 +1175,9 @@ function apply(ctx) {
         return h('div', { className: 'dsh-wb-fab', key: 'fab' },
           h('button', {
             className: 'dsh-wb-fabball',
-            title: '问一句，或说一件事——AI 负责回答或记成草稿',
+            title: '说一句或问一句——点一下打开输入框，里面也有语音',
             onClick: () => setFabOpen(true),
-          }, icon('bulb', 20)))
+          }, icon('mic', 20)))
       }
       return h('div', { className: 'dsh-wb-fab', key: 'fab' },
         h('div', {
