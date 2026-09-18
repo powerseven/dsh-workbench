@@ -31,6 +31,50 @@ const React = require('react')
 
 const h = React.createElement
 
+// ── 内联 SVG 图标（与宿主同一套线描风格：24×24、stroke=currentColor、圆头圆角）──
+// 为什么不用文字字形（emoji / Unicode 符号）：字重、光学中心、笔画粗细都跟真图标
+// 不是一路的，混在宿主界面里一眼就不像亲生的。内联 SVG 零依赖，颜色走 currentColor，
+// 于是明暗两态与宿主换肤都自动跟随。
+const ICONS = {
+  plus: 'M12 5v14M5 12h14',
+  send: 'M12 19V5M5 12l7-7 7 7',
+  mic: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3ZM19 10v2a7 7 0 0 1-14 0v-2M12 19v3',
+  stop: 'M7 7h10v10H7z',
+  gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z',
+  refresh: 'M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6',
+  collapse: 'M6 15l6-6 6 6',
+  expand: 'M6 9l6 6 6-6',
+  star: 'M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 20.9l1.1-6.5L2.6 9.8l6.5-.9L12 3z',
+  link: 'M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48',
+  edit: 'M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z',
+  move: 'M15 10l5 5-5 5M4 4v7a4 4 0 0 0 4 4h12',
+  close: 'M18 6L6 18M6 6l12 12',
+  inbox: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
+  lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
+  warn: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
+  file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6',
+  folder: 'M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z',
+  list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+  bulb: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z',
+  target: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
+  check: 'M20 6L9 17l-5-5',
+  trash: 'M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15',
+}
+const icon = (name, size) => h('svg', {
+  className: 'dsh-wb-svg',
+  width: size === undefined ? 16 : size,
+  height: size === undefined ? 16 : size,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': 'true',
+}, h('path', { d: ICONS[name] }))
+
+
 const CSS = [
   // ── 别名层 ──────────────────────────────────────────────────────────────
   // 只做一件事：把宿主的设计 token 映射成面板自用的短名。面板**不自己定义任何
@@ -107,6 +151,7 @@ const CSS = [
   // 小字：既压不过标题，又在白底只有 4.2:1。把强调色让给「可交互」之后，
   // 数字回到中性反而更醒目。
   '.dsh-wb-pct{font:var(--dsw-font-xs-strong-13);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
+  '.dsh-wb-svg{display:block;flex:none;}',
   '.dsh-wb-icon{border:1px solid transparent;background:transparent;border-radius:var(--wb-r-2);padding:var(--wb-sp-1) var(--wb-sp-3);font:inherit;color:var(--wb-fg-2);cursor:pointer;line-height:1.5;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-icon:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-icon:active{background:var(--wb-active);}',
@@ -676,7 +721,7 @@ function apply(ctx) {
         className: 'dsh-wb-mic' + (listening ? ' on' : ''),
         title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
-      }, listening ? '■' : '◉')
+      }, listening ? icon('stop') : icon('mic'))
     }
 
     // ============================================================== AI 助手
@@ -905,10 +950,11 @@ function apply(ctx) {
     /** 「＋」上传文件。三个入口共用同一份上限与提示逻辑。 */
     const picButton = (key) => h('label', {
       key,
-      className: 'dsh-wb-aibtn',
+      // dsh-wb-pic 是稳定钩子（同 dsh-wb-send）：图标换成 SVG 后按钮里没有文字了。
+      className: 'dsh-wb-aibtn dsh-wb-pic',
       title: '上传文件：图片识别内容，文本直接随问题带上',
     },
-      '+',
+      icon('plus'),
       h('input', {
         type: 'file',
         multiple: true,
@@ -972,11 +1018,13 @@ function apply(ctx) {
         micButton(setAiText, 'mic'),
         picButton('pic'),
         h('button', {
-          className: 'dsh-wb-aibtn primary',
+          // dsh-wb-send 是给测试用的稳定钩子：图标换成 SVG 之后按钮里没有文字了，
+          // 靠字形找它的断言会全军覆没。
+          className: 'dsh-wb-aibtn dsh-wb-send primary',
           title: '发送（回车同样有效）',
           disabled: aiBusy === true,
           onClick: () => runAi(),
-        }, aiBusy === true ? '…' : '↑'),
+        }, aiBusy === true ? '…' : icon('send')),
       ))
 
       if (open !== true) return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
@@ -2599,10 +2647,10 @@ function apply(ctx) {
           className: 'dsh-wb-icon',
           title: collapsed.length > 0 ? '全部展开' : '全部收起（只看主线）',
           onClick: () => (collapsed.length > 0 ? applyCollapse([]) : collapseAll()),
-        }, collapsed.length > 0 ? '⊞' : '⊟') : null,
+        }, collapsed.length > 0 ? icon('expand') : icon('collapse')) : null,
         // 表头不再显示整体完成度，也不放「留档一个版本」——版本留档是自动的
         // （每次写入前都会归档），要手动留档让 agent 调 plan_snapshot 即可。
-        h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, '⟳'),
+        h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, icon('refresh')),
         // 设置：工作区级配置收拢到一个界面（vault、AI 人设……）。
         h('button', {
           className: 'dsh-wb-icon',
@@ -2611,7 +2659,7 @@ function apply(ctx) {
             store.set({ showSettings: true, aiOpen: false })
             if (aiPersona === '') loadPersona()
           },
-        }, '设置'),
+        }, icon('gear')),
         // 收尾复盘（Sunsama 式）：每天收工前把没做完的顺延，而非留着堆。
         // 只在真有未做完项时才出现——没东西要复盘时它不该占一行。
         unfinished.length > 0 ? h('button', {

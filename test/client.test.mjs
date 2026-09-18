@@ -323,7 +323,10 @@ function caretOf(root, title) {
 const inputOf = (row) => row.children.find((c) => c.type === 'input')
 
 /** 表头右侧的文字按钮（设置等），按文案定位。 */
-const headBtn = (root, label) => byClass(root, 'dsh-wb-icon').find((b) => textOf(b) === label) ?? null
+/** 表头图标按钮：**按 title 找，不按字形**——图标已换成内联 SVG（按钮里没有文字了），
+ *  再按 textOf 找会全军覆没，而且每换一次图标都要改一次测试。 */
+const headBtn = (root, label) => byClass(root, 'dsh-wb-icon')
+  .find((b) => String(b.props.title || '').includes(label)) ?? null
 
 /** 造一个够用的合成事件：面板只用到这几个字段，`prevented` 记录是否被拦下。 */
 function ev(extra = {}) {
@@ -756,7 +759,10 @@ const settle = async () => {
 /** 表头那颗「✨ AI」按钮。不可用时不该存在。 */
 // AI 现在是**常驻**的一行输入（第一入口），不再藏在 ✨ 按钮后面。
 const aiEntry = (view) => firstByClass(view, 'dsh-wb-aiinput')
-const aiBtn = (view, label) => byClass(view, 'dsh-wb-aibtn').find((b) => textOf(b) === label) ?? null
+/** AI 行的按钮：按文字找；发送键已换成内联 SVG（没有文字），用它稳定的类名兜住——
+ *  这样各处继续写 aiBtn(view, '↑') 也不必逐个改。 */
+const aiBtn = (view, label) => byClass(view, 'dsh-wb-aibtn')
+  .find((b) => textOf(b) === label || (label === '↑' && classesOf(b).includes('dsh-wb-send'))) ?? null
 
 /** 解析出的草稿里，第 i 条的候选芯片。 */
 const chipsOf = (view, i) => {
@@ -1000,9 +1006,8 @@ test('选图片：读成 base64 后随 /ai-parse 一起发出', async () => {
     // 'AB' → base64 'QUI='
     arrayBuffer: async () => new Uint8Array([0x41, 0x42]).buffer,
   }
-  const picker = byClass(render(), 'dsh-wb-aibtn').find(
-    (b) => b.type === 'label' && textOf(b) === '+',
-  )
+  // 按稳定类名找，不按字形：选图入口的 ＋ 已经换成内联 SVG（按钮里没有文字）。
+  const picker = byClass(render(), 'dsh-wb-pic').find((b) => b.type === 'label')
   assert.ok(picker !== undefined, '应有选图入口')
   const input = findAll(picker, (el) => (el.props || {}).type === 'file')[0]
   assert.ok(input !== undefined, 'label 里应藏着 file input')
