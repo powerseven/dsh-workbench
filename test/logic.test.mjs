@@ -13,7 +13,7 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const {
-  pct, barWidth, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr,
+  pct, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr,
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
   flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, boardColumns,
@@ -38,11 +38,6 @@ test('pct 对脏数据不抛错', () => {
   assert.equal(pct(null), '0%')
   assert.equal(pct(NaN), '0%')
   assert.equal(pct('0.5'), '0%')
-})
-
-test('barWidth 与 pct 同源', () => {
-  assert.equal(barWidth(0.5), '50%')
-  assert.equal(barWidth(undefined), '0%')
 })
 
 test('statusLabel 覆盖待办四种状态与计划的 active，且对未知值兜底', () => {
@@ -356,7 +351,9 @@ test('focusList 在服务端没给 overdue 标注时本地兜底判定', () => {
 
 test('filterCounts 给出各筛选器的角标数（不含 all）', () => {
   const counts = filterCounts(annotatedPlan())
-  assert.deepEqual(Object.keys(counts).sort(), ['behind', 'delegated', 'high', 'overdue', 'unverified', 'week'])
+  // today 不是 FILTERS 里的一条，但左栏要它的数字——口径直接读 upcomingByDay
+  // 的今日分组（逾期滚入今日），所以它也在返回里。
+  assert.deepEqual(Object.keys(counts).sort(), ['behind', 'delegated', 'high', 'overdue', 'today', 'unverified', 'week'])
   assert.equal(counts.high, 2)
   assert.equal(counts.delegated, 1)
   assert.equal(counts.overdue, 1)

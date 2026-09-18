@@ -348,6 +348,19 @@ const inputOf = (row) => row.children.find((c) => c.type === 'input')
 const headBtn = (root, label) => byClass(root, 'dsh-wb-icon')
   .find((b) => String(b.props.title || '').includes(label)) ?? null
 
+/**
+ * 左栏导航项：**按文案找**。
+ *
+ * 导航现在是「我在看什么」的**唯一**一处（以前是视图切换 + 筛选芯片 + 自定义视图
+ * 三排控件），所以测试里所有「切到某个视角」的动作都收敛到这一个 helper。
+ * 按 `dsh-wb-navtext` 比文案，而不是整项的 textOf——后者会把右侧的计数一起带上。
+ */
+const navItem = (root, label) => byClass(root, 'dsh-wb-navitem')
+  .find((b) => {
+    const t = byClass(b, 'dsh-wb-navtext')[0]
+    return String(t === undefined ? '' : textOf(t)).trim() === label
+  }) ?? null
+
 /** 造一个够用的合成事件：面板只用到这几个字段，`prevented` 记录是否被拦下。 */
 function ev(extra = {}) {
   const e = {
@@ -386,7 +399,7 @@ test('面板渲染出计划树、收件箱与设置入口（不白屏）', async
   assert.match(body, /子计划/)
   assert.match(body, /深层待办/)
   assert.match(body, /收件箱一条/)
-  assert.ok(headBtn(view, '设置') !== null, '应有「设置」入口')
+  assert.ok(navItem(view, '设置') !== null, '应有「设置」入口')
 })
 
 test('tab 角标显示未完成数', async () => {
@@ -455,7 +468,7 @@ test('折叠状态写进 localStorage，重新挂载后仍然收着', async () =
 
 test('「全部收起」只留计划行，且不产生任何写入（折叠不是数据）', async () => {
   const { render, view } = await mount()
-  const btn = byClass(view, 'dsh-wb-icon').find((b) => b.props.title.includes('全部收起'))
+  const btn = navItem(view, '全部收起')
   assert.ok(btn !== undefined)
   requests = []
   btn.props.onClick(ev())
@@ -466,7 +479,7 @@ test('「全部收起」只留计划行，且不产生任何写入（折叠不�
   assert.ok(byText(collapsed, 'dsh-wb-plantitle', '工作主线') !== null, '计划行仍在')
   assert.equal(requests.length, 0, '折叠是显示偏好，不该写盘')
 
-  byClass(collapsed, 'dsh-wb-icon').find((b) => b.props.title === '全部展开').props.onClick(ev())
+  navItem(collapsed, '全部展开').props.onClick(ev())
   assert.ok(byText(render(), 'dsh-wb-tasktitle', '深层待办') !== null, '展开后恢复')
 })
 
@@ -1068,7 +1081,7 @@ test('语音按钮在 AI 输入框旁边，识别结果写进 AI 文本域', asy
 /** 切到「看板」：表头应有视图切换按钮，点一下渲染出分列的任务看板。 */
 test('视图切换按钮存在，点「看板」渲染出按计划分列的看板', async () => {
   const { render, view } = await mount()
-  const vbtn = byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板')
+  const vbtn = navItem(view, '看板')
   assert.ok(vbtn !== null, '表头应有「看板」切换按钮')
 
   vbtn.props.onClick(ev())
@@ -1087,7 +1100,7 @@ test('视图切换按钮存在，点「看板」渲染出按计划分列的看�
 
 test('看板里勾选卡片同样走 /todo-set（与树共用写入路径）', async () => {
   const { render, view } = await mount()
-  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+  navItem(view, '看板').props.onClick(ev())
   const card = byText(render(), 'dsh-wb-card', '表层待办')
   assert.ok(card !== null)
   requests = []
@@ -1100,7 +1113,7 @@ test('看板里勾选卡片同样走 /todo-set（与树共用写入路径）', a
 
 test('看板尊重筛选器：切到「重要度高」只留高优先级卡片（fixture 没有，故整板为空）', async () => {
   const { render, view } = await mount()
-  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+  navItem(view, '看板').props.onClick(ev())
   // fixture 的待办都是 normal，没有高优先级——通过 store 直接验证空状态渲染。
   // 这里改为验证：切换视图后，列头计数仍是「未完成/总数」语义、且不白屏。
   const col = firstByClass(render(), 'dsh-wb-col')
@@ -1114,7 +1127,7 @@ test('看板只看叶子：没有叶子时整棵看板为空（「空计划」�
   planPayload = { schema: 2, version: 1, title: 't', nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
   try {
     const { render } = await mount()
-    byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+    navItem(render(), '看板').props.onClick(ev())
     const board = render()
     assert.ok(byClass(board, 'dsh-wb-col').length >= 1, '空计划 = 收件箱待办，会占一列')
   } finally {
@@ -1127,7 +1140,7 @@ test('没有任何叶子时看板为空而非白屏', async () => {
   planPayload = { schema: 2, version: 1, title: 't', nodes: [] }
   try {
     const { render } = await mount()
-    byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+    navItem(render(), '看板').props.onClick(ev())
     const board = render()
     assert.equal(byClass(board, 'dsh-wb-col').length, 0, '没有任何任务的看板应为空')
     assert.match(textOf(firstByClass(board, 'dsh-wb-empty')), /还没有计划|没有可看/)
@@ -1138,13 +1151,74 @@ test('没有任何叶子时看板为空而非白屏', async () => {
 
 test('视图偏好持久化到 localStorage，重新挂载后仍是看板', async () => {
   const first = await mount()
-  byClass(first.view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+  navItem(first.view, '看板').props.onClick(ev())
   assert.ok(storage.has('dsh-workbench:view'), '视图偏好应落进 localStorage')
   assert.equal(storage.get('dsh-workbench:view'), 'board')
 
   const second = await mount()
   assert.ok(firstByClass(second.view, 'dsh-wb-board') !== null, '重新挂载后默认仍是看板')
   assert.ok(byText(second.view, 'dsh-wb-coltitle', '工作主线') !== null)
+})
+
+// ==================================================== 左栏导航（「看什么」只有一个轴）
+
+test('「看什么」只有一处：视图切换 / 筛选条 / 进度条 / 路径栏都不再存在', async () => {
+  const { view } = await mount()
+  // 这四条断言守的是**这次收敛本身**。它们看着像在测「某个 class 不存在」，
+  // 其实是这条设计线的护栏：任何一处旧控件回来，就等于「看什么」又多了一个入口。
+  for (const gone of ['dsh-wb-viewtoggle', 'dsh-wb-filters', 'dsh-wb-bar', 'dsh-wb-footer']) {
+    assert.equal(byClass(view, gone).length, 0, gone + ' 已经并入左栏，不该再出现')
+  }
+  assert.ok(firstByClass(view, 'dsh-wb-rail') !== null, '应有左栏')
+  assert.ok(firstByClass(view, 'dsh-wb-mainhead') !== null, '内容区应有一行表头')
+})
+
+test('导航是单选：切到某个视角时只有一个高亮，内容只渲染那一个视角', async () => {
+  const { render } = await mount()
+  navItem(render(), '收件箱').props.onClick(ev())
+  let page = render()
+  let on = byClass(page, 'dsh-wb-navitem').filter((b) => classesOf(b).includes('on'))
+  assert.equal(on.length, 1, '只有一个高亮项')
+  assert.match(textOf(on[0]), /收件箱/)
+  // 收件箱视角里不该出现「工作计划」那一段——一个 nav 就是一张清单。
+  assert.equal(byText(page, 'dsh-wb-secttitle', '工作计划'), null, '收件箱视角不掺结构段')
+
+  navItem(render(), '工作计划').props.onClick(ev())
+  page = render()
+  on = byClass(page, 'dsh-wb-navitem').filter((b) => classesOf(b).includes('on'))
+  assert.equal(on.length, 1)
+  assert.match(textOf(on[0]), /工作计划/)
+  assert.ok(byText(page, 'dsh-wb-secttitle', '工作计划') !== null, '结构视角才有那一段')
+})
+
+test('「今天」= 未来 7 天的第一组：逾期滚入今日，且只有今天', async () => {
+  const keep = planPayload
+  const tmp = await mkdtemp(join(tmpdir(), 'dsh-wb-today-'))
+  try {
+    const call = hostCall(tmp)
+    await call('plan_node_add', { title: '早就该做的', due: dayFromNow(-2) })
+    await call('plan_node_add', { title: '今天到期', due: dayFromNow(0) })
+    await call('plan_node_add', { title: '三天后的事', due: dayFromNow(3) })
+    planPayload = (await call('plan_show')).plan
+
+    const { render, view } = await mount()
+    // 左栏上的数字与内容必须同源：今天 = 三条里只取今日那一组（逾期 1 + 今天 1）。
+    const item = navItem(view, '今天')
+    assert.match(textOf(item), /2$/, '左栏「今天」的计数应把逾期滚进来')
+    item.props.onClick(ev())
+
+    const page = render()
+    const heads = byClass(page, 'dsh-wb-dayhead').map((h) => textOf(h))
+    assert.equal(heads.length, 1, '「今天」只画今天这一组')
+    assert.ok(heads[0].includes('今天'))
+    const tasks = textOf(firstByClass(page, 'dsh-wb-body'))
+    assert.match(tasks, /早就该做的/, '逾期项滚入今天')
+    assert.match(tasks, /今天到期/)
+    assert.doesNotMatch(tasks, /三天后的事/, '未来的事不进「今天」')
+  } finally {
+    planPayload = keep
+    await rm(tmp, { recursive: true, force: true })
+  }
 })
 
 // ============================================================ 文件库关联（Obsidian）
@@ -1227,7 +1301,7 @@ test('未配置 vault 时文件只显示路径（不渲染链接），且 vault 
     const row = byClass(view, 'dsh-wb-file')[0]
     assert.equal(row.children.find((c) => c.type === 'a'), undefined, '无 vault 不渲染链接')
     // vault 配置统一在「设置」页里。
-    headBtn(view, '设置').props.onClick(ev())
+    navItem(view, '设置').props.onClick(ev())
     const vault = byClass(render(), 'dsh-wb-vault')[0]
     assert.ok(vault !== undefined, '设置页应渲染 vault 配置块')
     const cfg = findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0]
@@ -1243,7 +1317,7 @@ test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async 
   delete planPayload.vaultPath
   try {
     const { render, view } = await mount()
-    headBtn(view, '设置').props.onClick(ev())
+    navItem(view, '设置').props.onClick(ev())
     const vault = byClass(render(), 'dsh-wb-vault')[0]
     findAll(vault, (el) => el.type === 'button' && textOf(el) === '配置 vault 路径')[0].props.onClick(ev())
     const v = byClass(render(), 'dsh-wb-vault')[0]
@@ -1265,7 +1339,7 @@ test('vault 配置块展开输入框，保存写 /config-set(vaultPath)', async 
 
 test('设置页收拢 vault 与 AI 人设（与当前视图无关）', async () => {
   const { render, view } = await mount()
-  headBtn(view, '设置').props.onClick(ev())
+  navItem(view, '设置').props.onClick(ev())
   const page = render()
   assert.ok(byClass(page, 'dsh-wb-vault')[0] !== undefined, 'vault 配置在设置页里')
   assert.ok(firstByClass(page, 'dsh-wb-atextarea') !== null, 'AI 人设也在设置页里')
@@ -1579,7 +1653,7 @@ test('人设：在设置页能看能改，保存走 /persona-set', async () => {
   withAi()
   const { render, view } = await mount()
   requests = []
-  headBtn(view, '设置').props.onClick(ev())
+  navItem(view, '设置').props.onClick(ev())
   await settle()
 
   const box = firstByClass(render(), 'dsh-wb-atextarea')
@@ -1608,8 +1682,7 @@ test('「当前任务」视图：跨分支聚合现在能做的，星标置顶�
   )
   try {
     const { render, view } = await mount()
-    const toggles = byClass(view, 'dsh-wb-viewtoggle')[0]
-    toggles.children.find((b) => textOf(b) === '当前任务').props.onClick(ev())
+    navItem(view, '下一动作').props.onClick(ev())
     const page = render()
     assert.match(textOf(firstByClass(page, 'dsh-wb-aihead')), /现在能做/)
     // 共享 fixture 里还有别的待办，这里只断言相对顺序：星标的「执行乙」在「执行甲」前。
@@ -1682,21 +1755,20 @@ test('存下的视图出现在筛选条，点开只列清单里还活着的任�
   aiBtn(render(), '存为视图').props.onClick(ev())
   await settle()
 
-  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺')
-  assert.ok(chip !== undefined, '存完就出现在筛选条')
-  // 存为视图时已经**自动激活**：不必再点，清单就在眼前。
+  assert.ok(navItem(render(), '周末冲刺') !== null, '存完就出现在左栏「我的清单」里')
+  // 存为清单时已经**自动切过去**：下一步一定是「看一眼对不对」，不该还要再点一下。
   let page = render()
   let cv = firstByClass(page, 'dsh-wb-customview')
   assert.ok(cv !== null, '保存后直接看到清单内容')
   assert.match(textOf(cv), /深层待办/)
-  // chip 是开关：点一下收起，再点一下展开。**每次点击后要重新取按钮**——
-  // 重渲会换新元素，旧元素上的闭包还是旧状态（真浏览器同理，只是替身更较真）。
-  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺').props.onClick(ev())
-  assert.ok(firstByClass(render(), 'dsh-wb-customview') === null, '再点一下收起')
-  byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '视图 · 周末冲刺').props.onClick(ev())
+  // 导航是**单选**（一个 nav = 一张清单），所以「切走再切回」才是它该有的语义；
+  // 以前那套「再点一下收起」是芯片时代的两态开关，已经不存在了。
+  navItem(render(), '工作计划').props.onClick(ev())
+  assert.ok(firstByClass(render(), 'dsh-wb-customview') === null, '切走就离开这张清单')
+  navItem(render(), '周末冲刺').props.onClick(ev())
   page = render()
   cv = firstByClass(page, 'dsh-wb-customview')
-  assert.ok(cv !== null, '再点一下展开')
+  assert.ok(cv !== null, '再点回来还能看到')
 })
 
 // ---------------------------------------------------------------- 完成语义一体化
@@ -1822,7 +1894,7 @@ test('「未来 7 天」按天分组：逾期滚入今日组，空天不占行',
     planPayload = (await call('plan_show')).plan
 
     const { render, view } = await mount()
-    const chip = byClass(view, 'dsh-wb-chip').find((c) => textOf(c).includes('未来 7 天'))
+    const chip = navItem(view, '未来 7 天')
     assert.ok(chip !== undefined, '筛选条上应有「未来 7 天」芯片')
     chip.props.onClick(ev())
 
