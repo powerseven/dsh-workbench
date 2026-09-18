@@ -353,7 +353,7 @@ const CSS = [
   // 而「所有信息都能改」这件事一旦要靠滚动+折叠去找，就等于没做。
   '.dsh-wb-formhead{display:flex;align-items:center;gap:var(--wb-sp-3);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
   '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--dsw-font-xs-strong-13);}',
-  '.dsh-wb-formhead .dsh-wb-formsub{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-formhead .dsh-wb-formsub{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
   '.dsh-wb-form{flex:1;min-height:0;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);display:flex;flex-direction:column;}',
   '.dsh-wb-field{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-bottom:var(--wb-sp-4);}',
   '.dsh-wb-label{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
@@ -369,8 +369,10 @@ const CSS = [
   '.dsh-wb-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--wb-sp-4);}',
   '.dsh-wb-formnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
   '.dsh-wb-formerr{font:var(--dsw-font-xxxs-11);color:var(--wb-danger);line-height:1.6;}',
-  '.dsh-wb-formactions{display:flex;align-items:center;gap:var(--wb-sp-2);margin-top:var(--wb-sp-2);padding-bottom:var(--wb-sp-4);}',
-  '.dsh-wb-formactions .spacer{margin-left:auto;}',
+  // 保存放在**头栏**里：头栏是 flex:none、不参与滚动，表单区才是会滚的那块。
+  // 手机上输入法弹出时盖住的正是滚动区底部——保存留在最底下，等于要求人先把
+  // 键盘收起来才能点它（真机反馈）。
+  '.dsh-wb-formacts{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-2);flex:none;}',
   // 「更多」折叠条：文左对齐、无框，靠 hover 下划线提示可点——窄面板里不再多一个胶囊。
   '.dsh-wb-morebtn{align-self:flex-start;margin-top:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) 0;cursor:pointer;}',
   '.dsh-wb-morebtn:hover{color:var(--wb-fg);text-decoration:underline;}',
@@ -2472,23 +2474,26 @@ function apply(ctx) {
         h('span', { className: 'dsh-wb-formtitle' },
           isNew ? (isPlan ? '新建计划' : '新建待办') : (isPlan ? '编辑计划' : '编辑待办')),
         node !== null ? h('span', { className: 'dsh-wb-formsub' }, String(node.title)) : null,
-      ))
-      if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
-      if (state.error !== null && state.error !== undefined) {
-        rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
-      }
-      rows.push(h('div', { className: 'dsh-wb-form', key: 'form' },
-        body,
-        h('div', { className: 'dsh-wb-formactions', key: 'acts' },
+        // 保存紧跟头栏（不随表单滚动）。理由见 CSS 里 .dsh-wb-formacts 的注释：
+        // 手机上输入法会盖住滚动区底部，保存在底部等于要求人先收键盘再点。
+        h('div', { className: 'dsh-wb-formacts', key: 'acts' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
             disabled: formSaving || errs.length > 0,
             title: errs.length > 0 ? errs.join('；') : '保存全部改动',
             onClick: saveForm,
           }, formSaving ? '保存中…' : '保存'),
-          h('button', { className: 'dsh-wb-aibtn', onClick: closeForm }, '取消'),
         ),
+      ))
+      if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
+      if (state.error !== null && state.error !== undefined) {
+        rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
+      }
+      rows.push(h('div', { className: 'dsh-wb-form', key: 'form' },
+        // 校验错误挪到表单**顶部**：保存按钮现在在头栏，而它被禁用时原因要立刻
+        // 看得见；留在滚动区最底下就等于让人自己去翻。
         errs.length > 0 ? h('div', { className: 'dsh-wb-formerr', key: 'errs' }, errs.join('；')) : null,
+        body,
       ))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }

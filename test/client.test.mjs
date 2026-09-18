@@ -1468,16 +1468,30 @@ test('新建表单默认展开「更多」：要一次填完，不该再让人�
   assert.ok(byText(render(), 'dsh-wb-morebtn', '收起更多') !== null, '新建：更多默认展开')
 })
 
-test('返回 / 取消 = 放弃改动，不发任何写入', async () => {
+test('返回 = 放弃改动，不发任何写入', async () => {
   const { render, view } = await mount()
   actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
   await settle()
   inpByPh(render(), '要做什么').props.onChange({ target: { value: '改了但不保存' } })
   requests = []
-  btnByText(render(), '取消').props.onClick(ev())
+  byText(render(), 'dsh-wb-icon', '← 返回').props.onClick(ev())
   await settle()
   assert.equal(requests.length, 0)
-  assert.ok(firstByClass(render(), 'dsh-wb-formhead') === null, '取消后回到列表')
+  assert.ok(firstByClass(render(), 'dsh-wb-formhead') === null, '返回后回到列表')
+})
+
+test('保存放在头栏里，不随表单滚动——手机上输入法盖不住它', async () => {
+  const { render, view } = await mount()
+  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+  await settle()
+  const head = firstByClass(render(), 'dsh-wb-formhead')
+  assert.ok(head !== null, '应当进入详情编辑页')
+  // 头栏是 flex:none、不参与滚动；表单区（.dsh-wb-form）才是会滚的那块。
+  // 真机反馈：手机上输入法弹出时盖住的正是滚动区底部。
+  assert.ok(firstByClass(head, 'dsh-wb-formacts') !== null, '保存的动作区应当在头栏里')
+  assert.ok(btnByText(head, '保存') !== null, '头栏里应当有保存按钮')
+  assert.equal(btnByText(firstByClass(render(), 'dsh-wb-form'), '保存'), null,
+    '会滚动的表单区里不该再有保存按钮')
 })
 
 // ---------------------------------------------------------------- AI 助手：问答 / 意见 / 选项 / 人设
