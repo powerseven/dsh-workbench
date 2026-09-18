@@ -691,9 +691,11 @@ async function planWithSuggestion() {
   return { tmp, plan: shown.plan }
 }
 
-/** 某条待办行里的行内动作按钮，按文案定位（↳ 归位 / ⇧ 提升 / × 删除）。 */
-const actByText = (row, label) => row.children
-  .find((c) => c.type === 'button' && textOf(c) === label) ?? null
+/** 某条待办行里的行内动作按钮，按文案定位（↳ 归位 / ⇧ 提升 / × 删除）。
+ *  递归查找：动作现在包在 .dsh-wb-taskmeta 里（窄屏整块折到第二行），已经不是行的
+ *  直接子元素——继续按 children 找会在重构之后静默返回 null。 */
+const actByText = (row, label) => byClass(row, 'dsh-wb-act')
+  .find((b) => textOf(b) === label) ?? null
 
 test('归位建议排在归位选择器最前，一点就归位，理由看得见', async () => {
   const { tmp, plan } = await planWithSuggestion()

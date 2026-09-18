@@ -193,6 +193,9 @@ const CSS = [
   '.dsh-wb-task:hover{background:var(--wb-hover);}',
   '.dsh-wb-task input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-tasktitle{flex:1;word-break:break-word;cursor:pointer;}',
+  // 标题之后的元信息 + 动作按钮。宽屏上它是一段不收缩的尾部（与以前一样），
+  // 窄屏上整体折成第二行（见下面的媒体查询）。
+  '.dsh-wb-taskmeta{display:flex;align-items:center;gap:var(--wb-sp-2);flex:none;min-width:0;}',
   // 完成态用「变灰」而不是 opacity：叠透明度会把对比度一起压下去。
   '.dsh-wb-tasktitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
   '.dsh-wb-tasktitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
@@ -332,7 +335,9 @@ const CSS = [
   // 而它后面跟着最多 5 个徽章 + 截止日期 + 6 个 `flex:none` 的动作按钮：窄屏上
   // 标题只剩一个字宽，中文又能任意断行，于是标题**竖着排下来**（手机上实测如此）。
   // 给标题一个 60% 的 flex-basis 并允许换行，一行装不下的自然落到下一行。
-  '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle,.dsh-wb-plantitle{flex:1 1 60%;min-width:0;}}',
+  // 窄屏（手机）：标题独占第一行，后面的徽章与动作整体折到第二行——**确定性**版式，
+  // 不再取决于标题多长。标题本身太长时自然折成两行，元信息仍在它下面。
+  '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle,.dsh-wb-plantitle{flex:1 1 auto;min-width:0;}.dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
@@ -1787,6 +1792,10 @@ function apply(ctx) {
           onChange: () => setTodo(node.id, toggleStatus(node.status)),
         }),
         titleNode(node, 'dsh-wb-tasktitle', { canToggle: true }),
+        // 标题之后的一切（徽章 / 日期 / 纳入计划 / 动作按钮）包成一块：
+        // 窄屏时整块折到第二行，行与行之间才有一致的版式（真机反馈：
+        // 不包的话「折到哪一行」取决于标题多长，看起来每行都不一样）。
+        h('div', { className: 'dsh-wb-taskmeta', key: 'meta' },
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -1835,6 +1844,7 @@ function apply(ctx) {
           title: '删除',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
+        ),
       )]
       if (state.moving === node.id) rows.push(movePick(node))
       rows.push(filesBlock(node))
@@ -1906,6 +1916,7 @@ function apply(ctx) {
       }, dragOnto(node, true)),
         caret(node),
         titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
+        h('div', { className: 'dsh-wb-taskmeta', key: 'meta' },
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -1939,6 +1950,7 @@ function apply(ctx) {
           title: '删除这个计划（连同子项）',
           onClick: (e) => { e.stopPropagation(); doRemove(node) },
         }, '×'),
+        ),
       )
 
       // 收起来时只留标题行：进度百分比已经在标题行里，进度条与元信息属于
