@@ -692,7 +692,7 @@ async function planWithSuggestion() {
  *  递归查找：动作现在包在 .dsh-wb-taskmeta 里（窄屏整块折到第二行），已经不是行的
  *  直接子元素——继续按 children 找会在重构之后静默返回 null。 */
 const actByText = (row, label) => byClass(row, 'dsh-wb-act')
-  .find((b) => textOf(b) === label) ?? null
+  .find((b) => actMatch(b, label)) ?? null
 
 test('归位建议排在归位选择器最前，一点就归位，理由看得见', async () => {
   const { tmp, plan } = await planWithSuggestion()
@@ -1251,7 +1251,12 @@ test('设置页收拢 vault 与 AI 人设（与当前视图无关）', async () 
 
 const taskRow = (view, title) => byClass(view, 'dsh-wb-task').find((r) => textOf(r).includes(title)) ?? null
 const planRow = (view, title) => byClass(view, 'dsh-wb-planhead').find((r) => textOf(r).includes(title)) ?? null
-const actOf = (row, label) => byClass(row, 'dsh-wb-act').find((b) => textOf(b) === label) ?? null
+/** 行内动作按钮的稳定定位：按钮里的字形已换成内联 SVG（没有文字了），
+ *  所以按 title 兜住——这样调用点继续写 '★' / '↳' / '＋' 也不必逐个改。 */
+const ACT_TITLE = { '★': '星标', '↳': '归位到', '＋': '加子项', '×': '删除' }
+const actMatch = (b, label) => textOf(b) === label
+  || (ACT_TITLE[label] !== undefined && String(b.props.title || '').includes(ACT_TITLE[label]))
+const actOf = (row, label) => byClass(row, 'dsh-wb-act').find((b) => actMatch(b, label)) ?? null
 const inpByPh = (view, ph) => byClass(view, 'dsh-wb-inp').find((i) => i.props.placeholder === ph) ?? null
 const segBtn = (view, label) => byClass(view, 'dsh-wb-seg')
   .flatMap((s) => s.children)

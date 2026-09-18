@@ -1024,7 +1024,7 @@ function apply(ctx) {
               title: '记入收件箱',
               disabled: plainDraft.trim() === '',
               onClick: submitPlain,
-            }, '＋'),
+            }, icon('plus')),
           ))
       }
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
@@ -1930,7 +1930,7 @@ function apply(ctx) {
           className: 'dsh-wb-act star' + (node.starred === true ? ' on' : ''),
           title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
           onClick: (e) => { e.stopPropagation(); setStarOn(node, node.starred !== true) },
-        }, '★'),
+        }, icon('star')),
         // 这里不再有「编辑 / 关联资料 / 删除」按钮：单击标题就是打开详情编辑页，
         // 资料关联与删除都在详情页里（见 titleProps），
         // 原标题：
@@ -1939,12 +1939,12 @@ function apply(ctx) {
           className: 'dsh-wb-act',
           title: '归位到某个计划下',
           onClick: (e) => { e.stopPropagation(); store.set({ moving: state.moving === node.id ? null : node.id }) },
-        }, '↳'),
+        }, icon('move')),
         h('button', {
           className: 'dsh-wb-act',
           title: '加子项：往下拆，它会自动变成计划',
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
-        }, '＋'),
+        }, icon('plus')),
         ),
       )]
       if (state.moving === node.id) rows.push(movePick(node))
@@ -2033,7 +2033,7 @@ function apply(ctx) {
           // 往收着的计划里加子项要顺手展开：不展开的话新加的东西立刻不可见，
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
-        }, '＋'),
+        }, icon('plus')),
         // 只有「已纳入工作计划的叶子」才有这一手：把它退回收件箱。纳入不该是单向门。
         filedOf(node)
           ? h('button', {
@@ -2173,7 +2173,7 @@ function apply(ctx) {
             className: 'dsh-wb-act star' + (x.starred ? ' on' : ''),
             title: x.starred ? '取消星标' : '星标：接下来做（清单置顶）',
             onClick: () => setStarOn(node, x.starred !== true),
-          }, '★'),
+          }, icon('star')),
           h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(node) }, '✎'),
         )
       }
