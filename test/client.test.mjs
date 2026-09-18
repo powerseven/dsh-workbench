@@ -1291,10 +1291,22 @@ const segBtn = (view, label) => byClass(view, 'dsh-wb-seg')
   .find((b) => textOf(b) === label) ?? null
 const btnByText = (view, label) => byClass(view, 'dsh-wb-aibtn').find((b) => textOf(b) === label) ?? null
 
-test('✎ 打开详情编辑页，字段按节点预填；改标题保存走 node-set', async () => {
-  const { render, view } = await mount()
-  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
+/**
+ * 打开详情编辑页：**单击标题**。行内那个 ✎ 已经删掉了——点标题就是编辑入口，
+ * 行内再放一个是同一个入口的第二遍（还白占窄屏的宽度）。
+ * 单击是延后 200ms 执行的（不与双击改名打架），所以要等过这个定时器。
+ */
+async function openDetail(view, title, base = 'dsh-wb-tasktitle') {
+  const el = byText(view, base, title)
+  assert.ok(el !== null, '找不到标题：' + title)
+  el.props.onClick(ev())
+  await new Promise((r) => setTimeout(r, 260))
   await settle()
+}
+
+test('点标题打开详情编辑页，字段按节点预填；改标题保存走 node-set', async () => {
+  const { render, view } = await mount()
+  await openDetail(view, '表层待办')
   // 低频项（负责人等）已收进「更多」，先展开再改——与真实用户流程一致
   firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
   await settle()
@@ -1328,8 +1340,7 @@ test('表单里清空字段 = 提交 clear，而不是「什么都没传」', as
   node.note = '原备注'
   try {
     const { render, view } = await mount()
-    actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
-    await settle()
+    await openDetail(view, '表层待办')
     firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
     await settle()
     assert.equal(inpByPh(render(), '谁负责（可空）').props.value, '原负责人')
@@ -1347,8 +1358,7 @@ test('表单里清空字段 = 提交 clear，而不是「什么都没传」', as
 
 test('标题空时保存按钮禁用并说明原因，不会写出空标题', async () => {
   const { render, view } = await mount()
-  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
-  await settle()
+  await openDetail(view, '表层待办')
   inpByPh(render(), '要做什么').props.onChange({ target: { value: '  ' } })
   const page = render()
   assert.equal(btnByText(page, '保存').props.disabled, true)
@@ -1361,8 +1371,7 @@ test('标题空时保存按钮禁用并说明原因，不会写出空标题', as
 
 test('详情页没有「类型」段：类型由结构派生，不能也不必手选', async () => {
   const { render, view } = await mount()
-  actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
-  await settle()
+  await openDetail(view, '工作主线', 'dsh-wb-plantitle')
   const page = render()
   const labels = byClass(page, 'dsh-wb-label').map((l) => textOf(l))
   assert.equal(labels.includes('类型'), false, '「往下拆」用行内 ＋ 按钮，拆完空了自动变回待办')
@@ -1427,8 +1436,7 @@ test('详情页能删一条完成证据（面板此前只能加不能删）', as
   todo.evidence = [{ kind: 'file', ref: 'a.md', at: '2026-09-01T00:00:00.000Z' }]
   try {
     const { render, view } = await mount()
-    actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
-    await settle()
+    await openDetail(view, '表层待办')
     // 证据属低频项，收在「更多」里：先展开
     firstByClass(render(), 'dsh-wb-morebtn').props.onClick(ev())
     await settle()
@@ -1447,8 +1455,7 @@ test('详情页能删一条完成证据（面板此前只能加不能删）', as
 
 test('详情页渐进披露：编辑时「更多」默认收起，点开才展开低频项', async () => {
   const { render, view } = await mount()
-  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
-  await settle()
+  await openDetail(view, '表层待办')
 
   // 一级只给简单信息；低频项不该占版面。
   assert.ok(inpByPh(render(), '要做什么') !== null, '一级：标题在')
@@ -1470,8 +1477,7 @@ test('新建表单默认展开「更多」：要一次填完，不该再让人�
 
 test('返回 = 放弃改动，不发任何写入', async () => {
   const { render, view } = await mount()
-  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
-  await settle()
+  await openDetail(view, '表层待办')
   inpByPh(render(), '要做什么').props.onChange({ target: { value: '改了但不保存' } })
   requests = []
   byText(render(), 'dsh-wb-icon', '← 返回').props.onClick(ev())
@@ -1482,8 +1488,7 @@ test('返回 = 放弃改动，不发任何写入', async () => {
 
 test('保存放在头栏里，不随表单滚动——手机上输入法盖不住它', async () => {
   const { render, view } = await mount()
-  actOf(taskRow(view, '表层待办'), '✎').props.onClick(ev())
-  await settle()
+  await openDetail(view, '表层待办')
   const head = firstByClass(render(), 'dsh-wb-formhead')
   assert.ok(head !== null, '应当进入详情编辑页')
   // 头栏是 flex:none、不参与滚动；表单区（.dsh-wb-form）才是会滚的那块。
@@ -1747,8 +1752,7 @@ test('叶子（含原「空计划」）渲染成待办行、可勾选；容器�
 
 test('详情页：有未完成子项的计划，「已完成」按钮禁用并说明原因', async () => {
   const { render, view } = await mount()
-  actOf(planRow(view, '工作主线'), '✎').props.onClick(ev())
-  await settle()
+  await openDetail(view, '工作主线', 'dsh-wb-plantitle')
   // 类型段删除后，状态段是第一个 seg；「已完成」在子项没做完时应被禁用。
   const statusSeg = byClass(render(), 'dsh-wb-seg')[0]
   const doneBtn = statusSeg.children.find((b) => textOf(b) === '已完成')

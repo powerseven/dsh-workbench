@@ -1794,11 +1794,8 @@ function apply(ctx) {
           title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
           onClick: (e) => { e.stopPropagation(); setStarOn(node, node.starred !== true) },
         }, '★'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '编辑全部信息（负责人 / 截止 / 备注 / 证据 …）',
-          onClick: (e) => { e.stopPropagation(); openEdit(node) },
-        }, '✎'),
+        // 这里不再有「编辑」按钮：单击标题就是打开详情编辑页（见 titleProps），
+        // 行内再放一个 ✎ 是同一个入口的第二遍，还白占窄屏上宝贵的宽度。
         h('button', {
           className: 'dsh-wb-act',
           title: '归位到某个计划下',
@@ -1897,11 +1894,7 @@ function apply(ctx) {
         priBadge(node),
         q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
         h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '编辑全部信息（负责人 / 周期 / 指标 / 备注 / 证据 …）',
-          onClick: (e) => { e.stopPropagation(); openEdit(node) },
-        }, '✎'),
+        // 与待办行同理：点标题即打开详情，行内不再放 ✎。
         h('button', {
           className: 'dsh-wb-act',
           title: '在这个计划下加一项',
