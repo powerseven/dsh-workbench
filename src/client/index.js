@@ -2957,6 +2957,7 @@ function apply(ctx) {
     const [tasks, setTasks] = React.useState([])
     const [busy, setBusy] = React.useState(false)
     const [gap, setGap] = React.useState(0)   // 键盘占掉的高度
+    const [pics, setPics] = React.useState([])   // 待随这一问一起发出去的图片
 
     // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
     React.useEffect(() => {
@@ -2983,7 +2984,25 @@ function apply(ctx) {
       return payload
     }
 
-    const close = () => { setOpen(false); setDraft(''); setNote(''); setTasks([]) }
+    /** 选图：与面板顶部那行同一套数据面（图片读成 base64 随 /ai-parse 一起发）。 */
+    const pickImages = async (e) => {
+      const files = Array.from((e.target && e.target.files) || [])
+      const out = []
+      for (const f of files) {
+        if (typeof f.type !== 'string' || f.type.indexOf('image/') !== 0) continue
+        let buf = null
+        try { buf = await f.arrayBuffer() } catch (err) { buf = null }
+        if (buf === null) continue
+        const bytes = new Uint8Array(buf)
+        let bin = ''
+        for (let i = 0; i < bytes.length; i++) bin += String.fromCharCode(bytes[i])
+        out.push({ mediaType: f.type, data: btoa(bin), name: f.name })
+      }
+      setPics((prev) => prev.concat(out).slice(0, 4))
+      if (e.target) e.target.value = ''
+    }
+
+    const close = () => { setOpen(false); setDraft(''); setNote(''); setTasks([]); setPics([]) }
 
     const submit = async () => {
       const text = draft.trim()
@@ -2992,7 +3011,8 @@ function apply(ctx) {
       setNote('')
       setTasks([])
       try {
-        const r = await send('ai-parse', { text })
+        const r = await send('ai-parse', { text, images: pics })
+        setPics([])
         const reply = r.reply === undefined || r.reply === null ? '' : String(r.reply)
         setNote(reply === '' ? '（没有回复）' : reply)
         setTasks(Array.isArray(r.tasks) ? r.tasks : [])
@@ -3049,6 +3069,16 @@ function apply(ctx) {
           onChange: (e) => setDraft(e.target.value),
           onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submit() } },
         }),
+        // 加文件：和语音、发送排在一起——这个浮层是唯一入口，三件事都得有。
+        h('label', { className: 'dsh-wb-aibtn dsh-wb-pic', title: '上传图片（多模态识别）' },
+          icon('plus'),
+          h('input', {
+            type: 'file',
+            accept: 'image/*',
+            multiple: true,
+            style: { display: 'none' },
+            onChange: pickImages,
+          })),
         props.mic === undefined ? null : props.mic(setDraft),
         h('button', {
           className: 'dsh-wb-aibtn primary',
