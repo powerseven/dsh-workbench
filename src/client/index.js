@@ -1707,7 +1707,7 @@ function apply(ctx) {
       if (p !== 'high') return null
       const list = Array.isArray(node.warnings) ? node.warnings : []
       if (list.length === 0) return null
-      return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, '⚠︎')
+      return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, icon('warn', 12))
     }
 
     /**
@@ -1915,7 +1915,7 @@ function apply(ctx) {
           ? h('span', {
             className: 'dsh-wb-taskdue',
             title: '被挡住：等 ' + node.blocked.join('、'),
-          }, '⊠') : null,
+          }, icon('lock', 12)) : null,
         // 「纳入工作计划」只在**收件箱那一层**（depth 0）出现，而且做得常显而不是
         // 悬停才出：它的意义就是催人把收件箱清空，藏起来等于不做。措辞用「纳入计划」
         // 而不是「提升为计划」——它并不改变节点的形态，只是不再待在收件箱。
@@ -2879,7 +2879,7 @@ function apply(ctx) {
 
     const inboxRows = []
     inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-      h('span', { className: 'dsh-wb-planid' }, '▤'),
+      h('span', { className: 'dsh-wb-planid' }, icon('inbox')),
       h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
       h('span', { className: 'dsh-wb-count' }, inbox.length > 0
         ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
@@ -3099,7 +3099,7 @@ function apply(ctx) {
   ctx.effect(() => betterSidebar.registerTab({
     id: 'dsh-workbench:plan',
     title: '工作计划',
-    icon: (size) => h('span', { style: { fontSize: size, lineHeight: '1' } }, '◎'),
+    icon: (size) => icon('target', Math.max(14, Number(size) || 16)),
     order: 40,
     single: true,
     badge: () => {
