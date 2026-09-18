@@ -424,6 +424,9 @@ const CSS = [
   '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--dsw-font-xs-strong-13);}',
   '.dsh-wb-formhead .dsh-wb-formsub{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
   '.dsh-wb-form{flex:1;min-height:0;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);display:flex;flex-direction:column;}',
+  // 详情页内容给一个合理的阅读宽度：桌面上面板约 1000px 宽，而「标题」「负责人」
+  // 这类标量输入拉满整屏既难读也显得散。手机是 390px，这条对手机是空操作。
+  '.dsh-wb-form > *{max-width:680px;}',
   '.dsh-wb-field{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-bottom:var(--wb-sp-4);}',
   '.dsh-wb-label{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
   '.dsh-wb-inp{width:100%;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
@@ -434,8 +437,10 @@ const CSS = [
   '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-seg button.on{background:var(--wb-active);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-seg button:disabled{opacity:.4;cursor:default;}',
-  '.dsh-wb-grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--wb-sp-4);}',
-  '.dsh-wb-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--wb-sp-4);}',
+  // 固定 1fr 1fr / 1fr 1fr 1fr 在窄屏上会把每格压到 120px 上下（日期框放不下），
+  // 改成按可用宽度自动折行：宽屏仍是多列，手机自动落到一两列。
+  '.dsh-wb-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--wb-sp-4);}',
+  '.dsh-wb-grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--wb-sp-4);}',
   '.dsh-wb-formnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
   '.dsh-wb-formerr{font:var(--dsw-font-xxxs-11);color:var(--wb-danger);line-height:1.6;}',
   // 保存放在**头栏**里：头栏是 flex:none、不参与滚动，表单区才是会滚的那块。
