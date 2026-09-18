@@ -325,11 +325,12 @@ const CSS = [
   '.dsh-wb-aitext{flex:1;min-width:0;font:inherit;color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);min-height:48px;resize:vertical;}',
   '.dsh-wb-aitext::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-aitext:focus{border-color:var(--wb-accent);}',
-  '.dsh-wb-aibtn{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  // 无描边、软底：宿主 composer 里的图标按钮就是这个样子（真机反馈：一排描边方框很山寨）。
+  '.dsh-wb-aibtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-aibtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-aibtn:disabled{opacity:.4;cursor:default;}',
   // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
-  '.dsh-wb-aibtn.primary{border-color:var(--wb-accent);background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-aibtn.primary{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
   '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
@@ -433,9 +434,11 @@ const CSS = [
   '.dsh-wb-inp:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-inp::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-inp[type=date]{width:auto;}',
-  '.dsh-wb-seg{display:inline-flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);overflow:hidden;align-self:flex-start;}',
-  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-seg button.on{background:var(--wb-active);color:var(--wb-fg);font-weight:600;}',
+  // 拆掉外框：一个套着边框的「格子控件」在手机上一眼看就是网页表单，不像宿主的东西。
+  // 改成无框 + 选中项软底胶囊。
+  '.dsh-wb-seg{display:inline-flex;gap:var(--wb-sp-1);border:0;border-radius:0;overflow:visible;align-self:flex-start;flex-wrap:wrap;}',
+  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-pill);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-seg button.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-seg button:disabled{opacity:.4;cursor:default;}',
   // 固定 1fr 1fr / 1fr 1fr 1fr 在窄屏上会把每格压到 120px 上下（日期框放不下），
   // 改成按可用宽度自动折行：宽屏仍是多列，手机自动落到一两列。
