@@ -26,6 +26,15 @@ function pct(n) {
   return v + '%'
 }
 
+/** 0..1 → 进度条宽度（CSS 百分比）。 */
+function barWidth(n) {
+  if (typeof n !== 'number' || !isFinite(n)) return '0%'
+  var v = Math.round(n * 100)
+  if (v < 0) v = 0
+  if (v > 100) v = 100
+  return v + '%'
+}
+
 // ------------------------------------------------------------ 树的读取
 
 /**
@@ -713,18 +722,6 @@ function filterCounts(plan, today) {
     if (id === 'all') continue
     out[id] = focusList(plan, id, today).length
   }
-  // 「今天」不是 FILTERS 里的一条，但左栏要它的数字。口径与「未来 7 天」的第一组
-  // **完全一致**（逾期滚入今日），所以直接读那份分组，不另写一套判据——
-  // 两套判据迟早会在「逾期算不算今天」上分叉。
-  // `today` 必须**先归一**再比：upcomingByDay 会把空值兜底成 todayStr()，但那只是
-  // 它内部的局部变量；拿没归一的外层 today 去比 d.date 永远不相等（summarize 就是
-  // 不传 today 调的），表现为「今天」的计数恒为 0。
-  var t = typeof today === 'string' && today !== '' ? today : todayStr()
-  out.today = 0
-  var up = upcomingByDay(plan, t)
-  for (var j = 0; j < up.days.length; j++) {
-    if (up.days[j].date === t) { out.today = up.days[j].items.length; break }
-  }
   return out
 }
 
@@ -1168,6 +1165,7 @@ function pickImages(files, existing) {
 if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exports) {
   module.exports = {
     pct: pct,
+    barWidth: barWidth,
     nodeType: nodeType,
     childrenOf: childrenOf,
     planNodes: planNodes,

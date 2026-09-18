@@ -157,6 +157,7 @@ const CSS = [
   // ── 表头 ────────────────────────────────────────────────────────────────
   '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
   '.dsh-wb-title{font:var(--wb-f1s);}',
+  '.dsh-wb-headright{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-1);}',
   // 总进度是最重要的一个数，所以给它最高层级（近黑 + 等宽数字）。以前是蓝色
   // 小字：既压不过标题，又在白底只有 4.2:1。把强调色让给「可交互」之后，
   // 数字回到中性反而更醒目。
@@ -166,54 +167,14 @@ const CSS = [
   '.dsh-wb-icon:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-icon:active{background:var(--wb-active);}',
   '.dsh-wb-icon:disabled{opacity:.45;cursor:default;}',
+  '.dsh-wb-bar{height:3px;background:var(--wb-line);flex:none;}',
   '.dsh-wb-bar-fill{height:100%;background:var(--wb-accent);transition:width var(--wb-dur) var(--wb-ease);}',
-  // ── 两栏骨架：左栏导航 + 右侧内容 ───────────────────────────────────────
-  // 对齐 Things 3 / Todoist 的左栏：**导航是常驻的一列，不是一排会变的芯片**。
-  // 面板实测约 1000px 宽、纵向紧张，所以横向多花 168px 换掉四行 chrome 是划算的：
-  // 内容区从此只剩一行表头。
-  '.dsh-wb-shell{display:flex;flex:1;min-height:0;}',
-  // 左栏**不给底色**，只用一条右描边和内容区分开。给底色就得先算清它和
-  // --wb-fg-2 的对比度（宿主每个 layer 的明度不同，浅色下 12px 的次要文字很容易
-  // 掉到 4.5:1 之下），而这条分隔线已经足够表达「这是另一栏」。
-  '.dsh-wb-rail{width:168px;flex:none;display:flex;flex-direction:column;min-height:0;border-right:1px solid var(--wb-line);}',
-  '.dsh-wb-railhead{padding:var(--wb-sp-4) var(--wb-sp-4) var(--wb-sp-2);font:var(--wb-f1s);flex:none;}',
-  '.dsh-wb-railscroll{flex:1;min-height:0;overflow-y:auto;padding:0 var(--wb-sp-2) var(--wb-sp-3);}',
-  '.dsh-wb-railfoot{flex:none;border-top:1px solid var(--wb-line);padding:var(--wb-sp-2);}',
-  '.dsh-wb-navgroup{margin-top:var(--wb-sp-4);}',
-  // 组标题只做分隔，不做点击目标：层级靠字重 + 上留白表达，不靠颜色。
-  '.dsh-wb-navhead{padding:0 var(--wb-sp-3) var(--wb-sp-1);font:var(--wb-f3s);color:var(--wb-fg-2);letter-spacing:.04em;}',
-  '.dsh-wb-navitem{display:flex;align-items:center;gap:var(--wb-sp-2);width:100%;text-align:left;border:none;background:transparent;color:var(--wb-fg);border-radius:var(--wb-r-2);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);line-height:1.7;transition:background var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-navitem:hover{background:var(--wb-hover);}',
-  '.dsh-wb-navitem.on{background:var(--wb-accent-soft);font-weight:600;}',
-  // 逾期 / 落后这类「要去处理」的计数用红，但**只做数字颜色**——它在一块软底上
-  // 只有 4.45:1，所以不做胶囊文字色（见坑 #22）。这里的底是面板底色，4.49:1 达标。
-  '.dsh-wb-navitem.alert .dsh-wb-navcount{color:var(--wb-danger);}',
-  '.dsh-wb-navtext{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.dsh-wb-navcount{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-navicon{flex:none;color:var(--wb-fg-2);display:flex;}',
-  // ── 内容区 ──────────────────────────────────────────────────────────────
-  '.dsh-wb-main{flex:1;min-width:0;display:flex;flex-direction:column;min-height:0;}',
-  // 表头只剩一行：我在看什么 + 几个数。以前这里有分段控件 / 进度条 / 筛选芯片 /
-  // 自定义视图四行，现在全归左栏。
-  '.dsh-wb-mainhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-3);border-bottom:1px solid var(--wb-line);flex:none;}',
-  '.dsh-wb-maintitle{font:var(--wb-f1s);}',
-  '.dsh-wb-maincount,.dsh-wb-mainpct{font:var(--wb-f3);color:var(--wb-fg-2);font-variant-numeric:tabular-nums;}',
-  '.dsh-wb-mainpct{margin-left:auto;}',
-  // ── 表头 ────────────────────────────────────────────────────────────────
-  '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
-  '.dsh-wb-title{font:var(--wb-f1s);}',
-  // 总进度是最重要的一个数，所以给它最高层级（近黑 + 等宽数字）。以前是蓝色
-  // 小字：既压不过标题，又在白底只有 4.2:1。把强调色让给「可交互」之后，
-  // 数字回到中性反而更醒目。
-  '.dsh-wb-pct{font:var(--wb-f1s);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
-  '.dsh-wb-svg{display:block;flex:none;}',
-  '.dsh-wb-icon{border:1px solid transparent;background:transparent;border-radius:var(--wb-r-2);padding:var(--wb-sp-1) var(--wb-sp-3);font:inherit;color:var(--wb-fg-2);cursor:pointer;line-height:1.5;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-icon:hover{background:var(--wb-hover);color:var(--wb-fg);}',
-  '.dsh-wb-icon:active{background:var(--wb-active);}',
-  '.dsh-wb-icon:disabled{opacity:.45;cursor:default;}',
-  // ── 芯片 ────────────────────────────────────────────────────────────────
-  // 芯片现在只出现在浮层的归位候选与 AI 选项里（导航已改成左栏）。
-  // 横向内边距只给 6px，11px 的字才有正常行高。
+  // ── 筛选条 ──────────────────────────────────────────────────────────────
+  '.dsh-wb-filters{display:flex;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);flex-wrap:wrap;flex:none;border-bottom:1px solid var(--wb-line);}',
+  // 芯片的横向内边距只给 6px。这 6 个筛选芯片在窄宽（≈420px 的侧栏）下总宽 383px，
+  // 加上 5 个 4px 间隙是 403px——筛选行可用宽只要低于这个数就会折成两行，而第二行
+  // 只挂一个孤零零的芯片，整块高度还会从 37px 涨到 49px。用 sp-4(8px) 时 6 个芯片
+  // 各宽 4px，实测就会折行。纵向补回 2px 是为了让 11px 的字有正常行高，不与折行冲突。
   '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--wb-f3);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
@@ -250,6 +211,9 @@ const CSS = [
   '.dsh-wb-cardmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--wb-sp-2);}',
   // ── 视图切换（树 / 看板）───────────────────────────────────────────────
   // 段控：和筛选芯片同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
+  '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
+  '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
+  '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-icon.on{background:var(--wb-accent-soft);color:var(--wb-fg);border-color:var(--wb-accent);}',
   '.dsh-wb-shutdown{background:var(--wb-hover);border-radius:var(--wb-r-2);margin:var(--wb-sp-2) var(--wb-sp-2) 0;padding:var(--wb-sp-2) var(--wb-sp-3);}',
   '.dsh-wb-shutdown-head{display:flex;align-items:center;justify-content:space-between;font:var(--wb-f3);font-weight:500;color:var(--wb-fg-2);margin-bottom:var(--wb-sp-1);}',
@@ -420,6 +384,7 @@ const CSS = [
   '.dsh-wb-dayhead{font:var(--wb-f3);font-weight:500;color:var(--wb-fg-2);padding:var(--wb-sp-1) var(--wb-sp-2);letter-spacing:.02em;}',
   '.dsh-wb-dayhead.today{color:var(--wb-accent);}',
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
+  '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;}',
   // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
@@ -439,25 +404,6 @@ const CSS = [
   + '--wb-f2:var(--dsw-font-xs-13);--wb-f2s:var(--dsw-font-xs-strong-13);'
   + '--wb-f3:var(--dsw-font-xxs-12);--wb-f3s:var(--dsw-font-xxs-strong-12);}}',
   '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle,.dsh-wb-plantitle{flex:1 1 auto;min-width:0;}.dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}}',
-  // 窄屏（手机）：**左栏横过来**。168px 的竖向导航在 390px 的屏上要吃掉四成宽度，
-  // 而手机缺的是横向空间、不缺纵向。横过来之后它变成顶部一条可横滚的条，语义不变
-  // （还是同一批导航项，还是唯一的一处导航），只是换了排布方式——这正是 Todoist
-  // 手机端的做法。分组标题在这个形态下没有立锥之地，直接收起（组之间用间距分开）。
-  '@media (max-width:767px){'
-  + '.dsh-wb-shell{flex-direction:column;}'
-  // 整条 rail **自己**横滚（而不是让中间那段滚、底栏钉在右边）：底栏那几项
-  // （收尾 / 收起 / 刷新 / 设置）在 390px 上要占掉一半宽度，把导航挤到只剩三个
-  // 胶囊。让整条一起滚，就是「一路划到底」，没有够不着的东西。
-  + '.dsh-wb-rail{width:auto;flex:none;flex-direction:row;align-items:center;border-right:none;border-bottom:1px solid var(--wb-line);overflow-x:auto;overflow-y:hidden;}'
-  + '.dsh-wb-railhead{display:none;}'
-  + '.dsh-wb-railscroll{flex:none;display:flex;align-items:center;gap:var(--wb-sp-2);overflow:visible;padding:var(--wb-sp-2) var(--wb-sp-3);}'
-  + '.dsh-wb-navgroup{display:flex;align-items:center;gap:var(--wb-sp-2);margin-top:0;flex:none;}'
-  + '.dsh-wb-navhead{display:none;}'
-  + '.dsh-wb-navitem{width:auto;flex:none;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);padding:var(--wb-sp-2) var(--wb-sp-3);}'
-  + '.dsh-wb-navitem.on{border-color:var(--wb-accent);}'
-  + '.dsh-wb-railfoot{display:flex;align-items:center;flex:none;border-top:none;border-left:1px solid var(--wb-line);margin-left:var(--wb-sp-2);padding:var(--wb-sp-2) var(--wb-sp-3);}'
-  + '.dsh-wb-railfoot .dsh-wb-navitem{border:none;}'
-  + '}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
@@ -578,33 +524,17 @@ function saveCollapsed(ids) {
 }
 
 /**
- * 「我在看什么」——**一个轴，不是三个**。
- *
- * 这里曾经有三处互不相干的控件同时决定这件事：视图切换（树/当前任务/看板）、
- * 筛选芯片（逾期/落后/…）、自定义视图芯片。它们两两组合会产生「在看板里筛选」
- * 这类没人想得到的中间态，而用户要先想清楚「这两个按钮谁压谁」才敢点。
- *
- * 现在只剩一个值：**一个 nav 就是一张清单**。时间视角（今天 / 未来 7 天）、
- * 结构视角（工作计划 / 看板）、执行视角（下一动作）、审计视角（逾期 / 落后 /
- * 无证据）、AI 存下来的清单——全都是同一件事，所以它们在左栏里也长得一样。
- *
- * 落在 localStorage（与折叠同类：本机偏好，不进 plan.json）。老键里的
- * 'todo' 映射到新名 'next'，用户不会因为这次改名丢掉自己的视图选择。
+ * 视图切换（树 / 看板）的本地偏好，和折叠一样只属于这一台浏览器的这次浏览，
+ * 不进 plan.json。用单独的键，避免和折叠那串 id 混在一起解析出错。
  */
 const VIEW_KEY = 'dsh-workbench:view'
-const NAV_IDS = [
-  'inbox', 'today', 'week', 'tree', 'board', 'next',
-  'high', 'delegated', 'overdue', 'behind', 'unverified',
-]
-function loadNav() {
+function loadView() {
   try {
     const v = window.localStorage.getItem(VIEW_KEY)
-    if (v === 'todo') return 'next'
-    if (typeof v === 'string' && (NAV_IDS.includes(v) || v.indexOf('view:') === 0)) return v
-    return 'tree'
+    return v === 'tree' || v === 'todo' || v === 'board' ? v : 'tree'
   } catch (e) { return 'tree' }
 }
-function saveNav(v) {
+function saveView(v) {
   try { window.localStorage.setItem(VIEW_KEY, v) } catch (e) { /* 忽略 */ }
 }
 
@@ -631,8 +561,11 @@ function createStore() {
   let listeners = []
   let state = {
     plan: null, cwd: '', dir: '', loading: false, error: null, flash: '',
+    filter: 'all',
     // 交互态：一次只展开一个。moving = 正在归位的待办 id，adding = 正在加子项的父节点 id。
     moving: null, adding: null,
+    // 当前激活的自定义视图名（AI 清单存下来的）。null = 没在看自定义视图。
+    custom: null,
     // 设置页（Obsidian vault + AI 人设……）：整块替换面板，与详情页同模式。
     showSettings: false,
   }
@@ -699,10 +632,8 @@ function apply(ctx) {
     // 没有它，删掉收件箱常驻输入框之后，那种机器上的面板会「只能看、不能记」。
     const [plainDraft, setPlainDraft] = React.useState('')
     // 视图切换（树 / 看板）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
-    // 「我在看什么」只有一个值（见 loadNav 上方那段）。切视图是**本机偏好**，
-    // 和折叠一样落 localStorage，不进 plan.json、不占写入路径。
-    const [nav, setNav] = React.useState(() => loadNav())
-    const goNav = (v) => { setNav(v); saveNav(v) }
+    const [view, setView] = React.useState(() => loadView())
+    const setViewPersist = (v) => { setView(v); saveView(v) }
     const [editing, setEditing] = React.useState(null)   // { id, original } | null
     const [editDraft, setEditDraft] = React.useState('')
     const [dragId, setDragId] = React.useState(null)
@@ -964,9 +895,8 @@ function apply(ctx) {
       const name = (typeof aiList.title === 'string' && aiList.title.trim() !== '')
         ? aiList.title.trim() : ('AI 清单 ' + new Date().toISOString().slice(5, 10))
       saveViews(loadViews().filter((v) => v.name !== name).concat([{ name, ids }]))
-      // 存完直接切过去看——「存为清单」的下一步一定是「看一眼对不对」。
-      goNav('view:' + name)
-      flash('已存为清单「' + name + '」，在左栏「我的清单」里随时回看')
+      store.set({ custom: name })
+      flash('已存为视图「' + name + '」，在筛选条上点它随时回看')
     }
 
     /**
@@ -2318,13 +2248,13 @@ function apply(ctx) {
     }
 
     /** 一整块看板（横向铺开的列）。无内容时给一个空状态，而不是白屏。 */
-    const renderBoard = (focus) => {
-      const cols = boardColumns(plan, focus, todayStr())
+    const renderBoard = () => {
+      const cols = boardColumns(plan, state.filter, todayStr())
       if (cols.length === 0) {
-        const label = (FILTERS.find((f) => f.id === focus) || {}).label || ''
+        const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
         return h('div', { className: 'dsh-wb-body', key: 'body' },
           h('div', { className: 'dsh-wb-empty' },
-            focus !== 'all'
+            state.filter !== 'all'
               ? h('div', null, '「' + label + '」下没有可看的任务。')
               : h('div', null, '这个工作区还没有计划，也没有待办。'),
           ),
@@ -2746,133 +2676,63 @@ function apply(ctx) {
     const today = todayStr()
     // 收尾复盘的对象：今天组里的未做完项 = 逾期 + 今天到期（upcomingByDay 已把逾期滚入今日组）。
     const unfinished = (upcomingByDay(plan, today).days.find((d) => d.date === today) || { items: [] }).items
-
-    // ── 左栏：唯一的一处导航 ───────────────────────────────────────────────
-    //
-    // 对齐 Things 3 / Todoist 的左栏：**视图就是导航项，筛选器也是导航项**，
-    // 内容区因此可以干净到只剩标题 + 一个刷新。三家标杆的共识是「一个导航轴」，
-    // 所以这里不再有「视图切换 + 筛选芯片 + 自定义视图」三处控件互相叠加。
-    //
-    // 只列「有货」的（沿用旧筛选条那条纪律）：0 条的视角不该在导航里占一行，
-    // 它只会让人以为「这里本来有事」。收件箱 / 工作计划除外——它们是结构，空也要存在。
-    const navItem = (key, label, count, title, danger) => h('button', {
-      key,
-      className: 'dsh-wb-navitem' + (nav === key ? ' on' : '') + (danger === true ? ' alert' : ''),
-      title: title === undefined ? label : title,
-      onClick: () => goNav(key),
-    },
-    h('span', { className: 'dsh-wb-navtext' }, label),
-    count === null || count === undefined ? null : h('span', { className: 'dsh-wb-navcount' }, String(count)))
-
-    const railGroups = []
-
-    const railViews = [
-      navItem('inbox', '收件箱', inbox.length,
-        '收件箱：还没归位的事。归位到某个计划下，或「纳入工作计划」'),
-      navItem('today', '今天', sum.filters.today || 0,
-        '今天：逾期 + 今天到期的（逾期滚入今天，红标区分）'),
-      navItem('week', '未来 7 天', sum.filters.week || 0,
-        '未来 7 天：按天摊开，回答「下周三我有什么事」'),
-      navItem('tree', '工作计划', null,
-        '工作计划：按层级展开计划与子计划'),
-      navItem('board', '看板', null,
-        '看板：每个计划占一列，待办摊成卡片'),
-      navItem('next', '下一动作', todoList(plan, today).open.length,
-        '下一动作：跨所有分支把「现在能做的」汇成一张清单（被挡住的单独折叠）'),
-    ]
-    railGroups.push(h('div', { className: 'dsh-wb-navgroup', key: 'g-view' },
-      h('div', { className: 'dsh-wb-navhead' }, '视图'),
-      railViews))
-
-    // 审计视角：低频，但每条都指向一个具体动作（去催、去核验、去补证据）。
-    const audit = FILTERS
-      .filter((f) => f.id !== 'all' && f.id !== 'week' && (sum.filters[f.id] || 0) > 0)
-      .map((f) => navItem(f.id, f.label, sum.filters[f.id],
-        '只看：' + f.label, f.id === 'overdue' || f.id === 'behind'))
-    if (audit.length > 0) {
-      railGroups.push(h('div', { className: 'dsh-wb-navgroup', key: 'g-focus' },
-        h('div', { className: 'dsh-wb-navhead' }, '需要处理'),
-        audit))
-    }
-
-    // AI 存下来的清单：它们和上面那些是同一件事（一个 nav = 一张清单）。
-    const savedViews = loadViews()
-    if (savedViews.length > 0) {
-      railGroups.push(h('div', { className: 'dsh-wb-navgroup', key: 'g-saved' },
-        h('div', { className: 'dsh-wb-navhead' }, '我的清单'),
-        savedViews.map((v) => navItem('view:' + v.name, v.name,
-          viewItems(plan, v.ids).length, '自定义清单：' + v.name))))
-    }
-
-    // 底栏：动作不是导航，但放在左栏底部比挤进表头更省地方（Slack / Notion 同做法）。
-    const railFoot = [
-      // 收尾复盘（Sunsama 式）：每天收工前把没做完的顺延，而非留着堆。
-      // 只在真有未做完项时才出现——没东西要复盘时它不该占一行。
-      unfinished.length > 0 ? h('button', {
-        key: 'shutdown',
-        className: 'dsh-wb-navitem' + (shutdownOpen ? ' on' : ''),
-        title: '收尾复盘：把没做完的重新规划，而非留着堆',
-        onClick: () => setShutdownOpen((v) => !v),
-      },
-      h('span', { className: 'dsh-wb-navtext' }, '收尾复盘'),
-      h('span', { className: 'dsh-wb-navcount' }, String(unfinished.length))) : null,
-      // 折叠控点只在真有嵌套时出现：一层都没有的时候，它做什么都不发生。
-      // 收起 / 展开合成**一个**按钮：同一个位子按当前状态切换。
-      sum.depth >= 2 ? h('button', {
-        key: 'fold',
-        className: 'dsh-wb-navitem',
-        title: collapsed.length > 0 ? '全部展开' : '全部收起（只看主线）',
-        onClick: () => (collapsed.length > 0 ? applyCollapse([]) : collapseAll()),
-      },
-      h('span', { className: 'dsh-wb-navicon' }, collapsed.length > 0 ? icon('expand') : icon('collapse')),
-      h('span', { className: 'dsh-wb-navtext' }, collapsed.length > 0 ? '全部展开' : '全部收起')) : null,
-      h('button', {
-        key: 'refresh',
-        className: 'dsh-wb-navitem',
-        title: '刷新（agent 在别处改了计划时用它）',
-        onClick: refresh,
-        disabled: state.loading,
-      },
-      h('span', { className: 'dsh-wb-navicon' }, icon('refresh')),
-      h('span', { className: 'dsh-wb-navtext' }, '刷新')),
-      h('button', {
-        key: 'settings',
-        className: 'dsh-wb-navitem',
-        title: '设置：Obsidian vault、AI 人设',
-        onClick: () => {
-          store.set({ showSettings: true })
-          setFabOpen(false)
-          if (aiPersona === '') loadPersona()
-        },
-      },
-      h('span', { className: 'dsh-wb-navicon' }, icon('gear')),
-      h('span', { className: 'dsh-wb-navtext' }, '设置')),
-    ]
-
-    const rail = h('div', { className: 'dsh-wb-rail', key: 'rail' },
-      h('div', { className: 'dsh-wb-railhead' }, '工作计划'),
-      h('div', { className: 'dsh-wb-railscroll' }, railGroups),
-      h('div', { className: 'dsh-wb-railfoot' }, railFoot))
-
-    // ── 内容区表头：只回答「我在看什么」，别的都归左栏 ─────────────────────
-    const NAV_TITLES = {
-      inbox: '收件箱', today: '今天', week: '未来 7 天', tree: '工作计划',
-      board: '看板', next: '下一动作',
-    }
-    const navTitle = nav.indexOf('view:') === 0
-      ? nav.slice(5)
-      : (NAV_TITLES[nav] || (FILTERS.find((f) => f.id === nav) || {}).label || '工作计划')
-    const navCount = nav === 'inbox' ? inbox.length
-      : nav === 'tree' || nav === 'board' ? null
-        : nav.indexOf('view:') === 0 ? null
-          : (sum.filters[nav] || 0)
-
-    const mainHead = h('div', { className: 'dsh-wb-mainhead', key: 'mh' },
-      h('span', { className: 'dsh-wb-maintitle' }, navTitle),
-      navCount === null ? null : h('span', { className: 'dsh-wb-maincount' }, String(navCount) + ' 条'),
-      // 完成度就近显示：以前它是一条横贯面板的进度条，占一整行只为了说一个数。
-      nav === 'tree' ? h('span', { className: 'dsh-wb-mainpct', title: '工作计划完成度（不含收件箱）' },
-        pct(sum.progress)) : null)
+    rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
+      // 视图切换兼作表头标题：左上角原来那个「工作计划」标题是重复的——分段控件
+      // 的第一个按钮就叫「工作计划」，它本身就是这块面板的名字，再写一遍是噪音。
+      h('div', { className: 'dsh-wb-viewtoggle', key: 'vt' },
+        h('button', {
+          className: 'dsh-wb-vbtn' + (view === 'tree' ? ' on' : ''),
+          title: '工作计划：按层级展开计划与子计划',
+          onClick: () => setViewPersist('tree'),
+        }, '工作计划'),
+        h('button', {
+          className: 'dsh-wb-vbtn' + (view === 'todo' ? ' on' : ''),
+          title: '当前任务：跨所有分支把「现在能做的」汇成一张清单（被挡住的单独折叠）',
+          onClick: () => setViewPersist('todo'),
+        }, '当前任务'),
+        h('button', {
+          className: 'dsh-wb-vbtn' + (view === 'board' ? ' on' : ''),
+          title: '看板：每个计划占一列，待办摊成卡片',
+          onClick: () => setViewPersist('board'),
+        }, '看板'),
+      ),
+      h('div', { className: 'dsh-wb-headright' },
+        // 这里不再有「＋ 新建」：新建的入口就是顶部那行 AI 输入（说一句，模型给草稿，
+        // 计划与待办都在草稿里成形），表头只留「看/管」这类控件。
+        // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
+        // 收起 / 展开合成**一个**按钮：同一个位子按当前状态切换，图标与提示都跟着变
+        // （还折着东西时给「全部展开」，否则给「全部收起」）。表头按钮已经够多了。
+        sum.depth >= 2 ? h('button', {
+          className: 'dsh-wb-icon',
+          title: collapsed.length > 0 ? '全部展开' : '全部收起（只看主线）',
+          onClick: () => (collapsed.length > 0 ? applyCollapse([]) : collapseAll()),
+        }, collapsed.length > 0 ? icon('expand') : icon('collapse')) : null,
+        // 表头不再显示整体完成度，也不放「留档一个版本」——版本留档是自动的
+        // （每次写入前都会归档），要手动留档让 agent 调 plan_snapshot 即可。
+        h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, icon('refresh')),
+        // 设置：工作区级配置收拢到一个界面（vault、AI 人设……）。
+        h('button', {
+          className: 'dsh-wb-icon',
+          title: '设置：Obsidian vault、AI 人设',
+          onClick: () => {
+            store.set({ showSettings: true })
+            setFabOpen(false)
+            if (aiPersona === '') loadPersona()
+          },
+        }, icon('gear')),
+        // 收尾复盘（Sunsama 式）：每天收工前把没做完的顺延，而非留着堆。
+        // 只在真有未做完项时才出现——没东西要复盘时它不该占一行。
+        unfinished.length > 0 ? h('button', {
+          className: 'dsh-wb-icon' + (shutdownOpen ? ' on' : ''),
+          key: 'shutdown',
+          title: '收尾复盘：把没做完的重新规划，而非留着堆',
+          onClick: () => setShutdownOpen((v) => !v),
+        }, '收尾 ' + unfinished.length) : null,
+      ),
+    ))
+    rows.push(h('div', { className: 'dsh-wb-bar', key: 'bar' },
+      h('div', { className: 'dsh-wb-bar-fill', style: { width: barWidth(sum.progress) } }),
+    ))
 
     // 收尾复盘面板：把未做完项逐条重新规划，而非留着堆。复用到期的写通道，
     // 顺延走 deferDate（明天 / 下周），「稍后」清掉 due 退回收件箱。
@@ -2899,85 +2759,58 @@ function apply(ctx) {
         unfinished.map(shutdownRow)))
     }
 
+    // (AI 入口不在这里——它整体搬到了底部那颗浮球上，见 fab()。
+    //  面板顶部不再有一个常驻输入行：又把纵向空间还给了任务列表。)
+
+    // 筛选条：只显示「有货」的筛选器，窄侧栏里不堆一排空按钮。
+    const chips = [h('button', {
+      key: 'all',
+      className: 'dsh-wb-chip' + (state.filter === 'all' ? ' on' : ''),
+      onClick: () => store.set({ filter: 'all' }),
+    }, '全部')]
+    for (const f of FILTERS) {
+      if (f.id === 'all') continue
+      const n = sum.filters[f.id] || 0
+      if (n === 0) continue
+      chips.push(h('button', {
+        key: f.id,
+        className: 'dsh-wb-chip' + (state.filter === f.id ? ' on' : ''),
+        title: '只看：' + f.label,
+        onClick: () => store.set({ filter: state.filter === f.id ? 'all' : f.id }),
+      }, f.label + ' ' + n))
+    }
+    if (sum.hasPlan) rows.push(h('div', { className: 'dsh-wb-filters', key: 'filters' }, chips))
+
+    // 自定义视图（AI 清单存下来的）：和筛选芯片同一行语义——点了切换「看什么」。
+    const savedViews = loadViews()
+    if (savedViews.length > 0) {
+      rows.push(h('div', { className: 'dsh-wb-filters', key: 'views' },
+        savedViews.map((v) => h('button', {
+          key: v.name,
+          className: 'dsh-wb-chip' + (state.custom === v.name ? ' on' : ''),
+          title: '自定义视图：' + v.name + '（点击开关）',
+          onClick: () => store.set({ custom: state.custom === v.name ? null : v.name }),
+        }, '视图 · ' + v.name))))
+    }
+
     if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
     if (state.error !== null && state.error !== undefined) {
       rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
     }
-    // ── 内容区 ────────────────────────────────────────────────────────────
-    //
-    // nav 只有三种排法，别再多：
-    //   · board       —— 二维铺开（每个计划一列）
-    //   · view:<名>   —— AI 存下来的清单
-    //   · 其余全部    —— 一张抹平的清单（今天 / 未来 7 天 / 逾期 / 落后 / …）
-    //   · 'next'      —— 抹平清单的特例：按「下一个动作」排序，被挡的单独折叠
-    //   · 'tree'      —— 唯一的结构视角（收件箱 + 工作计划）
-    const FOCUS_IDS = ['inbox', 'today', 'week', 'high', 'delegated', 'overdue', 'behind', 'unverified']
-    const customName = nav.indexOf('view:') === 0 ? nav.slice(5) : ''
     const body = []
 
-    // 聚焦行：扁平列表与按天分组共用（两处各画一遍，迟早会长出不一致）。
-    const focusRow = (item) => {
-      const node = item.node
-      const isLeaf = item.type === 'todo'
-      // 完成语义一体化：叶子计划（无子项）也能勾选完成，只是通路不同
-      // （计划走 /node-set 的 status，待办走 /todo-set）。
-      const canCheck = isLeaf || childrenOf(node).length === 0
-      return h('div', { className: 'dsh-wb-focus', key: item.path },
-        canCheck
-          ? h('input', {
-            type: 'checkbox',
-            checked: node.status === 'done',
-            onChange: () => (isLeaf
-              ? setTodo(node.id, toggleStatus(node.status))
-              : togglePlanDone(node)),
-          })
-          : null,
-        titleNode(node, 'dsh-wb-tasktitle', { canToggle: isLeaf, draggable: false }),
-        h('span', { className: 'dsh-wb-path' }, (isLeaf ? '' : typeLabel(item.type) + ' ') + item.path),
-        delegChip(node),
-        warnBadge(node),
-        behindChip(node),
-        evidChip(node),
-        priBadge(node),
-        isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' + (node.overdue === true ? ' overdue' : '') }, node.end) : null),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '编辑全部信息',
-          onClick: () => openEdit(node),
-        }, icon('edit')),
-      )
+    // 执行清单（MLO 的 TODO 视图）：一眼看到下一个动作是什么。
+    if (view === 'todo') {
+      body.push(renderTodoList())
     }
 
-    /**
-     * 「未来 7 天」与「今天」都是一个**时间视角**，不是筛选结果：同一批事项按天
-     * 摊开才回答得了「下周三我有什么事」。逾期项按 TeuxDeux 顺延滚入「今天」组
-     * （红标区分），不单独置顶成段。「今天」就是同一份分组只取第一组。
-     */
-    const pushByDay = (onlyToday) => {
-      const up = upcomingByDay(plan, todayStr())
-      const days = onlyToday ? up.days.filter((d) => d.date === todayStr()) : up.days
-      if (days.length === 0) {
-        body.push(h('div', { className: 'dsh-wb-empty', key: 'noup' },
-          h('div', null, onlyToday ? '今天没有要交的事。' : '未来 7 天没有安排。')))
-      }
-      for (const d of days) {
-        const isToday = d.date === todayStr()
-        body.push(h('div', { className: 'dsh-wb-daygroup', key: d.date },
-          h('div', { className: 'dsh-wb-dayhead' + (isToday ? ' today' : '') },
-            d.label + (isToday ? ' · 今天' : '')),
-          d.items.map(focusRow)))
-      }
-    }
-
-    if (nav === 'board') {
-      body.push(renderBoard('all'))
-    } else if (customName !== '') {
-      // AI 清单存下来的自定义视图：按保存时的顺序列出，做完的自动消失。
-      const v = loadViews().find((x) => x.name === customName)
+    // 自定义视图（AI 清单存下来的）：按保存时的顺序列出，做完的自动消失。
+    if (state.custom !== null && state.custom !== undefined && state.custom !== '') {
+      const v = loadViews().find((x) => x.name === state.custom)
       if (v === undefined) {
         // 视图定义被删了：**不要在渲染里 store.set**（渲染期副作用会级联重渲），
-        // 画一句空状态，让下一次交互自然把它清掉。
-        body.push(h('div', { className: 'dsh-wb-empty', key: 'cv-gone' }, '这个清单不存在了。'))
+        // 画一句空状态，让下一次交互自然把 custom 清掉。
+        body.push(h('div', { className: 'dsh-wb-empty', key: 'cv-gone' }, '这个视图不存在了。'))
       } else {
         const items = viewItems(plan, v.ids)
         body.push(h('div', { className: 'dsh-wb-customview', key: 'cv' },
@@ -2985,12 +2818,12 @@ function apply(ctx) {
             h('span', null, '≡ ' + v.name + '（' + items.length + '）'),
             h('button', {
               className: 'dsh-wb-aibtn',
-              title: '删除这个清单（只删本机的定义，不动任务）',
+              title: '删除这个视图（只删本机的视图定义，不动任务）',
               onClick: () => {
                 saveViews(loadViews().filter((x) => x.name !== v.name))
-                goNav('tree')
+                store.set({ custom: null })
               },
-            }, '删除清单'),
+            }, '删除视图'),
           ),
           items.length === 0
             ? h('div', { className: 'dsh-wb-empty' }, '清单里的任务都做完（或被删）了。')
@@ -3001,64 +2834,125 @@ function apply(ctx) {
             ))),
         ))
       }
-    } else if (nav === 'next') {
-      // 执行清单（MLO 的 TODO 视图）：一眼看到下一个动作是什么。它只回答这一个
-      // 问题，所以收件箱与工作计划**不跟着铺进来**——那等于把刚抹平的结构又铺回去。
-      body.push(renderTodoList())
-    } else if (nav === 'week' || nav === 'today') {
-      pushByDay(nav === 'today')
-    } else if (nav === 'inbox') {
-      for (const todo of sortNodes(inbox)) body.push(renderTodo(todo, 0))
-      if (inbox.length === 0) {
-        body.push(h('div', { className: 'dsh-wb-empty', key: 'noinbox' },
-          h('div', null, '收件箱是空的。'),
-          h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
-            '点右下角那颗浮球，跟 AI 说一句就记进来了。')))
+    }
+
+    if (view === 'board') {
+      rows.push(renderBoard())
+      if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
+    }
+
+    if (state.filter !== 'all') {
+      // 聚焦行：扁平列表与未来日程共用（两处各画一遍，迟早会长出不一致）。
+      const focusRow = (item) => {
+        const node = item.node
+        const isLeaf = item.type === 'todo'
+        // 完成语义一体化：叶子计划（无子项）也能勾选完成，只是通路不同
+        // （计划走 /node-set 的 status，待办走 /todo-set）。
+        const canCheck = isLeaf || childrenOf(node).length === 0
+        return h('div', { className: 'dsh-wb-focus', key: item.path },
+          canCheck
+            ? h('input', {
+              type: 'checkbox',
+              checked: node.status === 'done',
+              onChange: () => (isLeaf
+                ? setTodo(node.id, toggleStatus(node.status))
+                : togglePlanDone(node)),
+            })
+            : null,
+          titleNode(node, 'dsh-wb-tasktitle', { canToggle: isLeaf, draggable: false }),
+          h('span', { className: 'dsh-wb-path' }, (isLeaf ? '' : typeLabel(item.type) + ' ') + item.path),
+          delegChip(node),
+          warnBadge(node),
+          behindChip(node),
+          evidChip(node),
+          priBadge(node),
+          isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' + (node.overdue === true ? ' overdue' : '') }, node.end) : null),
+          h('button', {
+            className: 'dsh-wb-act',
+            title: '编辑全部信息',
+            onClick: () => openEdit(node),
+          }, icon('edit')),
+        )
       }
-    } else if (FOCUS_IDS.includes(nav)) {
-      const items = focusList(plan, nav, todayStr())
-      const label = (FILTERS.find((f) => f.id === nav) || {}).label || ''
+
+      // 「未来 7 天」是一个**时间视角**，不是一个筛选结果：同一批事项按天摊开
+      // 才回答得了「下周三我有什么事」。所以这一档走按天分组；逾期项按 TeuxDeux
+      // 顺延滚入「今天」组（红标区分），不单独置顶成段。其余筛选器仍是扁平列表。
+      if (state.filter === 'week') {
+        const up = upcomingByDay(plan, todayStr())
+        if (up.days.length === 0) {
+          body.push(h('div', { className: 'dsh-wb-empty', key: 'noup' },
+            h('div', null, '未来 7 天没有安排。')))
+        }
+        for (const d of up.days) {
+          const isToday = d.date === todayStr()
+          body.push(h('div', { className: 'dsh-wb-daygroup', key: d.date },
+            h('div', { className: 'dsh-wb-dayhead' + (isToday ? ' today' : '') },
+              d.label + (isToday ? ' · 今天' : '')),
+            d.items.map(focusRow)))
+        }
+        rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+        if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+        return h('div', { className: 'dsh-wb-wrap' }, rows)
+      }
+
+      const items = focusList(plan, state.filter, todayStr())
+      const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
       if (items.length === 0) {
         body.push(h('div', { className: 'dsh-wb-empty', key: 'nofocus' },
           h('div', null, '「' + label + '」下没有未完成的事项。')))
       }
       for (const item of items) body.push(focusRow(item))
-    } else {
-      // 结构视角：收件箱 + 工作计划，两段互补（一个顶层节点只会出现在其中一段）。
-      const inboxRows = []
-      inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-        h('span', { className: 'dsh-wb-planid' }, icon('inbox')),
-        h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
-        h('span', { className: 'dsh-wb-count' }, inbox.length > 0
-          ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
-          : '空'),
-      ))
-      for (const todo of sortNodes(inbox)) inboxRows.push(renderTodo(todo, 0))
-      body.push(h('div', { className: 'dsh-wb-inbox', key: 'inbox' }, inboxRows))
-
-      if (!sum.hasPlan) {
-        body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-          h('div', null, '点右下角那颗浮球，跟 AI 说一句就行——'),
-          h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
-            '「帮我把这个季度的工作拆成计划」'),
-          h('div', { style: { marginTop: '8px', fontSize: '11px' } },
-            '计划会落在 ' + (state.dir || '<工作区>/plan') + '；需要 vault / AI 人设请点左栏「设置」'),
-        ))
-      }
-
-      // 「工作计划」栏：顶层计划 + 已纳入工作计划的顶层待办。它与收件箱**互补**——
-      // 一个顶层节点要么还在收件箱、要么已经在这里，不会两边都出现。
-      const works = workPlans(plan)
-      body.push(h('div', { className: 'dsh-wb-secthead', key: 'wh' },
-        h('span', { className: 'dsh-wb-secttitle' }, '工作计划'),
-        h('span', { className: 'dsh-wb-count' }, works.length > 0 ? works.length + ' 项' : '空'),
-      ))
-      for (const node of works) body.push(renderPlan(node, 0))
-
-      // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，
-      // 拖动适合挪到眼前的位置。接收器挂在 body 上，所以行内必须先 stopPropagation。
-      if (hint !== null && hint.id === null) body.push(h('div', { className: 'dsh-wb-rootdrop', key: 'rootdrop' }))
+      rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+      if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
+
+    // 当前任务视图到此为止：它只回答「下一个动作是什么」。收件箱与工作计划是
+    // **结构视图**的内容，跟着铺进来就等于把刚抹平的结构又原样铺回去，切视图白切。
+    if (view === 'todo') {
+      rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+      if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+      return h('div', { className: 'dsh-wb-wrap' }, rows)
+    }
+
+    const inboxRows = []
+    inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
+      h('span', { className: 'dsh-wb-planid' }, icon('inbox')),
+      h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
+      h('span', { className: 'dsh-wb-count' }, inbox.length > 0
+        ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
+        : '空'),
+    ))
+    for (const todo of sortNodes(inbox)) inboxRows.push(renderTodo(todo, 0))
+    body.push(h('div', { className: 'dsh-wb-inbox', key: 'inbox' }, inboxRows))
+
+    if (!sum.hasPlan) {
+      body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
+        h('div', null, '点右下角那颗浮球，跟 AI 说一句就行——'),
+        h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
+          '「帮我把这个季度的工作拆成计划」'),
+        h('div', { style: { marginTop: '8px', fontSize: '11px' } },
+          '计划会落在 ' + (state.dir || '<工作区>/plan') + '；需要 vault / AI 人设请点右上角「设置」'),
+      ))
+    }
+
+    // 「工作计划」栏：顶层计划 + 已纳入工作计划的顶层待办。它与收件箱**互补**——
+    // 一个顶层节点要么还在收件箱、要么已经在这里，不会两边都出现。
+    // 分栏标题是必要的：没有它，就分不清下面这些和上面收件箱的区别。
+    const works = workPlans(plan)
+    body.push(h('div', { className: 'dsh-wb-secthead', key: 'wh' },
+      h('span', { className: 'dsh-wb-secttitle' }, '工作计划'),
+      h('span', { className: 'dsh-wb-count' }, works.length > 0 ? works.length + ' 项' : '空'),
+    ))
+    for (const node of works) body.push(renderPlan(node, 0))
+
+    // vault / AI 人设配置统一收进右上角「设置」，不再在各视图里平铺。
+    // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，
+    // 拖动适合挪到眼前的位置。接收器挂在 body 上，所以行内必须先 stopPropagation。
+    if (hint !== null && hint.id === null) body.push(h('div', { className: 'dsh-wb-rootdrop', key: 'rootdrop' }))
+
 
     rows.push(h('div', {
       className: 'dsh-wb-body',
@@ -3083,9 +2977,9 @@ function apply(ctx) {
         flash('已移到顶层')
       },
     }, body))
+    if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
 
-    const main = h('div', { className: 'dsh-wb-main', key: 'main' }, [mainHead].concat(rows))
-    return h('div', { className: 'dsh-wb-wrap' }, h('div', { className: 'dsh-wb-shell', key: 'shell' }, rail, main), fab())
+    return h('div', { className: 'dsh-wb-wrap' }, rows, fab())
   }
 
   ctx.effect(() => betterSidebar.registerTab({
