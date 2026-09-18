@@ -18,5 +18,10 @@ plan/
 .idea/
 .vscode/
 
-# 插件在本地写下的 agent 工作笔记（本机状态，不是插件源码）
+# WorkBuddy 在本地写下的 agent 工作笔记（本机状态，不是插件源码）
 .workbuddy/
+
+# DSH 自己的本机状态：环境记录等（本机状态，不上传）
+# 注意 .dsh/skills/ 是 DSH 的项目级技能目录，将来若要共享需单独放开
+.dsh/*
+!.dsh/skills/
