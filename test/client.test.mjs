@@ -337,7 +337,10 @@ const byText = (root, cls, text) => byClass(root, cls).find((el) => textOf(el).i
 function caretOf(root, title) {
   const head = byText(root, 'dsh-wb-planhead', title)
   assert.ok(head !== null, '找不到计划行「' + title + '」')
-  return head.children.find((c) => classesOf(c).includes('dsh-wb-caret'))
+  // **递归**找：展开箭头现在跟在标题后面，包在 .dsh-wb-planwrap 里，
+  // 已经不是行的直接子元素了——继续按 children 找会静默返回 undefined，
+  // 表现为「找不到折叠控点」而不是「箭头挪了位置」。
+  return findAll(head, (el) => classesOf(el).includes('dsh-wb-caret'))[0]
 }
 
 const inputOf = (row) => row.children.find((c) => c.type === 'input')
@@ -433,6 +436,18 @@ test('空工作区也能记下第一件事（入口在浮球里；它就是第�
 })
 
 // ============================================================ 折叠展开
+
+test('计划行：展开箭头跟在标题后面（不是前面），两行都从最左边开始', async () => {
+  const { view } = await mount()
+  const head = byText(view, 'dsh-wb-planhead', '子计划')
+  assert.ok(head !== null)
+  const wrap = firstByClass(head, 'dsh-wb-planwrap')
+  assert.ok(wrap !== null, '标题与箭头应同在一组里（箭头才贴得住标题）')
+  assert.equal(textOf(wrap.children[0]), '子计划', '这一组里先标题')
+  assert.ok(classesOf(wrap.children[1]).includes('dsh-wb-caret'), '后箭头')
+  // 箭头放前面时标题被顶右，而折到第二行的元信息是顶格的——两行左边缘对不齐。
+  assert.ok(!classesOf(head.children[0]).includes('dsh-wb-caret'), '行首不该是箭头')
+})
 
 test('点折叠控点只收起那一个计划，别的分支不受影响', async () => {
   const { render, view } = await mount()

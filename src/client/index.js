@@ -233,7 +233,10 @@ const CSS = [
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
   '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
-  '.dsh-wb-plantitle{flex:1;font:var(--wb-f1s);word-break:break-word;}',
+  // 标题 + 展开箭头一组。标题**不伸张**（flex:0 1 auto），于是箭头紧跟在最后一个字后面；
+  // 撑开行宽交给这层 wrap。
+  '.dsh-wb-planwrap{flex:1 1 auto;min-width:0;display:flex;align-items:baseline;gap:var(--wb-sp-2);}',
+  '.dsh-wb-plantitle{flex:0 1 auto;min-width:0;font:var(--wb-f1s);word-break:break-word;}',
   '.dsh-wb-planpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-planq{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--wb-f3);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
@@ -408,7 +411,7 @@ const CSS = [
   + '--wb-f1:var(--dsw-font-s-14);--wb-f1s:var(--dsw-font-s-strong-14);'
   + '--wb-f2:var(--dsw-font-xs-13);--wb-f2s:var(--dsw-font-xs-strong-13);'
   + '--wb-f3:var(--dsw-font-xxs-12);--wb-f3s:var(--dsw-font-xxs-strong-12);}}',
-  '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle,.dsh-wb-plantitle{flex:1 1 auto;min-width:0;}.dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}}',
+  '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle{flex:1 1 auto;min-width:0;}.dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
@@ -2069,8 +2072,14 @@ function apply(ctx) {
         // 保留成 data-id，定位/排查时仍然拿得到。
         'data-id': node.id,
       }, dragOnto(node, true)),
-        caret(node),
-        titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
+        // 展开箭头**跟在标题后面**，不放前面。放前面时标题被顶右，而折到第二行的
+        // 元信息是顶格的——两行左边缘对不齐（真机反馈「两行看起来不美观」）。
+        // 挪到后面之后，标题与元信息都从最左边开始，两行是一条竖线。
+        // 包一层 wrap 是为了让箭头**贴着标题**（而不是被 flex:1 顶到行尾）：
+        // 标题在 wrap 里不伸张，箭头就紧跟在最后一个字后面。
+        h('span', { className: 'dsh-wb-planwrap', key: 'tt' },
+          titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
+          caret(node)),
         h('div', { className: 'dsh-wb-taskmeta', key: 'meta' },
         delegChip(node),
         warnBadge(node),
