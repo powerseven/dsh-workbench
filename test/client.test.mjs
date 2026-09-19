@@ -394,6 +394,20 @@ test('tab 角标显示未完成数', async () => {
   assert.equal(badge(), 3, '三条待办都还没完成')
 })
 
+test('两个分栏标题结构一致：只有「标题 + 计数」，都不带图标', async () => {
+  const { view } = await mount()
+  // 这两段（收件箱 / 工作计划）是并列的，只差一个图标会显得一段比另一段更重要。
+  // 层级交给字重与留白——这条断言就是那个决定的护栏。
+  const inbox = firstByClass(view, 'dsh-wb-inboxhead')
+  const sect = firstByClass(view, 'dsh-wb-secthead')
+  assert.ok(inbox !== null && sect !== null)
+  for (const [name, head] of [['收件箱', inbox], ['工作计划', sect]]) {
+    assert.equal(findAll(head, (el) => el.type === 'svg').length, 0, name + ' 标题前不该有图标')
+    const kids = (head.children || []).filter((c) => c !== null && c !== undefined)
+    assert.equal(kids.length, 2, name + ' 标题段只有「标题 + 计数」两个元素')
+  }
+})
+
 test('空工作区也能记下第一件事（入口在浮球里；它就是第一个节点）', async () => {
   const keep = planPayload
   planPayload = { schema: 2, version: 1, title: '空', nodes: [] }

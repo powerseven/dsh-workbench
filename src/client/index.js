@@ -233,7 +233,6 @@ const CSS = [
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
   '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
-  '.dsh-wb-planid{flex:none;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
   '.dsh-wb-plantitle{flex:1;font:var(--wb-f1s);word-break:break-word;}',
   '.dsh-wb-planpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-planq{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);}',
@@ -2924,8 +2923,10 @@ function apply(ctx) {
     }
 
     const inboxRows = []
+    // 分栏标题前**不放图标**：下面「工作计划」那一段没有图标，两段标题只差一个
+    // 图标会显得一段比另一段「更重要」，而它们本来是并列的两段。层级交给字重与
+    // 留白，与面板里其它地方一致（见「文字只留两级」）。
     inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-      h('span', { className: 'dsh-wb-planid' }, icon('inbox')),
       h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
       h('span', { className: 'dsh-wb-count' }, inbox.length > 0
         ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
