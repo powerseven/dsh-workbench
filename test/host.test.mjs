@@ -42,7 +42,7 @@ function llmReturning(text, opts = {}) {
     stream: async function* (options) {
       calls.push(options)
       yield { type: 'text-delta', text }
-      yield { type: 'finish', reason: { kind: 'stop' } }
+      yield { type: 'finish', reason: opts.finish === undefined ? { kind: 'stop' } : opts.finish }
     },
   }
 }
@@ -913,6 +913,44 @@ test('/ai-parse 图片先入附件库，再以 image block 交给模型', async 
   assert.equal(blocks[0].type, 'image')
   assert.equal(blocks[0].attachment.attachmentId, 'att0')
   assert.equal(blocks[1].type, 'text', '文字块压在图片之后')
+})
+
+test('/ai-parse 撞上输出长度上限：交出已经拿到的那部分，并说明被截断', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-vl' }) }
+  // 真机形态：拍照 → 模型老实吐十几条 → 输出额度用尽，JSON 断在第三条中间。
+  fakeLlm = llmReturning(
+    '{"reply":"· 图里是件杂事，拆成 3 条","tasks":[{"title":"甲"},{"title":"乙"},{"title":"丙（半',
+    { finish: { kind: 'max-tokens' } },
+  )
+  fakeAttachments = attachmentsReturning()
+  const r = await post('/ai-parse', {
+    sessionId: SESSION_ID,
+    text: '把照片里的都记下来',
+    images: [{ mediaType: 'image/png', data: 'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==' }],
+  })
+  assert.equal(r.payload.ok, true, '截断不是失败——被丢掉的往往已经能用')
+  assert.deepEqual(r.payload.tasks.map((t) => t.title), ['甲', '乙'], '完整的那两条要留下来')
+  assert.match(r.payload.reply, /拆成 3 条/)
+  assert.match(r.payload.reply, /被长度上限截断/, '少拿了东西必须说出来，不能悄悄少几条')
+})
+
+test('/ai-parse 的输出额度必须放得下它自己要求的输出（否则拍照拆待办必撞上限）', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'm' }) }
+  fakeLlm = llmReturning('{"tasks":[]}')
+  fakeAttachments = attachmentsReturning()
+  await post('/ai-parse', { sessionId: SESSION_ID, text: '记一条' })
+  // 系统提示让模型最多给 20 条、每条带 advice + 2~3 个 options。2048 装不下，
+  // 这里钉住它别再被改回一个小数字。
+  assert.ok(fakeLlm.calls[0].maxTokens >= 8192, '实际下发 ' + fakeLlm.calls[0].maxTokens)
+})
+
+test('/ai-parse 连一段完整的 JSON 前缀都凑不出来时，才报截断错误', async () => {
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'm' }) }
+  fakeLlm = llmReturning('{"reply":"说到一半', { finish: { kind: 'max-tokens' } })
+  fakeAttachments = attachmentsReturning()
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '记一条' })
+  assert.equal(r.payload.ok, false)
+  assert.match(r.payload.error, /被长度上限截断|没有给出能解析的 JSON/)
 })
 
 test('/ai-parse 模型不支持图片时明确报错，而不是把图丢掉', async () => {

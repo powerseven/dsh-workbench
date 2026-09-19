@@ -23,6 +23,7 @@ import {
   aiUserText,
   attachSuggestions,
   collectText,
+  extractJson,
   historyText,
   matchPlan,
   parseAiReply,
@@ -204,10 +205,10 @@ test('collectText 只收 text-delta，不收思考过程', async () => {
       yield { type: 'finish', reason: { kind: 'stop' } }
     },
   }
-  assert.equal(await collectText(llm, {}), '{"tasks":[]}')
+  assert.deepEqual(await collectText(llm, {}), { text: '{"tasks":[]}', truncated: false })
 })
 
-test('collectText 把三种坏结局翻译成人话', async () => {
+test('collectText 把三种坏结局分开：两种是错，截断不是', async () => {
   const withFinish = (reason) => ({
     stream: async function* () { yield { type: 'finish', reason } },
   })
@@ -215,11 +216,33 @@ test('collectText 把三种坏结局翻译成人话', async () => {
     () => collectText(withFinish({ kind: 'error', failure: { message: 'rate limited' } }), {}),
     /模型调用失败：rate limited/,
   )
-  await assert.rejects(
-    () => collectText(withFinish({ kind: 'max-tokens' }), {}),
-    /被长度上限截断/,
-  )
   await assert.rejects(() => collectText(withFinish({ kind: 'aborted' }), {}), /模型调用失败/)
+  // max-tokens **不抛错**：模型把能说的说完了，只是被额度截断。抛错等于把一份
+  // 往往已经能用的回复整份丢掉（真机表现：拍照拆待办，一条都没出来，
+  // 只挂一句「被长度上限截断」）。这里只如实报告 truncated。
+  const cut = {
+    stream: async function* () {
+      yield { type: 'text-delta', text: '{"reply":"r","tasks":[{"title":"甲"}' }
+      yield { type: 'finish', reason: { kind: 'max-tokens' } }
+    },
+  }
+  assert.deepEqual(await collectText(cut, {}), {
+    text: '{"reply":"r","tasks":[{"title":"甲"}]'.slice(0, -1),
+    truncated: true,
+  })
+})
+
+test('被截断的 JSON：补右括号，保住完整的那部分', () => {
+  // 最常见形态：截在第三条任务中间 → 前两条 + 那句 reply 都要留下来
+  const cut = '{"reply":"· 拆出 3 条","tasks":[{"title":"甲","due":"2026-09-20"},{"title":"乙"},{"title":"丙（半'
+  const p = parseAiReply(cut)
+  assert.equal(p.error, '', '被截断的回复不该被判成解析失败')
+  assert.deepEqual(p.tasks.map((t) => t.title), ['甲', '乙'])
+  assert.equal(p.reply, '· 拆出 3 条')
+  // 截在字符串中间救不回来（本来就无从猜起）——那就如实报错，别硬编
+  assert.equal(extractJson('{"reply":"说到一半'), null)
+  // 正常闭合的不受影响
+  assert.deepEqual(extractJson('{"reply":"hi","tasks":[]}'), { reply: 'hi', tasks: [] })
 })
 
 // ---------------------------------------------------------------- 助手：上下文 / 意见 / 选项
