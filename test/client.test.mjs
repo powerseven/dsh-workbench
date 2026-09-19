@@ -1635,6 +1635,13 @@ test('「当前任务」视图：跨分支聚合现在能做的，星标置顶�
     const blockedHead = byClass(page, 'dsh-wb-aihead').find((x) => textOf(x).includes('被挡住的'))
     assert.ok(blockedHead !== undefined)
     assert.match(textOf(firstByClass(page, 'dsh-wb-body')), /等 执行甲/, '被谁挡要说得出名字')
+    // 行尾不放「编辑」：点标题就是打开详情（单击统一 openEdit），同一件事不必说两遍。
+    const todoRows = byClass(page, 'dsh-wb-task')
+    assert.ok(todoRows.length >= 3, '这一屏应当有若干行，否则下面的护栏是空转')
+    for (const r of todoRows) {
+      assert.equal(byClass(r, 'dsh-wb-act').filter((b) => String(b.props.title || '').includes('编辑')).length, 0,
+        '当前任务的行尾不该有编辑按钮')
+    }
   } finally {
     planPayload = keep
   }

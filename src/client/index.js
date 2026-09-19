@@ -2228,7 +2228,8 @@ function apply(ctx) {
             title: x.starred ? '取消星标' : '星标：接下来做（清单置顶）',
             onClick: () => setStarOn(node, x.starred !== true),
           }, icon('star')),
-          h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(node) }, icon('edit')),
+          // 行尾不放「编辑」：**点标题就是打开详情**（单击统一 openEdit，见
+          // titleProps）。多给一颗 ✎ 等于把同一件事说两遍，而这一行本来就窄。
         )
       }
       rows.push(h('div', { className: 'dsh-wb-aihead', key: 'oh' },
@@ -2246,7 +2247,6 @@ function apply(ctx) {
             h('span', { className: 'dsh-wb-todoseq' }, '⊠'),
             titleNode(x.node, 'dsh-wb-tasktitle', { canToggle: false }),
             h('span', { className: 'dsh-wb-path' }, '等 ' + x.blockers.join('、')),
-            h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(x.node) }, icon('edit')),
           ))))
       }
       return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
