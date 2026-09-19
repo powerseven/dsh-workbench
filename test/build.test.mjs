@@ -128,6 +128,19 @@ test('面板字体与圆角取宿主标尺，且胶囊配了 corner-shape:round'
   assert.match(flat, /corner-shape:round/)
 })
 
+test('窄屏强制折行只作用于待办行，计划行不强制（放得下就一行）', () => {
+  // 计划行的元信息只有「重要程度 / 进度 / ＋」三样，短标题（「计划一」）一行放得下；
+  // 硬折成两行既难看又多占一行。待办行徽章与动作多、标题长短不一，必须强制折
+  // 才能有确定性版式。这条断言守的就是「只作用于待办行」这个作用域——
+  // 选择器一旦被改回 `.dsh-wb-taskmeta`，计划行会静默变回两行，界面上没别的证据。
+  const { raw } = cssBlock()
+  const phone = raw.slice(raw.indexOf('@media (max-width:640px)'))
+  assert.ok(
+    phone.includes('.dsh-wb-task .dsh-wb-taskmeta{flex:1 1 100%'),
+    '窄屏的强制折行必须**限定在待办行**（.dsh-wb-task .dsh-wb-taskmeta）',
+  )
+})
+
 test('软底状态胶囊的文字走中性色，语义色只做描边与底色', () => {
   // 宿主的红在浅色下是 #ec1313：对纯底 4.49:1（恰在 AA 的 4.5:1 线上），再叠一层
   // 5% 红软底就掉到 4.45:1，就不达标了。所以**行内小胶囊**里的红只承担描边与底色，

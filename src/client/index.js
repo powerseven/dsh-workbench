@@ -411,7 +411,17 @@ const CSS = [
   + '--wb-f1:var(--dsw-font-s-14);--wb-f1s:var(--dsw-font-s-strong-14);'
   + '--wb-f2:var(--dsw-font-xs-13);--wb-f2s:var(--dsw-font-xs-strong-13);'
   + '--wb-f3:var(--dsw-font-xxs-12);--wb-f3s:var(--dsw-font-xxs-strong-12);}}',
-  '@media (max-width:640px){.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}.dsh-wb-tasktitle{flex:1 1 auto;min-width:0;}.dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}}',
+  // 窄屏：行内折行。**只对待办行强制折**（`.dsh-wb-task`）——待办行里徽章与动作
+  // 多，标题长短又不一，不强制的话版式会随标题长度飘。
+  // 计划行（`.dsh-wb-planhead`）不强制：它的元信息就三样（重要程度 / 进度 / ＋），
+  // 短标题（「计划一」）完全放得下一行，硬折成两行反而难看。放不下时
+  // head 上的 flex-wrap 会自然把它推到第二行，且第二行从最左边开始——
+  // 与标题对齐（这正是把展开箭头挪到标题后面换来的）。
+  '@media (max-width:640px){'
+  + '.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}'
+  + '.dsh-wb-tasktitle{flex:1 1 auto;min-width:0;}'
+  + '.dsh-wb-task .dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}'
+  + '}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
