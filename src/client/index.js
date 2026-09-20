@@ -1323,14 +1323,8 @@ function apply(ctx) {
 
     const setTodo = React.useCallback((id, status) => write('todo-set', { todo: id, status }), [write])
     // 行内「点徽章换重要程度」已去掉（理由见 priBadge）——换档统一走详情页，
-    // 所以不再需要 setPriority 这条通路。
-    // 换型：待办 ↔ 计划。原地换型而不是「新建一个再搬」——用户想说的是
-    // 「这就是同一件事，只是现在要往下拆」，换个容器会多出一层没有意义的嵌套。
-    const setNodeKind = React.useCallback((id, type) => write(
-      'node-set',
-      { node: id, type },
-      () => flash(type === 'plan' ? '已提升为计划' : '已降回待办'),
-    ), [write])
+    // 所以不再需要 setPriority 这条通路。换型也没有了：类型由结构派生
+    // （挂上第一个子项即计划），不存在「提升 / 降级」这个动作。
     const addNode = React.useCallback((input, onOk) => write('node-add', input, onOk), [write])
 
     // ============================================================ 文件库关联
@@ -1437,10 +1431,6 @@ function apply(ctx) {
       if (typeof task.priority === 'string' && task.priority !== '') d.priority = task.priority
       if (typeof task.note === 'string' && task.note !== '') d.note = task.note
       return d
-    }
-    const openNew = (type, parent) => {
-      const p = parent === null || parent === undefined ? '' : parent
-      openDraft(emptyDraft(type, p))
     }
     const patchForm = (key, value) => {
       setForm((prev) => {
@@ -2223,7 +2213,7 @@ function apply(ctx) {
       const rows = []
       if (open.length === 0 && blocked.length === 0) {
         rows.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-          h('div', null, '没有待办。在顶部跟 AI 说一句，或直接记一条。')))
+          h('div', null, '没有待办。点底部的浮球说一句，或直接记一条。')))
         return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
       }
       const row = (x, i) => {
@@ -2721,7 +2711,7 @@ function apply(ctx) {
         }, '看板'),
       ),
       h('div', { className: 'dsh-wb-headright' },
-        // 这里不再有「＋ 新建」：新建的入口就是顶部那行 AI 输入（说一句，模型给草稿，
+        // 这里不再有「＋ 新建」：新建的入口就是底部那颗浮球（说一句，模型给草稿，
         // 计划与待办都在草稿里成形），表头只留「看/管」这类控件。
         // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
         // 收起 / 展开合成**一个**按钮：同一个位子按当前状态切换，图标与提示都跟着变
