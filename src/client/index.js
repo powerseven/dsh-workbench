@@ -90,7 +90,9 @@ const CSS = [
   // 别名层同时声明在「面板根」和「浮球根」上：浮球虽然渲染在面板树里，但它是
   // position:fixed 的独立根，自己带一份别名层最稳（与坑 #18 同源：var() 在声明它的
   // 那个元素上就完成替换）。
-  '.dsh-wb-wrap,.dsh-wb-fab{'
+  // 别名层要覆盖每一处面板自己渲染的根：面板本身、浮球、以及侧栏页脚入口
+  // （页脚入口在宿主的侧栏页脚里，不在 .dsh-wb-wrap 子树内）。
+  '.dsh-wb-wrap,.dsh-wb-fab,.dsh-wb-entry{'
   + '--wb-fg:var(--dsw-alias-label-primary);'
   + '--wb-fg-2:var(--dsw-alias-label-secondary);'
   // 只用两级文字。面板字号全在 11–13px，宿主更浅的两级灰（tertiary 3.7:1、
@@ -123,6 +125,10 @@ const CSS = [
   + '--wb-f1:var(--dsw-font-xs-13);--wb-f1s:var(--dsw-font-xs-strong-13);'
   + '--wb-f2:var(--dsw-font-xxs-12);--wb-f2s:var(--dsw-font-xxs-strong-12);'
   + '--wb-f3:var(--dsw-font-xxxs-11);--wb-f3s:var(--dsw-font-xxxs-strong-11);'
+  // 侧栏页脚那一行的字号。它**不是**面板正文的一档：页脚入口跟它左右邻居
+  // （宿主的「设置」、dsh-context 的「Context Insights」）并排站着，尺寸必须取
+  // 同一把尺——宿主页脚按钮的标尺是 14/22，比面板正文大一档（见坑 #31）。
+  + '--wb-f-footer:var(--dsw-font-s-14);'
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
   + 'font:var(--wb-f1);color:var(--wb-fg);}',
   // 面板自身的布局单独一条。浮球不要这些：它是 fixed 定位的独立根，
@@ -145,6 +151,36 @@ const CSS = [
   '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));max-height:min(72vh,560px);overflow-y:auto;overscroll-behavior:contain;background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
   '.dsh-wb-fabsheet .dsh-wb-fabrow{display:flex;align-items:center;gap:var(--wb-sp-2);}',
   '.dsh-wb-fabhead{font:var(--wb-f2s);flex:1;min-width:0;}',
+  // 侧栏页脚入口：一个「工作计划」按钮。它同时是**手机端主屏的一颗 chip**——
+  // 手机外壳插件 dsh-zen-remote 会扫描 [data-slot="sidebar.footer.action"] 的
+  // 每个直接子节点，把第三方插件的入口自动收成主屏 chip（它的 scanHarvest）。
+  // 所以这个按钮必须是一个 <button> 根节点、并且**带着可见文字**（chip 的名字
+  // 取自 textContent）与一个 <svg>（chip 的图标从它克隆）。
+  //
+  // 尺寸是**照抄邻居量出来的**，不是配出来的（见坑 #31）：它跟宿主的「设置」、
+  // dsh-context 的「Context Insights」同处一个 footerActions 列里，三个的
+  // 盒模型必须一致，否则一眼就看出「这不是亲生的」。实测宿主设置按钮与
+  // .lc-ov-entry 的值完全相同：高 42、内边距 0 10px 0 8px、圆角 12、
+  // 间距 8、字号 14/22；.lc-ov-entry 另加 width:calc(100% + 4px) + margin:0 -2px
+  // 去抹掉 footerActions 的左右缩进，我们也照做。
+  // 注意**不写 corner-shape:round**：宿主对 * 施加的 superellipse(1.5) 是页脚
+  // 这一堆按钮的共同底子，页脚里没有谁把它配回 round（面板内部的胶囊才要配回，
+  // 那是坑 #19 的范围）。
+  '.dsh-wb-entry{box-sizing:border-box;width:calc(100% + 4px);height:42px;margin:0 -2px;padding:0 10px 0 8px;display:flex;align-items:center;gap:8px;border:0;background:transparent;color:var(--wb-fg);cursor:pointer;border-radius:12px;font:var(--wb-f-footer);text-align:left;overflow:hidden;transition:background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-entry:hover{background:var(--wb-hover);}',
+  '.dsh-wb-entry>svg{flex:none;}',
+  // 标签**不抢剩余空间**（`flex:0 1 auto`，不是 `auto`）：抢了的话后面的计数会被推到
+  // 按钮最右边，跟邻居的图标贴在一起，看上去像是别人的角标。让标签按内容宽、计数
+  // 紧跟其后（间距就是按钮自己的 gap:8px），读起来是「工作计划 5」。
+  // 仍然留 min-width:0 + 省略号：标签将来变长时是收窄，不是把计数挤出去。
+  '.dsh-wb-entry .dsh-wb-entrylabel{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  // 计数**必须走伪元素**，不能是个真的 <span>：zen 的 `harvestName()` 取的是
+  // `el.textContent`，伪元素的内容不进 textContent，而真实节点的文字会进——
+  // 那会让手机主屏那颗 chip 的名字从「工作计划」变成「工作计划5」，而且 chip 的
+  // 开关偏好是按名字（`harvest:${name}`）存的，数字一变偏好就丢。这不是洁癖：
+  // 面板一打开、store 拉到数据，计数就有了，chip 的名字会当场变。
+  '.dsh-wb-entry::after{content:attr(data-count);flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-entry:not([data-count])::after{content:none;}',
   // AI 内容块搬进浮层后要交出「面板里那条横幅」的样式：上下留白与外框归浮层，
   // 否则同一块内容会套上两层边框、两圈 padding。
   '.dsh-wb-fabsheet .dsh-wb-aiwrap{padding:0;border-bottom:none;}',
@@ -3007,6 +3043,58 @@ function apply(ctx) {
 
     return h('div', { className: 'dsh-wb-wrap' }, rows, fab())
   }
+
+  /**
+   * 侧栏页脚入口：一个「工作计划」按钮。
+   *
+   * 它有两个用处，而且**第二个是白拿的**：
+   *   ① 桌面：侧栏页脚多一个进入工作台的入口（工作台 tab 本身还在）；
+   *   ② 手机：手机外壳插件 `dsh-zen-remote` 会扫描
+   *      `[data-slot="sidebar.footer.action"]` 的**每个直接子节点**，把第三方
+   *      插件的入口**自动收成主屏的一颗 chip**（它的 `scanHarvest`）。于是这个
+   *      按钮自动出现在手机主屏的 chips 行里，我们一行 zen 的代码都不用改。
+   *
+   * 所以这个组件的形态是被收割规则**约束**的，不是随便写的：
+   *   · 根节点必须是 `<button>`（`scanHarvest` 取「直接子节点里第一个
+   *     可点元素」，返回 Fragment 多根会让第二个根也变成一颗 chip）；
+   *   · 必须有**可见文字**——chip 的名字取 `textContent`，空了整条被丢掉；
+   *     由此还有一条：**chip 的名字里不许混进计数**——它是 `textContent`，
+   *     所以计数只能挂在 CSS 伪元素上（见 `.dsh-wb-entry::after`）；
+   *   · 带一个 `<svg>`——chip 的图标是从它深拷贝出来的；
+   *   · **不能**带 `data-mobile-nav` 属性（那是 zen 自己的标记，它据此跳过
+   *     自己渲染的节点）。
+   */
+  const WorkbenchEntry = () => {
+    const st = useSnapshot()
+    const sum = summarize(st.plan)
+    return h('button', {
+      type: 'button',
+      className: 'dsh-wb-entry',
+      title: '工作计划：打开工作台面板',
+      'data-dsh-workbench-entry': 'true',
+      // 未完成数走 data-* + 伪元素，不进 textContent（否则会变成手机 chip 的名字）。
+      'data-count': sum.open > 0 ? String(sum.open) : undefined,
+      onClick: () => {
+        // 走 better-sidebar 自己的服务，而不是去代点某个按钮。
+        //
+        // **不要传 `target: 'bottom'`**：openTab 里 `seed.target !== 'bottom'` 是
+        // 「走 surface（官方右侧栏）」那条分支，写了 bottom 就会被塞进底部工作台。
+        // 面板本来就该在右侧栏里长出来（真机反馈：「要触发右侧栏，不是下栏」）。
+        // 不传 scope —— openTab 会退回当前会话。
+        try {
+          betterSidebar.openTab({ type: 'dsh-workbench:plan' })
+        } catch (e) {
+          console.error('[dsh-workbench] 打开工作面板失败', e)
+        }
+      },
+    },
+    icon('target', 16),
+    h('span', { className: 'dsh-wb-entrylabel' }, '工作计划'))
+  }
+  ctx.effect(() => slots.inject('sidebar.footer.action', () => slots.register({
+    name: 'sidebar.footer.action',
+    id: 'dsh-workbench-entry',
+  }, WorkbenchEntry)), 'dsh-workbench: sidebar footer entry')
 
   ctx.effect(() => betterSidebar.registerTab({
     id: 'dsh-workbench:plan',
