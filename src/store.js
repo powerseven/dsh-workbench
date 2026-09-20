@@ -923,6 +923,7 @@ export function delegatedList(plan, today = todayStr()) {
   for (const item of collectNodes(plan, 'any')) {
     const d = delegateState(item.node, today)
     if (d === null) continue
+    const settled = item.node.status === 'done' || item.node.status === 'dropped'
     out.push({
       id: item.node.id,
       type: item.type,
@@ -931,15 +932,86 @@ export function delegatedList(plan, today = todayStr()) {
       path: item.path,
       status: item.node.status ?? '',
       delegate: d,
+      // 验收（FR-D3）不是新的回执状态：交回（returned）且没完成的，等的是
+      // 「人对回执的表态」——同意走 plan_todo_set 标 done，打回再走一次
+      // plan_delegate_receipt。这个标记让清单能把它们单独置顶分组。
+      awaitingReview: d.status === 'returned' && !settled,
     })
   }
   out.sort((a, b) => {
+    // 待验收置顶：验收是当前唯一卡在人手里的动作，比「去催」更靠前——
+    // 它是别人等你，不是你等别人。
+    if (a.awaitingReview !== b.awaitingReview) return a.awaitingReview ? -1 : 1
     const al = a.delegate.overdueReceipt || a.delegate.overdueWork ? 0 : 1
     const bl = b.delegate.overdueReceipt || b.delegate.overdueWork ? 0 : 1
     if (al !== bl) return al - bl
     return String(a.delegate.expectAt ?? '9999').localeCompare(String(b.delegate.expectAt ?? '9999'))
   })
   return out
+}
+
+/**
+ * 开工简报（FR-A4 / FR-D3 的「待验收」）：把散在四份清单里的信号压成
+ * 一个分层短报，供 agent 工具在返回结果时主动播报（deferContext）。
+ *
+ *   today      今天到期（isDueWithin(node, 0)——口径与 dueSoon 同源，不新造）
+ *   review     待验收：回执为 returned 且节点还没完成（验收是人对回执的表态）
+ *   receipts   逾期未回执（该去问一句「接不接」）
+ *   chases     已接受但逾期未交回（该去催；declined 不算——它要的是重新安排，不是催）
+ *   unverified 已完成但没有证据
+ *
+ * 每层只取计数 + 前 `limit` 个标题——全量清单 plan_show 的返回里本来就有，
+ * 播报只负责提醒「该看一眼了」。没有任何一层非空时 empty = true，
+ * 调用方（工具）据此决定要不要附带，简报本身不替调用方做决定。
+ *
+ * signature 是四层计数加「今天要动」的 id 串，给调用方做去重：
+ * 内容没变的简报重复播报只会变成噪音（见 index.js 的 lastBriefByCwd）。
+ */
+export function briefOf(plan, today = todayStr(), limit = 3) {
+  const review = []
+  const receipts = []
+  const chases = []
+  const todayItems = []
+  for (const item of collectNodes(plan, 'any')) {
+    const settled = item.node.status === 'done' || item.node.status === 'dropped'
+    const d = delegateState(item.node, today)
+    if (d !== null && !settled) {
+      if (d.status === 'returned') review.push(item)
+      else if (d.overdueReceipt) receipts.push(item)
+      else if (d.overdueWork && d.status === 'accepted') chases.push(item)
+    }
+    if (isDueWithin(item.node, 0, today)) todayItems.push(item)
+  }
+  // unverifiedList 返回的是投影（没有 .node），包一层让五层形状统一。
+  const unverified = unverifiedList(plan).map((x) => ({ node: x }))
+  const layers = [
+    ['今天要动', todayItems],
+    ['待验收', review],
+    ['等人回应', receipts],
+    ['该催', chases],
+    ['该核验', unverified],
+  ]
+  const lines = []
+  for (const [label, items] of layers) {
+    if (items.length === 0) continue
+    const names = items.slice(0, limit).map((x) => x.node.title ?? x.id)
+    const more = items.length > limit ? ' 等 ' + items.length + ' 项' : ''
+    lines.push('· ' + label + '（' + items.length + '）：' + names.join('、') + more)
+  }
+  const empty = lines.length === 0
+  const counts = {
+    today: todayItems.length,
+    review: review.length,
+    receipts: receipts.length,
+    chases: chases.length,
+    unverified: unverified.length,
+  }
+  return {
+    empty,
+    counts,
+    signature: empty ? '' : JSON.stringify([counts, todayItems.map((x) => x.node.id)]),
+    lines,
+  }
 }
 
 /**

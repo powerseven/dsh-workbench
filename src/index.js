@@ -28,6 +28,9 @@ import { existsSync, mkdirSync, readFileSync, statSync, readdirSync, writeFileSy
 import { join, relative, resolve, sep } from 'node:path'
 
 import { defineTool } from '@deepseek-ai/dsh-tools'
+// 宿主自带包，与 dsh-tools 同层（运行时由 dsh 进程解析）。只取消息构造器——
+// deferContext 要的是完整 UserMessage（含 id / role / source），不自己拼。
+import { createUserMessage } from '@deepseek-ai/dsh-llm'
 import {
   DELEGATE_STATUS,
   EVIDENCE_KIND,
@@ -58,6 +61,7 @@ import {
   addBlockedBy,
   assertManualDoneAllowed,
   autoCompleteAncestors,
+  briefOf,
   blockers,
   reopenAncestors,
   removeBlockedBy,
@@ -148,6 +152,69 @@ function makeTool(name, description, parameters, execute) {
     },
     execute,
   })
+}
+
+// --------------------------------------------------------- 开工简报（FR-A4）
+
+/**
+ * 每个工作区上次播报过的简报 signature（内存态，不落盘）。
+ *
+ * 简报是「提醒该看一眼了」，不是档案：内容没变就不再重复——agent 在一次
+ * 会话里连读几次计划，每次都播同一份就是噪音。按 cwd 分开记，因为不同
+ * 工作区的计划互不相干。进程重启后清零（重新播报一次无伤大雅）。
+ */
+const lastBriefByCwd = new Map()
+
+const BRIEF_COUNT_LABELS = [
+  ['today', '今天要动'],
+  ['review', '待验收'],
+  ['receipts', '等人回应'],
+  ['chases', '该催'],
+  ['unverified', '该核验'],
+]
+
+/**
+ * 把简报作为「插件来源的指令」挂到本次工具结果之后（ToolRunContext
+ * 的 deferContext，agent 循环会把它追加在 tool/result 后面）。
+ *
+ * 这就是「agent 主动」的时机落点：不做定时任务、不新开会话、不加工具——
+ * agent 读计划 / 记事项 / 回写进度这三个动作本身，就完成了一次播报。
+ *
+ * 三条纪律：
+ *   1. 空简报不附带，并清掉上次的 signature——这样下次有内容时会重新播。
+ *   2. signature 没变不附带，且**只在真的附带了之后才记录**——宿主太老
+ *      （没有 deferContext）或测试替身没有这个方法时静默跳过，但绝不
+ *      把「没播出去的」记成「播过了」，否则那条简报就永远丢了。
+ *   3. 文本保持几行（briefOf 每层只给计数 + 前三），全量清单 plan_show
+ *      的返回里本来就有，这里只负责「被看见一次」。
+ */
+function deferBrief(exec, cwd, plan) {
+  let brief
+  try {
+    brief = briefOf(plan, todayStr())
+  } catch {
+    return // 简报算不出来不能影响工具本身的结果——它只是锦上添花
+  }
+  if (brief.empty) {
+    lastBriefByCwd.delete(cwd)
+    return
+  }
+  if (lastBriefByCwd.get(cwd) === brief.signature) return
+  if (typeof exec?.deferContext !== 'function') return
+  const counts = BRIEF_COUNT_LABELS
+    .filter(([key]) => brief.counts[key] > 0)
+    .map(([key, label]) => label + brief.counts[key])
+    .join('、')
+  const summary = ('工作台简报：' + counts).slice(0, 120)
+  exec.deferContext(createUserMessage({
+    content: [{
+      type: 'text',
+      text: '[dsh-workbench 开工简报] 计划里有这些值得先看一眼的（全量清单见 plan_show）：\n'
+        + brief.lines.join('\n'),
+    }],
+    source: { kind: 'plugin', plugin: 'dsh-workbench', form: 'notice', summary },
+  }))
+  lastBriefByCwd.set(cwd, brief.signature)
 }
 
 /**
@@ -545,11 +612,15 @@ export function apply(ctx) {
       + '不挂在任何计划下的顶层待办就是收件箱。每个节点都带自动算好的完成度与管控提示。'
       + '返回里另外有三份清单值得先看：delegated（我委派出去的，含逾期未回执）、'
       + 'behind（进度没跟上周期的，按差距排序）、unverified（已完成但没有证据、等你核验的）。'
+      + 'delegated 里 awaitingReview=true 的是**交回待验收**的（FR-D3）：向用户确认后，'
+      + '同意就走 plan_todo_set 标 done；打回则让用户用 plan_delegate_receipt 登记新一轮回执（附原因）。'
       + '计划文件位于 <工作区>/plan/plan.json。',
     {},
     async (_args, exec) => {
-      const store = storeFor(cwdOf(exec))
+      const cwd = cwdOf(exec)
+      const store = storeFor(cwd)
       const plan = await store.load()
+      deferBrief(exec, cwd, plan)
       return { ok: true, dir: store.dir, plan: withProgress(plan, store.root) }
     },
   ))
@@ -574,7 +645,8 @@ export function apply(ctx) {
       note: { type: 'string', description: '可选：备注' },
     },
     async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
+      const cwd = cwdOf(exec)
+      const store = storeFor(cwd)
       const plan = await store.load()
       const node = makeNode(plan, {
         title: args?.title,
@@ -590,6 +662,7 @@ export function apply(ctx) {
       })
       appendChild(plan, node, args?.parent)
       await store.save(plan, { reason: typeOf(node) + '-add' })
+      deferBrief(exec, cwd, plan)
       return {
         ok: true,
         node: { id: node.id, type: typeOf(node), title: node.title },
@@ -727,7 +800,8 @@ export function apply(ctx) {
       ...DEP_PARAMS,
     },
     async (args, exec) => {
-      const store = storeFor(cwdOf(exec))
+      const cwd = cwdOf(exec)
+      const store = storeFor(cwd)
       const plan = await store.load()
       const found = resolveTodo(plan, args?.todo)
       const beforeStatus = found.node.status
@@ -753,6 +827,7 @@ export function apply(ctx) {
         + depReasons.map((r) => '+' + r).join('')
         + (spawned !== null ? '+recur-spawn' : '')
         + autoReason })
+      deferBrief(exec, cwd, plan)
       return {
         ok: true,
         todo: found.node,
@@ -869,7 +944,9 @@ export function apply(ctx) {
   ctx.tools.register(makeTool(
     'plan_delegate_receipt',
     '登记一次委派回执：对方接受了 / 拒绝了 / 把事交回来了。'
-      + '委派如果没有回执，就等于交代完石沉大海——所以回执要显式记下来。',
+      + '委派如果没有回执，就等于交代完石沉大海——所以回执要显式记下来。'
+      + '验收打回也在这里：交回（returned）的事项若用户不满意，再登记一轮 pending（或重新 accepted）'
+      + '的新回执并附上打回原因——回执可重走，不需要新的状态。',
     {
       node: { type: 'string', required: true, description: '节点 id 或标题' },
       status: { type: 'string', required: true, description: '回执状态：' + DELEGATE_STATUS.join(' / ') + '（pending=待接受, accepted=已接受, declined=已拒绝, returned=已交回）' },

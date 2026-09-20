@@ -231,6 +231,15 @@ test('delegateText 在没有委派时返回 null（面板据此不渲染标记�
   assert.equal(delegateText(null), null)
 })
 
+test('delegateText 把「已交回且未完成」标成待验收（纯状态判断，客户端兜底合法）', () => {
+  const review = { status: 'todo', delegateState: { to: '张三', status: 'returned', expectAt: '2099-01-01' } }
+  assert.match(delegateText(review), /已交回·待验收/)
+  const accepted = { status: 'done', delegateState: { to: '张三', status: 'returned', expectAt: '2099-01-01' } }
+  assert.equal(delegateText(accepted).includes('待验收'), false, '验收通过（已标完成）就不再提示')
+  const dropped = { status: 'dropped', delegateState: { to: '张三', status: 'returned' } }
+  assert.equal(delegateText(dropped).includes('待验收'), false, '放弃的分支同样不再提示')
+})
+
 // ---------------------------------------------------------------- 摊平与筛选
 
 /** 一份带完整服务端标注的样例计划（面板收到的就是这种形态）。 */
