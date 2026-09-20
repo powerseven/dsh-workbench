@@ -34,7 +34,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（417 个，分五层见下）
+node --test test/*.test.mjs   # 跑测试（432 个，分六层见下）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -48,6 +48,7 @@ dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
 | `store.test.mjs` | 数据层纯函数 | 算法与校验本身 |
 | `host.test.mjs` | 假 Cordis + **真**工具与 HTTP 路由 | 工具接错函数、路由漏参数、**两层相接处**的错 |
 | `logic.test.mjs` | 客户端纯逻辑 + 跨半身一致性断言 | 两侧重复实现漂移 |
+| `ai.test.mjs` | AI 解析半边的纯函数（`src/ai.js`） | 模型的坏习惯没兜住：围栏、寒暄、JSON 写成数组、候选顺序乱 |
 | `client.test.mjs` | **假 React + 真构建产物里的面板组件** | 面板打不开、手势接错、改名的请求参数不对 |
 | `build.test.mjs` | 产物字符串 | 静默失效（见坑 #1）、清单不同步 |
 
@@ -212,7 +213,11 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 新增任何通路**：它把十几个字段合成一次 `/node-set`（新建是 `/node-add`），
 字段清单由 `logic.cjs` 的 `formRequest` 统一产出。
 两处**有意识的破例**都与文件系统有关：读 vault（`plan_config_set` / `plan_file_read`，
-见上一段）与面板的 `/config-set` `/file-read`。现在 15 个工具、12 条路由。
+见上一段）与面板的 `/config-set` `/file-read`。现在 15 个工具、14 条路由。
+**两面不是一一对应**：`/ai-parse`、`/persona`、`/persona-set`、`/init` 只有 HTTP 面
+（面板专用，agent 用不着或该走别的工具）；`plan_priority_set`、`plan_delegate_set`、
+`plan_delegate_receipt`、`plan_delegated` 只有工具面——面板的换档与委派都并进
+`/node-set` 那一次整块提交。
 **工具面按节点组织这条线要守住**：每冒出一个概念就长一套 API，agent 花在
 「该用哪个」上的注意力迟早超过事情本身。
 
