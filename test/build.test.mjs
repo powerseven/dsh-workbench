@@ -128,6 +128,31 @@ test('面板字体与圆角取宿主标尺，且胶囊配了 corner-shape:round'
   assert.match(flat, /corner-shape:round/)
 })
 
+test('侧栏页脚入口跟邻居同一把尺，且计数不进 textContent', () => {
+  // 页脚入口跟宿主的「设置」、dsh-context 的「Context Insights」并排，尺寸必须
+  // 一致（真机反馈：「mac 上的大小和上下文洞察的大小字体不一样」）。这几个值是从
+  // 真机上量出来的，不是配出来的——改一个就会跟邻居错开，而错开在测试里没有
+  // 别的证据，所以在这里钉住（见 AGENTS.md 坑 #31）。
+  // 这条规则在 src 里就是一整行字符串，所以直接用 raw 断言（flat 会把 `+` 也压掉，
+  // `calc(100% + 4px)` 会变成 `calc(100%4px)`，没法读）。
+  const { raw, flat } = cssBlock()
+  const line = raw.split('\n').find((l) => l.includes("'.dsh-wb-entry{"))
+  assert.ok(line !== undefined, 'CSS 里没有 .dsh-wb-entry 规则')
+  for (const decl of [
+    'height:42px', 'padding:0 10px 0 8px', 'gap:8px', 'border-radius:12px',
+    'font:var(--wb-f-footer)', 'width:calc(100% + 4px)', 'margin:0 -2px',
+  ]) {
+    assert.ok(line.includes(decl), '.dsh-wb-entry 缺少与页脚邻居对齐的 ' + decl)
+  }
+  // 页脚按钮不配回 corner-shape:round——宿主对 * 施加的 superellipse(1.5) 是
+  // 这一排按钮的共同底子，邻居都没配回，只有面板内部的胶囊才要（坑 #19）。
+  assert.ok(!line.includes('corner-shape'), '.dsh-wb-entry 不该动 corner-shape')
+  // 未完成数走伪元素：zen 的 harvestName() 读 el.textContent，真实节点里的数字
+  // 会变成手机主屏 chip 的名字（还会连累按名字存的 chip 开关偏好）。
+  assert.match(flat, /\.dsh-wb-entry::after\{content:attr\(data-count\)/)
+  assert.ok(!flat.includes('dsh-wb-entrycount'), '计数不能是真实节点，只能走伪元素')
+})
+
 test('窄屏强制折行只作用于待办行，计划行不强制（放得下就一行）', () => {
   // 计划行的元信息只有「重要程度 / 进度 / ＋」三样，短标题（「计划一」）一行放得下；
   // 硬折成两行既难看又多占一行。待办行徽章与动作多、标题长短不一，必须强制折
