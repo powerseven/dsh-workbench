@@ -260,7 +260,13 @@ function delegateText(node) {
   if (node === null || node === undefined || typeof node !== 'object') return null
   var d = node.delegateState
   if (d === null || d === undefined || typeof d !== 'object') return null
-  var out = String(d.to) + ' · ' + delegateLabel(d.status)
+  var label = delegateLabel(d.status)
+  // 待验收 = 已交回但事情还没完成。这是纯状态判断（不含日期 / 阈值运算），
+  // 允许客户端兜底（坑 #12）；要动日期的判定依然只读服务端标注。
+  if (d.status === 'returned' && node.status !== 'done' && node.status !== 'dropped') {
+    label += '·待验收'
+  }
+  var out = String(d.to) + ' · ' + label
   if (typeof d.expectAt === 'string' && d.expectAt !== '') out += '（期望 ' + d.expectAt.slice(5) + '）'
   return out
 }

@@ -27,6 +27,7 @@ import {
   applyFields,
   applyStatus,
   behindList,
+  briefOf,
   childrenOf,
   clearFields,
   collectNodes,
@@ -1029,6 +1030,67 @@ test('delegatedList 把逾期的排前面，并带上类型、父节点与路径
   assert.equal(list[0].parent, 'k2')
   assert.equal(list[0].path, 'g1 / k2 / t3')
   assert.equal(list[1].delegate.to, '张三')
+})
+
+test('delegatedList 把待验收（returned 且未完成）置顶，带 awaitingReview', () => {
+  const plan = samplePlan()
+  const t2 = plan.nodes[0].children[1].children[1]
+  const t3 = plan.nodes[0].children[1].children[2]
+  setDelegate(t2, { to: '张三', expectAt: '2000-01-01' }) // 逾期但还没交回
+  setDelegate(t3, { to: '李四', expectAt: '2099-01-01' })
+  setReceipt(t3, 'returned')
+  const list = delegatedList(plan, '2026-09-14')
+  assert.equal(list.length, 2)
+  assert.equal(list[0].id, 't3', '待验收排最前——是别人在等你表态，不是你在等别人')
+  assert.equal(list[0].awaitingReview, true)
+  assert.equal(list[1].awaitingReview, false, '逾期未回执不算待验收')
+  assert.equal(list[1].delegate.overdueReceipt, true)
+})
+
+test('briefOf 分层短报：五层各归各类，互不重复计数', () => {
+  const plan = emptyPlan()
+  plan.nodes.push({ id: 'a', type: 'todo', title: '今天到期的事', status: 'todo', due: '2026-09-14' })
+  plan.nodes.push({ id: 'b', type: 'todo', title: '等人接单', status: 'todo' })
+  setDelegate(plan.nodes[1], { to: '张三', expectAt: '2026-09-01' })
+  plan.nodes.push({ id: 'c', type: 'todo', title: '已接受在干活', status: 'todo' })
+  setDelegate(plan.nodes[2], { to: '李四', expectAt: '2026-09-01' })
+  setReceipt(plan.nodes[2], 'accepted')
+  plan.nodes.push({ id: 'd', type: 'todo', title: '交回来了', status: 'todo' })
+  setDelegate(plan.nodes[3], { to: '王五', expectAt: '2099-01-01' })
+  setReceipt(plan.nodes[3], 'returned')
+  plan.nodes.push({ id: 'e', type: 'todo', title: '没证据的完成', status: 'done' })
+
+  const brief = briefOf(plan, '2026-09-14')
+  assert.equal(brief.empty, false)
+  assert.deepEqual(brief.counts, { today: 1, review: 1, receipts: 1, chases: 1, unverified: 1 })
+  assert.match(brief.lines[0], /今天要动（1）：今天到期的事/)
+  assert.match(brief.lines[1], /待验收（1）：交回来了/)
+  assert.match(brief.lines[2], /等人回应（1）：等人接单/)
+  assert.match(brief.lines[3], /该催（1）：已接受在干活/)
+  assert.match(brief.lines[4], /该核验（1）：没证据的完成/)
+  assert.equal(brief.signature.length > 0, true)
+
+  // 同一内容 signature 稳定；内容变了 signature 跟着变（给调用方去重用）。
+  const same = briefOf(plan, '2026-09-14')
+  assert.equal(same.signature, brief.signature)
+  plan.nodes[0].status = 'done'
+  assert.notEqual(briefOf(plan, '2026-09-14').signature, brief.signature)
+})
+
+test('briefOf 超过每层上限只列前三，并注明总数；全空时 empty 且 signature 为空串', () => {
+  const plan = emptyPlan()
+  for (let i = 0; i < 5; i++) {
+    plan.nodes.push({ id: 'n' + i, type: 'todo', title: '事' + i, status: 'todo', due: '2026-09-14' })
+  }
+  const brief = briefOf(plan, '2026-09-14')
+  assert.match(brief.lines[0], /事0、事1、事2 等 5 项/, '只点名前三，总数说在后面')
+
+  assert.deepEqual(briefOf(emptyPlan(), '2026-09-14'), {
+    empty: true,
+    counts: { today: 0, review: 0, receipts: 0, chases: 0, unverified: 0 },
+    signature: '',
+    lines: [],
+  })
 })
 
 // ------------------------------------------------------- 计数 / 逾期 / 汇总

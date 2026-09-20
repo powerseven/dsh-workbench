@@ -1478,3 +1478,76 @@ test('「纳入工作计划」：工具与 HTTP 面共用同一条写入，filed
   assert.equal(back.inbox, inbox0, '退回后回到收件箱')
   assert.equal(back.filed, before.filed ?? 0)
 })
+
+// --------------------------------------------- 开工简报（FR-A4）与待验收（FR-D3）
+
+import { todayStr } from '../src/store.js'
+
+/** 与 call 相同，但 exec 带一个 deferContext 收集器，且允许指定独立 cwd——
+ *  简报的去重状态按 cwd 记在模块里，每个用例用独立工作区才不互相串味。 */
+const callBrief = async (cwd, name, args) => {
+  const deferred = []
+  const result = await tools.get(name).execute(args ?? {}, {
+    agent: { session: { header: { cwd } } },
+    deferContext: (msg) => deferred.push(msg),
+  })
+  return { result, deferred }
+}
+
+test('简报挂在读写工具的 deferContext 上：出现一次、内容没变不重复、变空即清', async () => {
+  const ws = join(dir, 'brief-ws')
+  const today = todayStr()
+
+  const first = await callBrief(ws, 'plan_show')
+  assert.equal(first.deferred.length, 0, '空计划没有可播的')
+
+  const add = await callBrief(ws, 'plan_node_add', { title: '今天要交的周报' })
+  assert.equal(add.deferred.length, 0, '刚加的没有截止，简报仍为空')
+  const id = add.result.node.id
+
+  await callBrief(ws, 'plan_node_set', { node: id, due: today })
+  const shown = await callBrief(ws, 'plan_show')
+  assert.equal(shown.deferred.length, 1, '今天要动的事出现了，播一次')
+  const text = JSON.stringify(shown.deferred[0].content)
+  assert.match(text, /今天要动/)
+  assert.match(text, /今天要交的周报/)
+  assert.equal(shown.deferred[0].source.kind, 'plugin')
+  assert.equal(shown.deferred[0].role, 'user', '简报是插件来源的 UserMessage')
+
+  const again = await callBrief(ws, 'plan_show')
+  assert.equal(again.deferred.length, 0, '内容没变，不重复播')
+
+  await callBrief(ws, 'plan_todo_set', { todo: id, status: 'done', evidenceRef: '周报.md' })
+  const after = await callBrief(ws, 'plan_show')
+  assert.equal(after.deferred.length, 0, '事情做完，简报变空：不播，且下次有内容会重新播')
+})
+
+test('宿主没有 deferContext 时静默跳过，且不把没播出去的记成播过', async () => {
+  const ws = join(dir, 'brief-nocallback')
+  const today = todayStr()
+  const noCtx = { agent: { session: { header: { cwd: ws } } } }
+
+  const made = await tools.get('plan_node_add').execute({ title: '今天要交的周报' }, noCtx)
+  await tools.get('plan_node_set').execute({ node: made.node.id, due: today }, noCtx)
+
+  const got = await callBrief(ws, 'plan_show')
+  assert.equal(got.deferred.length, 1, '之前的调用没记录 signature，这条简报不能丢')
+})
+
+test('交回的委派进「待验收」：清单置顶带 awaitingReview，简报单列一层', async () => {
+  const ws = join(dir, 'brief-review')
+  const add = await callBrief(ws, 'plan_node_add', { title: '台账整理' })
+  const id = add.result.node.id
+  await callBrief(ws, 'plan_delegate_set', { node: id, to: '张三', expectAt: '2099-01-01' })
+  await callBrief(ws, 'plan_delegate_receipt', { node: id, status: 'returned' })
+
+  const show = await callBrief(ws, 'plan_show')
+  assert.equal(show.result.plan.delegated[0].awaitingReview, true, '交回且未完成 = 待验收')
+  assert.equal(show.deferred.length, 1)
+  assert.match(JSON.stringify(show.deferred[0].content), /待验收/)
+
+  // 验收闭环不用新工具：同意 → plan_todo_set 标 done；打回 → 再登记一轮回执。
+  await callBrief(ws, 'plan_todo_set', { todo: id, status: 'done', evidenceRef: '台账.md' })
+  const done = await callBrief(ws, 'plan_show')
+  assert.equal(done.result.plan.delegated[0].awaitingReview, false, '验收通过后不再是待验收')
+})

@@ -34,7 +34,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（432 个，分六层见下）
+node --test test/*.test.mjs   # 跑测试（439 个，分六层见下）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -98,6 +98,10 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 - `delegate`：`{ to, at, expectAt, status }`，`status` ∈ `pending` / `accepted` /
   `declined` / `returned`。两种逾期**分开算**：`overdueReceipt`（该去问一句「接不接」）
   与 `overdueWork`（该去催进度）。重新委派会重置回执——换人意味着上一轮作废。
+  **验收（FR-D3）不是第五种状态**：交回（`returned`）后，同意 → `plan_todo_set`
+  标 done；打回 → 再走一次 `plan_delegate_receipt`（回 `pending`，附原因）——
+  回执可重走，验收是「人对回执的表态」。`delegatedList` 给「交回且未完成」的
+  带 `awaitingReview: true` 并置顶；简报把它单列一层（见下文「开工简报」）。
 - `doneAt` / `startedAt`：完成与开工时间戳，是所有时间维度统计（周报）的上游。
   离开 `done` 会**清掉** `doneAt`，否则被撤回的完成会一直出现在「本周完成」里。
 - `metric`：`{ target, current, unit }`，可计数的节点按它算进度（原量化 KR 的字段）。
@@ -169,6 +173,18 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 只含「有事项的天」：空天不占一行（面板空间很贵，空白列表会让真正有事的那些天
 更难找）。逾期不混进「今天」——逾期（该做没做）与今天到期（正要做）是两种信号，
 混在一起会让人误判，与「被挡的单独折叠」同一个思路。
+
+**开工简报（`briefOf`，agent 侧播报）**：把散在四份清单里的信号压成一个分层短报
+（今天要动 → 待验收 → 等人回应 → 该催 → 该核验），由三个读写工具
+（`plan_show` / `plan_node_add` / `plan_todo_set`）在返回结果时经
+`ToolRunContext.deferContext` 挂进对话——agent **读计划这个动作本身**就完成了一次
+主动播报，不做定时任务、不新开会话、不加工具。三条纪律都在 `index.js` 的
+`deferBrief`：①空简报不附带并清掉去重记忆；②内容没变（signature 相同）不重复播，
+且**只在真的附带出去之后才记录**——宿主太老没有 `deferContext`（用
+`typeof exec?.deferContext === 'function'` 守卫）时静默跳过，但绝不把没播的记成
+播过，否则那条简报就永远丢了；③每层只给计数 + 前三名，全量清单 `plan_show`
+的返回里本来就有，播报只负责「被看见一次」。去重状态按 cwd 存模块级 Map
+（内存态，不落盘——它是「上次播过什么」，不是计划数据）。
 
 **这些派生量的口径要在 `annotate`（host）和 `logic.cjs`（client）两边一致，**
 `parentSuggestions` 是例外：它只在 host 算、client 只读（打分要看整棵树）。
