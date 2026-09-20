@@ -16,7 +16,7 @@ const {
   pct, barWidth, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr,
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
-  flattenNodes, FILTERS, focusList, filterCounts, moveTargets, boardColumns,
+  flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, boardColumns,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
   bytesToBase64, pickImages, AI_MAX_IMAGES,
@@ -979,4 +979,72 @@ test('自定义视图：存取走 localStorage（本机偏好），viewItems 剔
   } finally {
     delete globalThis.window
   }
+})
+
+// -------------------------------------------------- 未来日程（Things 3 式 Upcoming）
+
+/** 一份带服务端标注（overdue / dueSoon）的日程 fixture：逾期 + 三天 + 一条已完成。 */
+function schedulePlan() {
+  return {
+    nodes: [
+      {
+        id: 'p1', type: 'plan', status: 'active', overdue: false, dueSoon: false,
+        children: [
+          { id: 'a', type: 'todo', title: '拖了很久的', status: 'todo', due: '2026-09-10', overdue: true, dueSoon: false },
+          { id: 'b', type: 'todo', title: '今天的事', status: 'todo', due: '2026-09-17', overdue: false, dueSoon: true },
+          { id: 'c', type: 'todo', title: '高优先的', status: 'todo', priority: 'high', due: '2026-09-19', overdue: false, dueSoon: true },
+          { id: 'd', type: 'todo', title: '星标的', status: 'todo', starred: true, due: '2026-09-19', overdue: false, dueSoon: true },
+          { id: 'e', type: 'todo', title: '下周的', status: 'todo', due: '2026-09-23', overdue: false, dueSoon: true },
+          { id: 'f', type: 'todo', title: '已完成的', status: 'done', due: '2026-09-18', overdue: false, dueSoon: true },
+          { id: 'g', type: 'todo', title: '还早的', status: 'todo', due: '2026-10-30', overdue: false, dueSoon: false },
+        ],
+      },
+    ],
+  }
+}
+
+test('upcomingByDay：逾期滚入「今天」组，其余按天分组，只含有事项的天', () => {
+  const r = upcomingByDay(schedulePlan(), '2026-09-17')
+  // 逾期项 'a' 不再单独成段，而是滚进今天组，与今天到期 'b' 同组；逾期 o=0 排最前。
+  assert.deepEqual(r.days.map((d) => d.date), ['2026-09-17', '2026-09-19', '2026-09-23'],
+    '空天不占一行（9-18 已完成的被排除后就是空的）')
+  assert.equal(r.days[0].label, '9月17日 周四')
+  assert.deepEqual(r.days[0].items.map((x) => x.node.id), ['a', 'b'],
+    '逾期滚入今日组（a），与今天到期（b）同组；逾期排最前')
+  assert.deepEqual(r.days[1].items.map((x) => x.node.id), ['d', 'c'], '天内：星标 > 高优先')
+  // 已完成的不进来：这是「未来要做的」，不是账本。
+  assert.ok(!JSON.stringify(r.days).includes('已完成的'))
+  // 10-30 超出 7 天窗口（服务端 dueSoon 为 false）。
+  assert.ok(!JSON.stringify(r).includes('还早的'))
+})
+
+test('upcomingByDay：容器用 end 当日期；没有任何标注时本地兜底判逾期并滚入今日', () => {
+  const plan = {
+    nodes: [
+      { id: 'c1', type: 'plan', status: 'active', end: '2026-09-20', dueSoon: true, overdue: false, children: [{ id: 'k', type: 'todo', title: 'x' }] },
+      { id: 'x1', type: 'todo', title: '没标注但确实过期了', status: 'todo', due: '2026-09-01' },
+    ],
+  }
+  const r = upcomingByDay(plan, '2026-09-17')
+  assert.deepEqual(r.days[0].items.map((x) => x.node.id), ['x1'],
+    '服务端没给 overdue 时按 due 兜底，且滚入今日组（不再有 r.overdue 段）')
+  assert.equal(r.days[1].date, '2026-09-20')
+  assert.deepEqual(r.days[1].items.map((x) => x.node.id), ['c1'])
+})
+
+test('deferDate：明天 +1；下周=下一个周一（周一则 +7，绝不回到今天）；非法返回空', () => {
+  // 锚点：2026-09-21 是周一，2026-09-17 是周四，2026-09-20 是周日。
+  assert.equal(deferDate('2026-09-17', 'tomorrow'), '2026-09-18', '明天 = base+1')
+  assert.equal(deferDate('2026-09-17', 'nextweek'), '2026-09-21', '周四 → 下一个周一（+4）')
+  assert.equal(deferDate('2026-09-20', 'nextweek'), '2026-09-21', '周日 → 周一（+1）')
+  assert.equal(deferDate('2026-09-21', 'nextweek'), '2026-09-28', '周一本身 → 顺延 7 天，绝不回到今天')
+  assert.equal(deferDate('2026-09-19', 'nextweek'), '2026-09-21', '周六 → 周一（+2）')
+  assert.equal(deferDate('格式不对', 'tomorrow'), '', '非法 base 返回空')
+  assert.equal(deferDate('2026-09-17', 'bogus'), '', '未知 kind 返回空')
+})
+
+test('dayLabel 按日格式化成「几月几日 周几」，脏日期原样返回', () => {
+  assert.equal(dayLabel('2026-09-17'), '9月17日 周四')
+  assert.equal(dayLabel('2026-01-04'), '1月4日 周日')
+  assert.equal(dayLabel('乱七八糟'), '乱七八糟')
 })

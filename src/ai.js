@@ -51,6 +51,21 @@ const pct = (n) => String(Math.round((Number(n) || 0) * 100)) + '%'
 /** 一次最多解析出多少条。多了用户也不会逐条看，还会把面板撑长。 */
 export const MAX_TASKS = 20
 
+/**
+ * 一次调用最多让模型输出多少 token。
+ *
+ * **这个数必须放得下提示词自己要的东西**：系统提示让模型给「最多 MAX_TASKS 条」，
+ * 每条带 title / due / priority / note / plan / advice，再加 2–3 个 options
+ * （每个都有 label + why + patch），外面还有一段 4~6 行的 reply。
+ * 20 条 × 约 180 token ≈ 3600，加上 reply 与 JSON 骨架，2048 是**装不下的**——
+ * 而原来的 2048 就是这么来的：提示词与额度各写各的，谁也没跟谁对齐。
+ *
+ * 症状很好认：**拍照 → 拆待办**这条路最容易撞上，因为一张清单照片会让模型
+ * 老老实实吐十几条；一撞上就是 finish=max-tokens，面板上什么内容都没有，
+ * 只挂一句「被长度上限截断」。
+ */
+export const MAX_OUTPUT_TOKENS = 8192
+
 /** 一次最多带几张图。图片按 base64 走请求体，多了既慢又贵。 */
 export const MAX_IMAGES = 4
 
@@ -316,15 +331,16 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     history === '' ? '' : '\n【历史相似任务】（判断这次要多久、能不能排得动）\n' + history + '\n',
     '',
     '只输出一个 JSON 对象，不要任何解释、不要 Markdown 代码围栏。格式：',
-    '{"reply":"给人看的一段话","tasks":[{"title":"待办标题","due":"YYYY-MM-DD 或留空",',
+    '{"reply":"给人看的回答（分行分点，不要写成一大段）","tasks":[{"title":"待办标题","due":"YYYY-MM-DD 或留空",',
     '"priority":"high|normal|low 或留空","note":"备注或留空","plan":"计划名或留空",',
     '"advice":"计划专家意见或留空","options":[{"label":"选项名","why":"为什么",',
     '"patch":{"due":"...","priority":"...","plan":"...","note":"..."}}]}],',
     '"list":{"title":"清单名","items":["任务标题","任务标题"]}}',
     '',
     '规则：',
-    '1. reply **必填**：回答用户的问题；如果用户只是在报事，就用一句话说明你拆出了什么、',
-    '   并指出最值得注意的一条风险（重复 / 依赖 / 排不动 / 与某个逾期项撞车）。控制在 3 句内。',
+    '1. reply **必填**：回答用户的问题。**分行写**——一行一个点（以「· 」开头），最多 4~6 行，',
+    '   每行短一点；**不要写成一大段**（面板是按行渲染的，长段落很难读）。',
+    '   报事时说明拆出了什么，并指出最值得注意的一条风险（重复 / 依赖 / 排不动 / 与某个逾期项撞车）。',
     '1a. 当用户想要一份**清单或视图**（「明天在家能做的」「半小时以内能干完的」「按顺序该先做哪三件」），',
     '   给出 list：title 是清单名，items 从【当前全貌】里**原样抄**符合条件的任务标题；',
     '   清单要排好序（先做谁在后做谁），数量尊重用户说的（说三件就给三件）。',
@@ -356,6 +372,7 @@ export function aiUserText(text) {
  * 模型几乎一定会包 ```json 围栏，有时还会在前后加一句「好的，如下」。所以：
  *   ① 去掉围栏；② 从第一个 `{` 或 `[` 开始，按括号配平截断到与之匹配的那个右括号；
  *   ③ 再 JSON.parse。这样即使前后有寒暄也能捞出来。
+ *   ④ 括号配平走到底也没闭上（= 回复被输出长度上限截断）时，**退回「补括号」那条路**。
  */
 export function extractJson(raw) {
   let s = String(raw ?? '')
@@ -385,6 +402,54 @@ export function extractJson(raw) {
         try { return JSON.parse(s.slice(start, i + 1)) } catch (e) { return null }
       }
     }
+  }
+  // 没闭上：被截断了，试着重建成「完整的前缀」。
+  return repairTruncatedJson(s, start)
+}
+
+/**
+ * 把一段**被截断的** JSON 补成合法的：从 `end` 往前扫出还没闭合的括号栈，按栈反向补上。
+ * 只补括号、不猜内容——所以「截在某个完整对象之后」能救回来，
+ * 「截在一个字符串中间」救不回来（那本来就无从猜起）。
+ */
+function closeJsonAt(s, end) {
+  const stack = []
+  let inStr = false
+  let escaped = false
+  for (let i = 0; i <= end; i++) {
+    const c = s[i]
+    if (inStr) {
+      if (escaped) escaped = false
+      else if (c === '\\') escaped = true
+      else if (c === '"') inStr = false
+      continue
+    }
+    if (c === '"') { inStr = true; continue }
+    if (c === '{' || c === '[') stack.push(c)
+    else if (c === '}' || c === ']') stack.pop()
+  }
+  if (inStr) return null
+  let out = ''
+  for (let i = stack.length - 1; i >= 0; i--) out += stack[i] === '{' ? '}' : ']'
+  return s.slice(0, end + 1) + out
+}
+
+/**
+ * 回复被输出长度上限截断时的兜底：**把完整的那部分留下来**。
+ *
+ * 从后往前找「收在一个括号上」的落点，补上缺的右括号再解析，第一个解析得通的就是答案。
+ * 于是 `{"reply":"…","tasks":[{…},{…},{半条` 会变成「那句 reply + 前两条」，
+ * 而不是一句「截断了」把整次调用丢掉——被丢掉的往往**已经能用**。
+ */
+function repairTruncatedJson(s, start, maxCandidates = 400) {
+  const ends = []
+  for (let i = s.length - 1; i > start && ends.length < maxCandidates; i--) {
+    if (s[i] === '}' || s[i] === ']') ends.push(i)
+  }
+  for (const end of ends) {
+    const fixed = closeJsonAt(s, end)
+    if (fixed === null) continue
+    try { return JSON.parse(fixed) } catch (e) { /* 这个落点补不回来，往前再试 */ }
   }
   return null
 }
@@ -612,15 +677,22 @@ export function attachSuggestions(plan, tasks, today = todayStr()) {
 }
 
 /**
- * 把一次流式调用收成一段文本。
+ * 把一次流式调用收成 `{ text, truncated }`。
  *
  * 只取 text-delta，不看 reasoning-delta（思考过程不是给用户的答案）。
- * finish 的三种坏结局都要变成**看得懂的错误**——「error / aborted / max-tokens」
- * 在界面上都长一样的话，用户只会以为「AI 坏了」。
+ *
+ * **三种坏结局分开处理**：
+ *   · `error` / `aborted` —— 真的失败了，抛「看得懂的错误」；
+ *   · `max-tokens` —— **不是失败**：模型把话说完了能说的那部分，只是被额度截断。
+ *     这里不再抛错（旧版抛错，等于把一份**往往已经能用的**回复整份丢掉，
+ *     用户只看到一句「被截断」，照片里的待办一条也没出来）；改成把
+ *     `truncated: true` 交给上层，由上层决定要不要提示、以及能不能从残缺的
+ *     JSON 里把完整的那部分捞出来（见 extractJson 的补括号兜底）。
  */
 export async function collectText(llm, options) {
   let text = ''
   let finish = null
+  let truncated = false
   for await (const chunk of llm.stream(options)) {
     if (chunk === null || chunk === undefined) continue
     if (chunk.type === 'text-delta') text += String(chunk.text ?? '')
@@ -633,7 +705,7 @@ export async function collectText(llm, options) {
         ? failure.message : finish.kind
       throw new Error('模型调用失败：' + msg)
     }
-    if (finish.kind === 'max-tokens') throw new Error('模型回复被长度上限截断，素材可能太长，少说一点再试')
+    if (finish.kind === 'max-tokens') truncated = true
   }
-  return text
+  return { text, truncated }
 }

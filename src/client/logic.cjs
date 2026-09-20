@@ -659,7 +659,7 @@ var FILTERS = [
   { id: 'all', label: '全部' },
   { id: 'high', label: '重要度高' },
   { id: 'delegated', label: '我委派出去的' },
-  { id: 'week', label: '本周到期' },
+  { id: 'week', label: '未来 7 天' },
   { id: 'overdue', label: '逾期' },
   { id: 'behind', label: '落后' },
   { id: 'unverified', label: '无证据的完成项' }
@@ -723,6 +723,102 @@ function filterCounts(plan, today) {
     out[id] = focusList(plan, id, today).length
   }
   return out
+}
+
+// ------------------------------------------------------------ 未来日程（Upcoming）
+
+/** 「9月17日 周三」——按天分组时每段的标题。日期串来自节点自己的 due/end。 */
+function dayLabel(dateStr) {
+  var d = new Date(String(dateStr) + 'T00:00:00Z')
+  if (isNaN(d.getTime())) return String(dateStr)
+  var week = ['周日', '周一', '周二', '周三', '周四', '周五', '周六'][d.getUTCDay()]
+  return (d.getUTCMonth() + 1) + '月' + d.getUTCDate() + '日 ' + week
+}
+
+/**
+ * 收尾复盘用的「顺延到哪天」：相对 base（YYYY-MM-DD）算出目标日期。
+ * - `tomorrow`：base + 1 天
+ * - `nextweek`：下一个周一（base 本身是周一则顺延 7 天，绝不回到今天）
+ * 纯函数、不碰时区口径（和 dayLabel 同用 UTC 零点），便于单测。
+ */
+function deferDate(base, kind) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof base === 'string' ? base : '')
+  if (m === null) return ''
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  var ymd = function () {
+    var y = d.getFullYear()
+    var mo = d.getMonth() + 1
+    var da = d.getDate()
+    return y + '-' + (mo < 10 ? '0' + mo : '' + mo) + '-' + (da < 10 ? '0' + da : '' + da)
+  }
+  if (kind === 'tomorrow') { d.setDate(d.getDate() + 1); return ymd() }
+  if (kind === 'nextweek') {
+    var dow = d.getDay()
+    var toMon = (8 - dow) % 7
+    if (toMon === 0) toMon = 7
+    d.setDate(d.getDate() + toMon)
+    return ymd()
+  }
+  return ''
+}
+
+/**
+ * **未来日程**（对齐 Things 3 的 Upcoming）：把「本周到期」从一句数字变成
+ * 可逐日展开的清单，回答的是「下周三我有什么事」。
+ *
+ * 三条纪律：
+ *   1. **判定读服务端标注**（`overdue` / `dueSoon`），客户端只拿节点自身的
+ *      `due`（或容器的 `end`）**分组**——日期口径只有在 `store.isDueWithin`
+ *      一处实现，重算就会出现「面板与服务端算出不同答案」而没人知道哪个对。
+ *      窗口因此与 `dueSoon` 一致（7 天），不开放 `days` 参数：开放了就等于
+ *      逼客户端重算。
+ *   2. **逾期滚入「今天」组，不单独置顶成段**（TeuxDeux 式顺延）：逾期（该做没做）
+ *      与今天到期（正要做）都是「今天该出现的」，混在今日组里更符合「滚到下一天」
+ *      的心智；两者的区分交给 `node.overdue` 的红标，而非分两段——分段反而让人
+ *      把逾期当成「另册」，忘了它也是今天要清的。
+ *   3. 已结束（done / dropped）的不进来：这是「未来要做的」，不是账本。
+ *
+ * 返回 `{ days: [{ date, label, items }] }`；`days` 只含有事项
+ * 的那些天（空天不占一行——窄屏空间很贵，空白列表只会让真正有事的那些天更难找）。
+ */
+function upcomingByDay(plan, today) {
+  var t = typeof today === 'string' && today !== '' ? today : todayStr()
+  var flat = flattenNodes(plan)
+  var byDate = {}
+  var order = []
+  for (var i = 0; i < flat.length; i++) {
+    var x = flat[i]
+    var n = x.node
+    if (!isOpen(n)) continue
+    var isOver = n.overdue === true || (n.overdue === undefined && overdueFallback(n, t))
+    // TeuxDeux 顺延：逾期项不单独置顶成段，直接滚入「今天」组——它本就该今天做。
+    // 今天组内靠 `node.overdue` 的红标区分「该做没做」与「正要做」，信号不丢。
+    // 非逾期项仍按自身 due / end 分组（只有当月窗口内的 dueSoon 才进得来）。
+    var date = isOver ? t
+      : (typeof n.due === 'string' && n.due !== '' ? n.due
+        : (typeof n.end === 'string' && n.end !== '' ? n.end : ''))
+    if (!isOver && (n.dueSoon !== true || date === '')) continue
+    if (byDate[date] === undefined) { byDate[date] = []; order.push(date) }
+    byDate[date].push(x)
+  }
+  var rank = function (x) {
+    var n = x.node
+    var o = overdueFallback(n, t) ? 0 : 1
+    return [n.starred === true ? 0 : 1, priorityRank(n.priority), o, String(n.due || n.end || '')]
+  }
+  var cmp = function (a, b) {
+    var ra = rank(a)
+    var rb = rank(b)
+    return (ra[0] - rb[0]) || (ra[1] - rb[1]) || (ra[2] - rb[2]) || ra[3].localeCompare(rb[3])
+  }
+  order.sort()
+  var days = []
+  for (var k = 0; k < order.length; k++) {
+    var items = byDate[order[k]]
+    items.sort(cmp)
+    days.push({ date: order[k], label: dayLabel(order[k]), items: items })
+  }
+  return { days: days }
 }
 
 // -------------------------------------------------------------- 看板分列
@@ -1116,6 +1212,9 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     FILTERS: FILTERS,
     focusList: focusList,
     filterCounts: filterCounts,
+    upcomingByDay: upcomingByDay,
+    deferDate: deferDate,
+    dayLabel: dayLabel,
     boardColumns: boardColumns,
     moveTargets: moveTargets,
     COLLAPSE_KEY: COLLAPSE_KEY,

@@ -108,8 +108,11 @@ test('别名层落在面板自己的根上，不在 :root', () => {
   // 浅色算死，body[data-ds-dark-theme] 的暗色映射传不下来——这正是「换了主题
   // 面板不跟着变」的成因。声明在 .dsh-wb-wrap 才随上下文一起翻转。
   const { flat } = cssBlock()
+  // 允许写成选择器列表：手机浮球注册在宿主的 shell.overlay 里、不在 .dsh-wb-wrap
+  // 之下，所以它必须自己带一份别名层。要求只有两条：列表里必须有 .dsh-wb-wrap，
+  // 且一律不许写在 :root 上。
   assert.ok(
-    flat.includes('.dsh-wb-wrap{--wb-fg:var(--dsw-alias-label-primary)'),
+    /\.dsh-wb-wrap[^{}]*\{--wb-fg:var\(--dsw-alias-label-primary\)/.test(flat),
     '别名层没有声明在 .dsh-wb-wrap 上',
   )
   assert.ok(!flat.includes(':root{'), '别名层不应声明在 :root 上')
@@ -123,6 +126,19 @@ test('面板字体与圆角取宿主标尺，且胶囊配了 corner-shape:round'
   }
   // 宿主对 * 施加 corner-shape:superellipse(1.5)，胶囊会被压变形，须配回 round。
   assert.match(flat, /corner-shape:round/)
+})
+
+test('窄屏强制折行只作用于待办行，计划行不强制（放得下就一行）', () => {
+  // 计划行的元信息只有「重要程度 / 进度 / ＋」三样，短标题（「计划一」）一行放得下；
+  // 硬折成两行既难看又多占一行。待办行徽章与动作多、标题长短不一，必须强制折
+  // 才能有确定性版式。这条断言守的就是「只作用于待办行」这个作用域——
+  // 选择器一旦被改回 `.dsh-wb-taskmeta`，计划行会静默变回两行，界面上没别的证据。
+  const { raw } = cssBlock()
+  const phone = raw.slice(raw.indexOf('@media (max-width:640px)'))
+  assert.ok(
+    phone.includes('.dsh-wb-task .dsh-wb-taskmeta{flex:1 1 100%'),
+    '窄屏的强制折行必须**限定在待办行**（.dsh-wb-task .dsh-wb-taskmeta）',
+  )
 })
 
 test('软底状态胶囊的文字走中性色，语义色只做描边与底色', () => {

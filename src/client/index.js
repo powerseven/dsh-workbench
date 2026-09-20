@@ -11,8 +11,8 @@
  *   · 重要程度徽章（点击在高/中/低之间循环）
  *   · 委派标记（对象 · 回执状态 · 期望时间，逾期标红）
  *   · 落后标记（进度没跟上周期的节点，徽章显示差多少个百分点）
- *   · 完成证据标记（📎n 已附证据 / ⊘ 已完成但无证据，等人核验）
- *   · 筛选条（重要度高 / 我委派出去的 / 本周到期 / 逾期 / 落后 / 无证据的完成项）
+ *   · 完成证据标记（⎘n 已附证据 / ⊘ 已完成但无证据，等人核验）
+ *   · 筛选条（重要度高 / 我委派出去的 / 未来 7 天（按天分组）/ 逾期 / 落后 / 无证据的完成项）
  *   · 就地编辑：双击改名、拖拽排序与归位、折叠展开（层级深了要能收）
  *
  * 勾选、徽章、归位、删除、改名、排序都直接回写 plan.json，所以面板与 agent
@@ -31,6 +31,50 @@ const React = require('react')
 
 const h = React.createElement
 
+// ── 内联 SVG 图标（与宿主同一套线描风格：24×24、stroke=currentColor、圆头圆角）──
+// 为什么不用文字字形（emoji / Unicode 符号）：字重、光学中心、笔画粗细都跟真图标
+// 不是一路的，混在宿主界面里一眼就不像亲生的。内联 SVG 零依赖，颜色走 currentColor，
+// 于是明暗两态与宿主换肤都自动跟随。
+const ICONS = {
+  plus: 'M12 5v14M5 12h14',
+  send: 'M12 19V5M5 12l7-7 7 7',
+  mic: 'M12 2a3 3 0 0 0-3 3v7a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3ZM19 10v2a7 7 0 0 1-14 0v-2M12 19v3',
+  stop: 'M7 7h10v10H7z',
+  gear: 'M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6ZM19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1Z',
+  refresh: 'M21 12a9 9 0 1 1-2.64-6.36M21 3v6h-6',
+  collapse: 'M6 15l6-6 6 6',
+  expand: 'M6 9l6 6 6-6',
+  star: 'M12 3l2.9 5.9 6.5.9-4.7 4.6 1.1 6.5L12 17.8 6.2 20.9l1.1-6.5L2.6 9.8l6.5-.9L12 3z',
+  link: 'M21.4 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66l-9.2 9.19a2 2 0 0 1-2.83-2.83l8.49-8.48',
+  edit: 'M17 3a2.83 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5L17 3z',
+  move: 'M15 10l5 5-5 5M4 4v7a4 4 0 0 0 4 4h12',
+  close: 'M18 6L6 18M6 6l12 12',
+  inbox: 'M22 12h-6l-2 3h-4l-2-3H2M5.45 5.11L2 12v6a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2v-6l-3.45-6.89A2 2 0 0 0 16.76 4H7.24a2 2 0 0 0-1.79 1.11z',
+  lock: 'M5 11h14v10H5zM8 11V7a4 4 0 0 1 8 0v4',
+  warn: 'M10.29 3.86L1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0zM12 9v4M12 17h.01',
+  clock: 'M12 21a9 9 0 1 0 0-18 9 9 0 0 0 0 18zM12 7v5l3 2',
+  file: 'M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8zM14 2v6h6',
+  folder: 'M4 20h16a2 2 0 0 0 2-2V8a2 2 0 0 0-2-2h-7.9a2 2 0 0 1-1.69-.9L9.6 3.9A2 2 0 0 0 7.93 3H4a2 2 0 0 0-2 2v13c0 1.1.9 2 2 2z',
+  list: 'M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01',
+  bulb: 'M9 18h6M10 22h4M12 2a7 7 0 0 0-4 12.7V17h8v-2.3A7 7 0 0 0 12 2z',
+  target: 'M12 22a10 10 0 1 0 0-20 10 10 0 0 0 0 20zM12 18a6 6 0 1 0 0-12 6 6 0 0 0 0 12zM12 14a2 2 0 1 0 0-4 2 2 0 0 0 0 4z',
+  check: 'M20 6L9 17l-5-5',
+  trash: 'M3 6h18M8 6V4h8v2M6 6l1 15h10l1-15',
+}
+const icon = (name, size) => h('svg', {
+  className: 'dsh-wb-svg',
+  width: size === undefined ? 16 : size,
+  height: size === undefined ? 16 : size,
+  viewBox: '0 0 24 24',
+  fill: 'none',
+  stroke: 'currentColor',
+  strokeWidth: 2,
+  strokeLinecap: 'round',
+  strokeLinejoin: 'round',
+  'aria-hidden': 'true',
+}, h('path', { d: ICONS[name] }))
+
+
 const CSS = [
   // ── 别名层 ──────────────────────────────────────────────────────────────
   // 只做一件事：把宿主的设计 token 映射成面板自用的短名。面板**不自己定义任何
@@ -43,7 +87,10 @@ const CSS = [
   // 替换的，写在 :root(html) 会按 html 的浅色算死，body 换成暗色也传不下来——
   // 那正是「换了主题面板不跟着变」的成因。落在自己的根上才随上下文一起翻转，
   // 顺带不污染全局命名空间。
-  '.dsh-wb-wrap{'
+  // 别名层同时声明在「面板根」和「浮球根」上：浮球虽然渲染在面板树里，但它是
+  // position:fixed 的独立根，自己带一份别名层最稳（与坑 #18 同源：var() 在声明它的
+  // 那个元素上就完成替换）。
+  '.dsh-wb-wrap,.dsh-wb-fab{'
   + '--wb-fg:var(--dsw-alias-label-primary);'
   + '--wb-fg-2:var(--dsw-alias-label-secondary);'
   // 只用两级文字。面板字号全在 11–13px，宿主更浅的两级灰（tertiary 3.7:1、
@@ -57,6 +104,9 @@ const CSS = [
   // 于是「蓝」在面板里恒等于「可交互 / 正在进行」，不再有第二、第三种含义。
   + '--wb-accent:var(--dsw-alias-link);'
   + '--wb-accent-soft:var(--dsw-alias-state-business-tertiary);'
+  // 浮层/浮球的底：宿主的「浮层与气泡」底。面板自身不用它（面板跟着宿主栏背景），
+  // 但悬浮在内容之上的东西必须自己有不透明的底，否则底下的字会透上来。
+  + '--wb-bg:var(--dsw-alias-bg-overlay);'
   // 语义色里只有 danger 在白底够 4.5:1，可以直接上文字；warn 只有 2.8:1、
   // success 只有 2.3:1，所以它俩只做软底，文字一律走中性。
   + '--wb-danger:var(--dsw-alias-state-error-primary);'
@@ -66,28 +116,59 @@ const CSS = [
   // 命名出来是为了让「不许写随手值」这条能被一眼检查。
   + '--wb-sp-1:2px;--wb-sp-2:4px;--wb-sp-3:6px;--wb-sp-4:8px;--wb-sp-5:12px;'
   + '--wb-r-1:4px;--wb-r-2:6px;--wb-r-3:8px;--wb-pill:999px;'
+  // 字号别名：面板只用到宿主的 11/12/13 三档，而宿主手机档的正文是 14/16——
+  // 于是面板在手机上恒定「小一号」（真机反馈：装了 zen 的手机适配插件后更明显，
+  // 因为 zen 只改宿主自己的类名，碰不到第三方插件的类）。抬一档放在别名层做，
+  // 值仍然全部取自宿主阶梯（不写自定 px）。
+  + '--wb-f1:var(--dsw-font-xs-13);--wb-f1s:var(--dsw-font-xs-strong-13);'
+  + '--wb-f2:var(--dsw-font-xxs-12);--wb-f2s:var(--dsw-font-xxs-strong-12);'
+  + '--wb-f3:var(--dsw-font-xxxs-11);--wb-f3s:var(--dsw-font-xxxs-strong-11);'
   + '--wb-dur:var(--ds-transition-duration);--wb-ease:var(--ds-ease-in-out);'
-  + 'display:flex;flex-direction:column;height:100%;min-height:0;'
-  + 'font:var(--dsw-font-xs-13);color:var(--wb-fg);}',
+  + 'font:var(--wb-f1);color:var(--wb-fg);}',
+  // 面板自身的布局单独一条。浮球不要这些：它是 fixed 定位的独立根，
+  // 套上 height:100% 会把整个浮层铺满，还会挡掉下面的点击。
+  '.dsh-wb-wrap{display:flex;flex-direction:column;height:100%;min-height:0;}',
+  // ── 浮球：AI 的唯一入口（面板树里的一部分，打开「工作计划」时才存在）──────
+  // 固定在底部居中并让出安全区。**所有设备都渲染**——它不再只是手机形态：
+  // 面板顶部那行 AI 输入已经撤掉，桌面端也靠它进。
+  // 抬到 24px 而不是 12px：真机反馈「位置要高一点」——原来那颗球紧贴屏底，
+  // 压住了面板自己的路径行、也贴着手机的返回手势条，手指够着不舒服。
+  // 浮层（.dsh-wb-fabsheet）的定位基准就是这个盒子，所以它跟着一起抬高。
+  '.dsh-wb-fab{position:fixed;left:50%;transform:translateX(-50%);bottom:calc(24px + env(safe-area-inset-bottom,0px));display:flex;flex-direction:column;align-items:center;gap:var(--wb-sp-2);pointer-events:auto;z-index:2147483000;}',
+  // 球里的图标必须**真的居中**：`.dsh-wb-svg` 是 display:block，而 button 默认只对
+  // 行内内容做 text-align 居中——块级子元素会贴着内容盒左边排。真机上量出来图标
+  // 比圆心偏左约 9px（上下也偏），就是这条来的。flex 两端居中最稳。
+  '.dsh-wb-fabball{width:48px;height:48px;display:flex;align-items:center;justify-content:center;border:1px solid var(--wb-line-2);background:var(--wb-bg);color:var(--wb-fg);border-radius:var(--wb-pill);corner-shape:round;cursor:pointer;font:var(--wb-f1s);}',
+  // 输入浮层：用 fixed 而不是跟着浮球走，方便按键盘高度整体上移（visualViewport）。
+  // 它现在装的是一整块 AI 内容（输入行 + 问答 + 草稿卡 + 清单卡），所以自己滚，
+  // 而不是把浮层撑出屏幕——手机上它已经占满整个视口宽度了（390px）。
+  '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));max-height:min(72vh,560px);overflow-y:auto;overscroll-behavior:contain;background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
+  '.dsh-wb-fabsheet .dsh-wb-fabrow{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  '.dsh-wb-fabhead{font:var(--wb-f2s);flex:1;min-width:0;}',
+  // AI 内容块搬进浮层后要交出「面板里那条横幅」的样式：上下留白与外框归浮层，
+  // 否则同一块内容会套上两层边框、两圈 padding。
+  '.dsh-wb-fabsheet .dsh-wb-aiwrap{padding:0;border-bottom:none;}',
   // 面板内统一按 border-box 算盒模型。缺了这条时，`width:100%` 且带 padding/border
   // 的输入框（.dsh-wb-inp / .dsh-wb-atextarea）会**实打实多出** 12px padding + 2px
   // 边框：详情页里每个字段都被撑出 14px，输入框还会越过面板右边界。宿主没有全局
   // reset（实测 body 的 box-sizing 就是 content-box），所以这一层必须自己声明。
-  '.dsh-wb-wrap,.dsh-wb-wrap *,.dsh-wb-wrap *::before,.dsh-wb-wrap *::after{box-sizing:border-box;}',
+  '.dsh-wb-wrap,.dsh-wb-wrap *,.dsh-wb-wrap *::before,.dsh-wb-wrap *::after,'
+  + '.dsh-wb-fab,.dsh-wb-fab *{box-sizing:border-box;}',
   // 焦点环。此前全表没有一条 :focus-visible，键盘用户完全看不出停在哪。
   // outline 不参与布局，所以出现时行不会跳。
   '.dsh-wb-wrap :focus-visible{outline:2px solid var(--wb-accent);outline-offset:1px;}',
   // 宿主对 * 施加了 corner-shape:superellipse(1.5)（方角更耐看），但把胶囊压得
   // 走形，所以整圆形状要按宿主约定显式配回 round。
-  '.dsh-wb-chip,.dsh-wb-pri,.dsh-wb-deleg,.dsh-wb-behind,.dsh-wb-rootdrop{corner-shape:round;}',
+  '.dsh-wb-chip,.dsh-wb-rootdrop{corner-shape:round;}',
   // ── 表头 ────────────────────────────────────────────────────────────────
   '.dsh-wb-header{display:flex;align-items:center;gap:var(--wb-sp-4);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
-  '.dsh-wb-title{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-title{font:var(--wb-f1s);}',
   '.dsh-wb-headright{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-1);}',
   // 总进度是最重要的一个数，所以给它最高层级（近黑 + 等宽数字）。以前是蓝色
   // 小字：既压不过标题，又在白底只有 4.2:1。把强调色让给「可交互」之后，
   // 数字回到中性反而更醒目。
-  '.dsh-wb-pct{font:var(--dsw-font-xs-strong-13);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
+  '.dsh-wb-pct{font:var(--wb-f1s);font-variant-numeric:tabular-nums;color:var(--wb-fg);}',
+  '.dsh-wb-svg{display:block;flex:none;}',
   '.dsh-wb-icon{border:1px solid transparent;background:transparent;border-radius:var(--wb-r-2);padding:var(--wb-sp-1) var(--wb-sp-3);font:inherit;color:var(--wb-fg-2);cursor:pointer;line-height:1.5;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-icon:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-icon:active{background:var(--wb-active);}',
@@ -100,7 +181,7 @@ const CSS = [
   // 加上 5 个 4px 间隙是 403px——筛选行可用宽只要低于这个数就会折成两行，而第二行
   // 只挂一个孤零零的芯片，整块高度还会从 37px 涨到 49px。用 sp-4(8px) 时 6 个芯片
   // 各宽 4px，实测就会折行。纵向补回 2px 是为了让 11px 的字有正常行高，不与折行冲突。
-  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--dsw-font-xxxs-11);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--wb-f3);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
   '.dsh-wb-chip.on{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);font-weight:600;}',
@@ -118,9 +199,9 @@ const CSS = [
   '.dsh-wb-col{flex:0 0 210px;min-width:210px;max-width:210px;display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
   // 列头用一条上边线把它和相邻列分开；收窄内边距，让一列里多塞下几张卡片。
   '.dsh-wb-colhead{display:flex;align-items:baseline;gap:var(--wb-sp-2);padding:var(--wb-sp-1) var(--wb-sp-2) var(--wb-sp-2);border-top:2px solid var(--wb-line);}',
-  '.dsh-wb-coltitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
-  '.dsh-wb-colpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-colcount{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-coltitle{flex:1;font:var(--wb-f1s);word-break:break-word;}',
+  '.dsh-wb-colpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-colcount{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-cards{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
   // 卡片：复用行密度思路——纵向内边距给很小，靠 hover 底色连成一片。
   '.dsh-wb-card{border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);transition:background var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
@@ -132,23 +213,33 @@ const CSS = [
   '.dsh-wb-cardtitle{flex:1;word-break:break-word;cursor:pointer;}',
   '.dsh-wb-cardtitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
   // 卡片上的上下文路径：说明这张卡属于哪个子计划（列只代表顶层计划）。
-  '.dsh-wb-cardpath{font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
+  '.dsh-wb-cardpath{font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
   '.dsh-wb-cardmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--wb-sp-2);}',
   // ── 视图切换（树 / 看板）───────────────────────────────────────────────
   // 段控：和筛选芯片同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
   '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
-  '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
+  '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
   '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-icon.on{background:var(--wb-accent-soft);color:var(--wb-fg);border-color:var(--wb-accent);}',
+  '.dsh-wb-shutdown{background:var(--wb-hover);border-radius:var(--wb-r-2);margin:var(--wb-sp-2) var(--wb-sp-2) 0;padding:var(--wb-sp-2) var(--wb-sp-3);}',
+  '.dsh-wb-shutdown-head{display:flex;align-items:center;justify-content:space-between;font:var(--wb-f3);font-weight:500;color:var(--wb-fg-2);margin-bottom:var(--wb-sp-1);}',
+  '.dsh-wb-shrow{display:flex;align-items:center;gap:var(--wb-sp-2);padding:var(--wb-sp-1) 0;border-top:1px solid var(--wb-border-tertiary);}',
+  '.dsh-wb-shrow .dsh-wb-tasktitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-shact{display:flex;gap:var(--wb-sp-1);flex:none;}',
+  '.dsh-wb-shact .dsh-wb-act{padding:2px var(--wb-sp-2);font:var(--wb-f3);border-radius:var(--wb-r-2);border:1px solid var(--wb-border-secondary);background:var(--wb-bg);color:var(--wb-fg-2);cursor:pointer;}',
+  '.dsh-wb-shact .dsh-wb-act.done{color:var(--wb-success);border-color:var(--wb-success);}',
   // ── 计划节点（递归，深度用 margin-left 表达）────────────────────────────
   '.dsh-wb-plan{margin-bottom:var(--wb-sp-2);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
   '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
-  '.dsh-wb-planid{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
-  '.dsh-wb-plantitle{flex:1;font:var(--dsw-font-xs-strong-13);word-break:break-word;}',
-  '.dsh-wb-planpct{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-planq{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
-  '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
+  // 标题 + 展开箭头一组。标题**不伸张**（flex:0 1 auto），于是箭头紧跟在最后一个字后面；
+  // 撑开行宽交给这层 wrap。
+  '.dsh-wb-planwrap{flex:1 1 auto;min-width:0;display:flex;align-items:baseline;gap:var(--wb-sp-2);}',
+  '.dsh-wb-plantitle{flex:0 1 auto;min-width:0;font:var(--wb-f1s);word-break:break-word;}',
+  '.dsh-wb-planpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-planq{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);}',
+  '.dsh-wb-planmeta{display:flex;gap:var(--wb-sp-3);flex-wrap:wrap;font:var(--wb-f3);color:var(--wb-fg-2);margin:0 0 var(--wb-sp-2);}',
   // 计划级进度条已删除（原先两条 .dsh-wb-planbar 规则在此）：它横在计划标题与
   // 子计划之间，读起来就是一条「下划线」，而完成度在标题行右侧的百分比里已经
   // 说清楚了。层级关系改由缩进表达。
@@ -160,16 +251,19 @@ const CSS = [
   // 待办行按「密」来配：这个面板住在底部工作台里，纵向空间是最稀缺的资源，
   // 一行省 3px、11 行就能多露出一条半任务。所以纵向内边距只给 2px、行间距给 0，
   // 行与行的分隔交给 hover 底色——顺带得到「整列连成一片」的列表观感。
-  // 行高不在这里写死，直接吃 .dsh-wb-wrap 的 var(--dsw-font-xs-13)（13px/20px），
+  // 行高不在这里写死，直接吃 .dsh-wb-wrap 的 var(--wb-f1)（13px/20px），
   // 与宿主自己的列表同一套行高标尺。
   '.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);margin:0;transition:background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-task:hover{background:var(--wb-hover);}',
   '.dsh-wb-task input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-tasktitle{flex:1;word-break:break-word;cursor:pointer;}',
+  // 标题之后的元信息 + 动作按钮。宽屏上它是一段不收缩的尾部（与以前一样），
+  // 窄屏上整体折成第二行（见下面的媒体查询）。
+  '.dsh-wb-taskmeta{display:flex;align-items:center;gap:var(--wb-sp-2);flex:none;min-width:0;}',
   // 完成态用「变灰」而不是 opacity：叠透明度会把对比度一起压下去。
   '.dsh-wb-tasktitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
   '.dsh-wb-tasktitle.dropped{text-decoration:line-through;color:var(--wb-fg-2);}',
-  '.dsh-wb-taskdue{flex:none;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);white-space:nowrap;}',
+  '.dsh-wb-taskdue{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);white-space:nowrap;}',
   // 逾期日期是全表唯一「红字」——有意保留，但要说清它的真实数字：宿主的 error
   // token 在浅色下是 #ec1313，对面板底色 4.49:1，严格按不四舍五入的算法差 0.01
   // 不到 AA 的 4.5:1（这里底色是纯底，没有软底再往下压，所以比胶囊那两处好）。
@@ -178,60 +272,55 @@ const CSS = [
   '.dsh-wb-taskdue.overdue{color:var(--wb-danger);font-weight:600;}',
   // 行内动作按钮：以前 opacity:0 只在 hover 现身，键盘与触屏完全够不到。
   // 现在键盘用 :focus-within 揭示，触屏用 @media (hover:none) 常驻。
-  '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act,.dsh-wb-card:hover .dsh-wb-act,.dsh-wb-card:focus-within .dsh-wb-act,.dsh-wb-focus:hover .dsh-wb-act,.dsh-wb-focus:focus-within .dsh-wb-act{opacity:1;}',
   '.dsh-wb-act:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── 重要程度徽章 ────────────────────────────────────────────────────────
-  '.dsh-wb-pri{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);cursor:pointer;border:1px solid transparent;user-select:none;}',
-  // 「中/低」都不换更浅的灰（那会掉到 AA 以下），改用描边与留白区分。
-  '.dsh-wb-pri.normal{color:var(--wb-fg-2);border-color:var(--wb-line-2);}',
+  // ── 重要程度徽章 ────────────────────────────────────────────────────────
+  // 留白纪律（Superlist / Google Tasks）：砍掉描边 / 软底 / 圆角，降级为纯文字。
+  // AA 对比度是硬约束——红 / 琥珀文字在浅色下都够不到 4.5:1，所以「高」不再靠红，
+  // 改靠字重；中 / 低走中性灰。盒子去掉后，强调只由字号、字重与间隔承担。
+  '.dsh-wb-pri{flex:none;font:var(--wb-f3s);user-select:none;color:var(--wb-fg-2);}',
+  '.dsh-wb-pri.normal{color:var(--wb-fg-2);}',
   '.dsh-wb-pri.low{color:var(--wb-fg-2);}',
-  // 「高」的红只走描边 + 软底，文字保持中性。两个方向都试算过、都不安全：
-  // 浅色下的红是 #ec1313，对纯白 4.49:1，再叠一层 5% 红软底就掉到 4.45:1
-  // （AA 要 4.5:1）；暗色下换成 #f25a5a，实心红配白字只有 3.29:1。
-  // 既然红两个方向都当不了安全的文字色，就让它只承担「形状 + 底色」的信息，
-  // 顺带把「三行红字」的噪声降成「三个红边小胶囊」。
-  '.dsh-wb-pri.high{color:var(--wb-fg);background:var(--wb-danger-soft);border-color:var(--wb-danger);font-weight:600;}',
-  '.dsh-wb-pri:hover{filter:brightness(.95);}',
+  '.dsh-wb-pri.medium{color:var(--wb-fg);}',
+  '.dsh-wb-pri.high{color:var(--wb-fg);font-weight:600;}',
+  // 徽章已不可点，故不再有 hover 态——「改重要程度」这件事全部回到详情页。
   // ── 委派标记 ────────────────────────────────────────────────────────────
-  // 以前用紫色（#8250df）——宿主的语义色里没有紫，所以它一眼就不像宿主的一部分。
-  // 委派是「进行中」，归到强调色的软底；逾期才转 danger。
-  '.dsh-wb-deleg{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid transparent;background:var(--wb-accent-soft);color:var(--wb-fg);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;}',
-  // 逾期仍然由红来表意，但同样只落在底色与描边上——理由同上面的「高」：
-  // 红字叠在红软底上是 4.45:1，达不到 4.5:1。基础态先声明透明描边是为了让这里
-  // 只改颜色、不改盒子尺寸，胶囊不会因逾期与否而变宽一像素。
-  '.dsh-wb-deleg.late{background:var(--wb-danger-soft);border-color:var(--wb-danger);color:var(--wb-fg);font-weight:600;}',
+  // 纯文字：正常态走强调色（链接语义，AA 安全）；逾期回执只靠字重 + tooltip，
+  // 不再用红软底做盒子。
+  '.dsh-wb-deleg{flex:none;font:var(--wb-f3);white-space:nowrap;max-width:11em;overflow:hidden;text-overflow:ellipsis;color:var(--wb-accent);cursor:help;}',
+  '.dsh-wb-deleg.late{color:var(--wb-fg);font-weight:600;}',
   // ── 管控缺口 ────────────────────────────────────────────────────────────
-  '.dsh-wb-warn{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
+  '.dsh-wb-warn{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);cursor:help;}',
   // ── 落后于周期 ──────────────────────────────────────────────────────────
-  // 琥珀在白底只有 2.8:1，所以颜色只上软底，文字走中性。
-  '.dsh-wb-behind{flex:none;font:var(--dsw-font-xxxs-strong-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);background:var(--wb-warn-soft);color:var(--wb-fg);cursor:help;white-space:nowrap;}',
-  // ── 完成证据：📎n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
-  // 两者都自带符号，颜色是冗余信息，所以文字统一走中性——顺带绕开
-  // 「绿 2.3:1 / 琥珀 2.8:1 在浅色下达不到 AA」这个坑。
-  '.dsh-wb-evid{flex:none;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);cursor:help;}',
-  '.dsh-wb-evid.bad{color:var(--wb-danger);font-weight:600;}',
-  '.dsh-wb-unverif{flex:none;font:var(--dsw-font-xxxs-strong-11);border-radius:var(--wb-r-1);padding:0 var(--wb-sp-1);background:var(--wb-warn-soft);color:var(--wb-fg);cursor:help;}',
+  // 琥珀软底已砍；落后靠字重 + 「落后 N%」文字本身表意，不靠颜色。
+  '.dsh-wb-behind{flex:none;font:var(--wb-f3s);white-space:nowrap;color:var(--wb-fg);font-weight:600;cursor:help;}',
+  // ── 完成证据：⎘n = 已附证据；⊘ = 已完成但无证据（待核验）──────────────
+  // 两者都自带符号，颜色冗余，统一中性；缺失证据靠字重强调。
+  '.dsh-wb-evid{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);cursor:help;}',
+  '.dsh-wb-evid.bad{color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-unverif{flex:none;font:var(--wb-f3s);color:var(--wb-fg-2);cursor:help;}',
   // ── 收件箱 ──────────────────────────────────────────────────────────────
   '.dsh-wb-inbox{margin-bottom:var(--wb-sp-5);padding-bottom:var(--wb-sp-4);border-bottom:1px dashed var(--wb-line-2);}',
   '.dsh-wb-inboxhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 var(--wb-sp-3);}',
-  '.dsh-wb-inboxtitle{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-inboxtitle{font:var(--wb-f1s);}',
   // 「工作计划」分栏标题。刻意**不要**收件箱那条虚线：虚线是「收件箱到此为止」的
   // 分隔，而工作计划是与它并列的另一栏，不是收件箱的延续。
   '.dsh-wb-secthead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);}',
-  '.dsh-wb-secttitle{font:var(--dsw-font-xs-strong-13);}',
+  '.dsh-wb-secttitle{font:var(--wb-f1s);}',
   // 收件箱行上的「纳入计划」。常显而非悬停才出——它的意义就是催人清空收件箱，
   // 藏起来等于没做（这也是本面板里唯一常显的行内按钮）。
   // 尺寸与同行徽章（.dsh-wb-pri 的 font/padding/border 三件套）严格一致，
   // 高度才会一样；先前写了 line-height:1.7，它是全行最高的一块，看着就不齐。
-  '.dsh-wb-adopt{flex:none;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);cursor:pointer;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-adopt{flex:none;font:var(--wb-f3);padding:0 var(--wb-sp-3);border-radius:var(--wb-r-3);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);cursor:pointer;white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-adopt:hover{background:var(--wb-hover);color:var(--wb-fg);border-color:var(--wb-line);}',
-  '.dsh-wb-count{font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-count{font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
   '.dsh-wb-add{display:flex;gap:var(--wb-sp-2);margin:0 0 var(--wb-sp-2);}',
   '.dsh-wb-add input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-add input::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-add input:focus{border-color:var(--wb-accent);}',
-  '.dsh-wb-add button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-add button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-add button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-add button:disabled{opacity:.4;cursor:default;}',
   // 语音按钮：外壳沿用提交按钮那一套，只是里面只放一个符号，所以横向收窄。
@@ -242,38 +331,42 @@ const CSS = [
   '.dsh-wb-add .dsh-wb-mic.on{border-color:var(--wb-accent);background:var(--wb-accent-soft);color:var(--wb-fg);}',
   // ── 归位选择器 ──（同样收进强调色，不再另开一个紫色）
   '.dsh-wb-movepick{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-1) 0 var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px dashed var(--wb-accent);}',
-  '.dsh-wb-movepicklabel{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-movepicklabel{font:var(--wb-f3);color:var(--wb-fg-2);}',
   // ── AI 入口 ─────────────────────────────────────────────────────────────
   // 整块用「强调色虚线框 + 软底」：这一区的内容**不是用户手打的**，是模型给的，
   // 一眼要能分辨。虚线也顺带说明「还没落定」——点过采纳才会真写进计划。
   '.dsh-wb-ai{margin:0 var(--wb-sp-5) var(--wb-sp-4);padding:var(--wb-sp-4);border:1px dashed var(--wb-accent);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);}',
-  '.dsh-wb-aihead{display:flex;align-items:center;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);font:var(--dsw-font-xxs-strong-12);}',
+  '.dsh-wb-aihead{display:flex;align-items:center;gap:var(--wb-sp-3);margin:0 0 var(--wb-sp-3);font:var(--wb-f2s);}',
   // 模型名摆在标题行右端：建议是谁给的、用的是哪个模型，不应该藏起来。
-  '.dsh-wb-aimodel{margin-left:auto;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-aimodel{margin-left:auto;font:var(--wb-f3);color:var(--wb-fg-2);max-width:16em;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-airow{display:flex;gap:var(--wb-sp-2);align-items:flex-start;}',
   // 多行文本域：口述转写往往是一整段，一行输入框装不下也不好改。
   '.dsh-wb-aitext{flex:1;min-width:0;font:inherit;color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);min-height:48px;resize:vertical;}',
   '.dsh-wb-aitext::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-aitext:focus{border-color:var(--wb-accent);}',
-  '.dsh-wb-aibtn{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-aibtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
-  '.dsh-wb-aibtn:disabled{opacity:.4;cursor:default;}',
+  // 无描边、软底：宿主 composer 里的图标按钮就是这个样子（真机反馈：一排描边方框很山寨）。
+  // dsh-wb-iconbtn 是**没有模型时**那颗「记入收件箱」的提交键——它跟发送键是同一个
+  // 位子上的同一件事，外观必须共用一套；单独写一份迟早会走形。
+  '.dsh-wb-aibtn,.dsh-wb-iconbtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-aibtn:hover:not(:disabled),.dsh-wb-iconbtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
+  '.dsh-wb-aibtn:disabled,.dsh-wb-iconbtn:disabled{opacity:.4;cursor:default;}',
   // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
-  '.dsh-wb-aibtn.primary{border-color:var(--wb-accent);background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
-  '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-aibtn.primary{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-aibtn.mic.on{background:var(--wb-accent-soft);color:var(--wb-fg);}',
+  '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
   '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
   '.dsh-wb-aitask{padding:var(--wb-sp-3) 0;border-top:1px dashed var(--wb-line-2);}',
   '.dsh-wb-aititle{display:flex;gap:var(--wb-sp-3);align-items:baseline;}',
   '.dsh-wb-aititle > span{flex:1;word-break:break-word;}',
-  '.dsh-wb-aimeta{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);white-space:nowrap;}',
+  '.dsh-wb-aimeta{font:var(--wb-f3);color:var(--wb-fg-2);white-space:nowrap;}',
   // 新建计划的输入框就放在候选行里：它是「候选之一」，不是另一块表单——
   // 用户的心智是「挑一个去处」，不是「先选模式再填表」。
-  '.dsh-wb-ainew{flex:none;width:9em;min-width:0;font:var(--dsw-font-xxxs-11);color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-1) var(--wb-sp-3);}',
+  '.dsh-wb-ainew{flex:none;width:9em;min-width:0;font:var(--wb-f3);color:var(--wb-fg);background:transparent;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-1) var(--wb-sp-3);}',
   '.dsh-wb-ainew::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-ainew:focus{border-color:var(--wb-accent);}',
   // ── 折叠控点（无子节点时占位不可点，让同层标题左边缘对齐）──────────────
-  '.dsh-wb-caret{flex:none;width:12px;text-align:center;cursor:pointer;color:var(--wb-fg-2);user-select:none;font:var(--dsw-font-xxxs-11);border-radius:var(--wb-r-1);}',
+  '.dsh-wb-caret{flex:none;width:12px;text-align:center;cursor:pointer;color:var(--wb-fg-2);user-select:none;font:var(--wb-f3);border-radius:var(--wb-r-1);}',
   '.dsh-wb-caret:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-caret.none{visibility:hidden;cursor:default;}',
   // ── 就地改名（输入框沿用标题的字号与字重，换进去时行高不跳）────────────
@@ -290,22 +383,52 @@ const CSS = [
   '.dsh-wb-focus:hover{background:var(--wb-hover);}',
   '.dsh-wb-focus input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
-  '.dsh-wb-path{flex:none;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
+  '.dsh-wb-path{flex:none;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
   '.dsh-wb-empty{padding:var(--wb-sp-5);text-align:center;color:var(--wb-fg-2);line-height:1.8;}',
+  // ── 未来日程（按天分组）────────────────────────────────────────────
+  // 日期标题比正文小一号、次级色：它是**分组标记**，不是内容；要一眼看得出
+  // 「这几条属于同一天」，又不能和待办标题抢注意力。
+  '.dsh-wb-daygroup{margin-top:var(--wb-sp-4);}',
+  '.dsh-wb-dayhead{font:var(--wb-f3);font-weight:500;color:var(--wb-fg-2);padding:var(--wb-sp-1) var(--wb-sp-2);letter-spacing:.02em;}',
+  '.dsh-wb-dayhead.today{color:var(--wb-accent);}',
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
-  '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);flex:none;}',
+  '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;}',
   // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
   // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
   '@media (hover:none){.dsh-wb-act{opacity:1;}.dsh-wb-task,.dsh-wb-focus{padding:var(--wb-sp-3) var(--wb-sp-2);}}',
+  // 窄屏（手机）：标题占住第一行，后面那串徽章与行内动作整体折到第二行。
+  // 不动 DOM 是因为病根就在 flex 本身——标题是 `flex:1`（basis 0，可被压到 0），
+  // 而它后面跟着最多 5 个徽章 + 截止日期 + 6 个 `flex:none` 的动作按钮：窄屏上
+  // 标题只剩一个字宽，中文又能任意断行，于是标题**竖着排下来**（手机上实测如此）。
+  // 给标题一个 60% 的 flex-basis 并允许换行，一行装不下的自然落到下一行。
+  // 窄屏（手机）：标题独占第一行，后面的徽章与动作整体折到第二行——**确定性**版式，
+  // 不再取决于标题多长。标题本身太长时自然折成两行，元信息仍在它下面。
+  // 手机档把字号整体抬一档：与宿主手机界面对齐（宿主手机正文是 s-14/base-16 那两档，
+  // 面板原来最高只到 xs-13，所以一直显得小一号）。
+  '@media (max-width:767px){.dsh-wb-wrap,.dsh-wb-fab{'
+  + '--wb-f1:var(--dsw-font-s-14);--wb-f1s:var(--dsw-font-s-strong-14);'
+  + '--wb-f2:var(--dsw-font-xs-13);--wb-f2s:var(--dsw-font-xs-strong-13);'
+  + '--wb-f3:var(--dsw-font-xxs-12);--wb-f3s:var(--dsw-font-xxs-strong-12);}}',
+  // 窄屏：行内折行。**只对待办行强制折**（`.dsh-wb-task`）——待办行里徽章与动作
+  // 多，标题长短又不一，不强制的话版式会随标题长度飘。
+  // 计划行（`.dsh-wb-planhead`）不强制：它的元信息就三样（重要程度 / 进度 / ＋），
+  // 短标题（「计划一」）完全放得下一行，硬折成两行反而难看。放不下时
+  // head 上的 flex-wrap 会自然把它推到第二行，且第二行从最左边开始——
+  // 与标题对齐（这正是把展开箭头挪到标题后面换来的）。
+  '@media (max-width:640px){'
+  + '.dsh-wb-task,.dsh-wb-planhead{flex-wrap:wrap;row-gap:var(--wb-sp-1);}'
+  + '.dsh-wb-tasktitle{flex:1 1 auto;min-width:0;}'
+  + '.dsh-wb-task .dsh-wb-taskmeta{flex:1 1 100%;flex-wrap:wrap;row-gap:var(--wb-sp-1);}'
+  + '}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
-  // 节点上的「做这件事要看的资料」。与证据（📎）刻意区分：资料是文件夹也能挂的
+  // 节点上的「做这件事要看的资料」。与证据（⎘）刻意区分：资料是文件夹也能挂的
   // 开放式清单，不进「无证据完成项」那条审查线。
   '.dsh-wb-files{display:flex;flex-direction:column;gap:var(--wb-sp-2);margin:var(--wb-sp-2) 0 0;padding-left:var(--wb-sp-3);}',
-  '.dsh-wb-file{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-file{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-file a{color:var(--wb-accent);text-decoration:none;word-break:break-word;}',
   '.dsh-wb-file a:hover{text-decoration:underline;}',
   '.dsh-wb-file .dsh-wb-fkind{flex:none;color:var(--wb-fg-2);}',
@@ -320,47 +443,59 @@ const CSS = [
   '.dsh-wb-fadd input{flex:1;min-width:0;font:inherit;padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);}',
   '.dsh-wb-fadd input:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-fadd select{flex:none;font:inherit;padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);}',
-  '.dsh-wb-fadd button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-3);white-space:nowrap;}',
+  '.dsh-wb-fadd button{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-r-2);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-1) var(--wb-sp-3);white-space:nowrap;}',
   '.dsh-wb-fadd button:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-fadd button:disabled{opacity:.4;cursor:default;}',
   // 「关联」按钮：平时藏起来，hover 整行时才出现，和行内动作（↳ × 等）一致。
-  '.dsh-wb-fbtn{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--dsw-font-xxxs-11);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;}',
+  '.dsh-wb-fbtn{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;}',
   '.dsh-wb-task:hover .dsh-wb-fbtn,.dsh-wb-planhead:hover .dsh-wb-fbtn,.dsh-wb-task:focus-within .dsh-wb-fbtn,.dsh-wb-planhead:focus-within .dsh-wb-fbtn{opacity:1;}',
   '.dsh-wb-fbtn:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── vault 配置块 ──────────────────────────────────────────────────────
   '.dsh-wb-vault{display:flex;flex-direction:column;gap:var(--wb-sp-2);padding:var(--wb-sp-4) var(--wb-sp-5);border-top:1px dashed var(--wb-line-2);flex:none;}',
-  '.dsh-wb-vaulthead{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-strong-12);}',
-  '.dsh-wb-vaulthead .dsh-wb-vpath{flex:1;font:var(--dsw-font-xxxs-11);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;}',
+  '.dsh-wb-vaulthead{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--wb-f2s);}',
+  '.dsh-wb-vaulthead .dsh-wb-vpath{flex:1;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;}',
   '.dsh-wb-vault .dsh-wb-add{margin:0;}',
-  '.dsh-wb-vaultempty{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
+  '.dsh-wb-vaultempty{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;}',
   // ── 详情编辑页 ────────────────────────────────────────────────────────
   // 面板整体换成一张表单：节点字段有十几个，塞进抽屉或行内都放不下，
   // 而「所有信息都能改」这件事一旦要靠滚动+折叠去找，就等于没做。
   '.dsh-wb-formhead{display:flex;align-items:center;gap:var(--wb-sp-3);padding:var(--wb-sp-4) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
-  '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--dsw-font-xs-strong-13);}',
-  '.dsh-wb-formhead .dsh-wb-formsub{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-formhead .dsh-wb-formtitle{font:var(--wb-f1s);}',
+  '.dsh-wb-formhead .dsh-wb-formsub{flex:0 1 auto;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-form{flex:1;min-height:0;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);display:flex;flex-direction:column;}',
+  // 详情页内容给一个合理的阅读宽度：桌面上面板约 1000px 宽，而「标题」「负责人」
+  // 这类标量输入拉满整屏既难读也显得散。手机是 390px，这条对手机是空操作。
+  '.dsh-wb-form > *{max-width:680px;}',
   '.dsh-wb-field{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-bottom:var(--wb-sp-4);}',
-  '.dsh-wb-label{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);}',
+  '.dsh-wb-label{font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-inp{width:100%;font:inherit;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);transition:border-color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-inp:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-inp::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-inp[type=date]{width:auto;}',
-  '.dsh-wb-seg{display:inline-flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);overflow:hidden;align-self:flex-start;}',
-  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-2) var(--wb-sp-4);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-seg button.on{background:var(--wb-active);color:var(--wb-fg);font-weight:600;}',
+  // 拆掉外框：一个套着边框的「格子控件」在手机上一眼看就是网页表单，不像宿主的东西。
+  // 改成无框 + 选中项软底胶囊。
+  '.dsh-wb-seg{display:inline-flex;gap:var(--wb-sp-1);border:0;border-radius:0;overflow:visible;align-self:flex-start;flex-wrap:wrap;}',
+  '.dsh-wb-seg button{border:0;background:transparent;color:var(--wb-fg-2);font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-pill);cursor:pointer;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-seg button.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-seg button:disabled{opacity:.4;cursor:default;}',
-  '.dsh-wb-grid2{display:grid;grid-template-columns:1fr 1fr;gap:var(--wb-sp-4);}',
-  '.dsh-wb-grid3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:var(--wb-sp-4);}',
-  '.dsh-wb-formnote{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;}',
-  '.dsh-wb-formerr{font:var(--dsw-font-xxxs-11);color:var(--wb-danger);line-height:1.6;}',
-  '.dsh-wb-formactions{display:flex;align-items:center;gap:var(--wb-sp-2);margin-top:var(--wb-sp-2);padding-bottom:var(--wb-sp-4);}',
-  '.dsh-wb-formactions .spacer{margin-left:auto;}',
+  // 固定 1fr 1fr / 1fr 1fr 1fr 在窄屏上会把每格压到 120px 上下（日期框放不下），
+  // 改成按可用宽度自动折行：宽屏仍是多列，手机自动落到一两列。
+  '.dsh-wb-grid2{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:var(--wb-sp-4);}',
+  '.dsh-wb-grid3{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:var(--wb-sp-4);}',
+  '.dsh-wb-formnote{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;}',
+  '.dsh-wb-formerr{font:var(--wb-f3);color:var(--wb-danger);line-height:1.6;}',
+  // 保存放在**头栏**里：头栏是 flex:none、不参与滚动，表单区才是会滚的那块。
+  // 手机上输入法弹出时盖住的正是滚动区底部——保存留在最底下，等于要求人先把
+  // 键盘收起来才能点它（真机反馈）。
+  '.dsh-wb-formacts{margin-left:auto;display:flex;align-items:center;gap:var(--wb-sp-2);flex:none;}',
+  // 「更多」折叠条：文左对齐、无框，靠 hover 下划线提示可点——窄面板里不再多一个胶囊。
+  '.dsh-wb-morebtn{align-self:flex-start;margin-top:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);font:var(--wb-f3);padding:var(--wb-sp-1) 0;cursor:pointer;}',
+  '.dsh-wb-morebtn:hover{color:var(--wb-fg);text-decoration:underline;}',
   '.dsh-wb-formlist{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin-top:var(--wb-sp-2);}',
-  '.dsh-wb-formrow{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--dsw-font-xxs-12);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);}',
+  '.dsh-wb-formrow{display:flex;align-items:center;gap:var(--wb-sp-2);font:var(--wb-f2);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);}',
   '.dsh-wb-formrow:hover{background:var(--wb-hover);}',
   '.dsh-wb-formrow .dsh-wb-fref{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
-  '.dsh-wb-formrow .dsh-wb-fmeta{flex:none;color:var(--wb-fg-2);font:var(--dsw-font-xxxs-11);}',
+  '.dsh-wb-formrow .dsh-wb-fmeta{flex:none;color:var(--wb-fg-2);font:var(--wb-f3);}',
   // ── AI 助手（第一入口） ──────────────────────────────────────────────
   // 常驻一行：它是「记」与「问」的共同入口，不该藏在按钮后面。
   '.dsh-wb-aiwrap{display:flex;flex-direction:column;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);border-bottom:1px solid var(--wb-line);flex:none;}',
@@ -371,16 +506,16 @@ const CSS = [
   '.dsh-wb-quick{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
   // 对话：自己的话靠右、助手的靠左，靠**位置**而不是颜色区分（颜色要留给语义色）。
   '.dsh-wb-chat{display:flex;flex-direction:column;gap:var(--wb-sp-2);max-height:180px;overflow-y:auto;}',
-  '.dsh-wb-msg{font:var(--dsw-font-xxs-12);line-height:1.6;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-3);max-width:88%;white-space:pre-wrap;}',
+  '.dsh-wb-msg{font:var(--wb-f2);line-height:1.6;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-3);max-width:88%;white-space:pre-wrap;}',
   '.dsh-wb-msg.me{align-self:flex-end;background:var(--wb-accent-soft);}',
   '.dsh-wb-msg.ai{align-self:flex-start;border:1px solid var(--wb-line);}',
-  '.dsh-wb-advice{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
-  '.dsh-wb-aihist{font:var(--dsw-font-xxxs-11);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
+  '.dsh-wb-advice{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
+  '.dsh-wb-aihist{font:var(--wb-f3);color:var(--wb-fg-2);line-height:1.6;margin-top:var(--wb-sp-1);}',
   '.dsh-wb-persona{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
-  '.dsh-wb-atextarea{width:100%;font:var(--dsw-font-xxxs-11);line-height:1.7;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);resize:vertical;}',
+  '.dsh-wb-atextarea{width:100%;font:var(--wb-f3);line-height:1.7;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-2);border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg);resize:vertical;}',
   '.dsh-wb-atextarea:focus{border-color:var(--wb-accent);}',
   // ── 执行清单（MLO 的 TODO 视图） ─────────────────────────────────────
-  '.dsh-wb-todoseq{flex:none;min-width:18px;font:var(--dsw-font-xxxs-11);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);text-align:right;}',
+  '.dsh-wb-todoseq{flex:none;min-width:18px;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);text-align:right;}',
   '.dsh-wb-act.star{color:var(--wb-fg-2);}',
   '.dsh-wb-act.star.on{color:var(--wb-accent);font-weight:700;}',
   '.dsh-wb-task.starred{background:var(--wb-accent-soft);}',
@@ -505,12 +640,15 @@ function apply(ctx) {
     const state = useSnapshot()
     const sessionId = props.sessionId
     // 输入框用组件本地状态：不放进 store，否则每敲一个字都要重渲整棵计划树。
-    // 一个常驻（收件箱）+ 一个按需（节点下加子项），一次只会有后者一个。
-    const [draft, setDraft] = React.useState('')
+    // 现在只剩「按需」那一个（在某条计划下加子项），一次只会有它一个——
+    // 收件箱那个常驻输入框已经删掉，录入只有浮球那一个入口（见 fab()）。
     const [nodeDraft, setNodeDraft] = React.useState('')
     // 就地编辑的三份状态也放本地，理由同上：拖拽时鼠标每动一下都要更新落点，
     // 放进全局 store 会让 tab 角标跟着重算（它订阅 store.get），白烧一遍整棵树。
     const [collapsed, setCollapsed] = React.useState(() => loadCollapsed())
+    // 宿主没有模型服务时，浮层里的输入行退化成**纯输入框**（直接 /node-add 进收件箱）。
+    // 没有它，删掉收件箱常驻输入框之后，那种机器上的面板会「只能看、不能记」。
+    const [plainDraft, setPlainDraft] = React.useState('')
     // 视图切换（树 / 看板）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
     const [view, setView] = React.useState(() => loadView())
     const setViewPersist = (v) => { setView(v); saveView(v) }
@@ -518,6 +656,7 @@ function apply(ctx) {
     const [editDraft, setEditDraft] = React.useState('')
     const [dragId, setDragId] = React.useState(null)
     const [hint, setHint] = React.useState(null)         // { id, place } | null（id=null 表示落在空白处）
+    const [shutdownOpen, setShutdownOpen] = React.useState(false)   // 收尾复盘面板开关
     // 文件库关联的内联表单：正在关联哪个节点、填了一半的路径与类型。放进本地
     // 状态——每次敲字都重渲整棵计划树太浪费，且输入框会丢焦点。
     const [linking, setLinking] = React.useState(null)   // 正在加关联的节点 id | null
@@ -541,6 +680,9 @@ function apply(ctx) {
     const [formParent, setFormParent] = React.useState('')
     // 依赖添加行的选中值（同上：绑定详情页，不与树上的 moving/adding 混用）。
     const [formDepPick, setFormDepPick] = React.useState('')
+    // 详情页「更多」：低频 / 复杂项默认收起。新建时反向（要一次填完，默认展开），
+    // 由 openEdit / openDraft 各自设定。
+    const [moreOpen, setMoreOpen] = React.useState(false)
     // AI 草稿队列：「全部采纳」时不直接落库，而是逐条填进表单让人过一遍。
     const [aiQueue, setAiQueue] = React.useState([])
     // 单击「切换完成」与双击「改名」抢的是同一个元素，单击因此必须延后执行。
@@ -622,23 +764,44 @@ function apply(ctx) {
       if (SR === null) return null
       return h('button', {
         key,
-        className: 'dsh-wb-mic' + (listening ? ' on' : ''),
+        // 同时挂 dsh-wb-aibtn：麦克风与旁边那颗「＋」「↑」是同一排控件，
+        // 必须共用同一套外观。只写 dsh-wb-mic 的话，它那份样式只定义在
+        // .dsh-wb-add 之下——在顶部这行里它会退回浏览器默认按钮（灰底+描边，
+        // 真机反馈：「话筒不该有个框，应该跟旁边的加号一样」）。
+        className: 'dsh-wb-aibtn dsh-wb-mic' + (listening ? ' on' : ''),
         title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
-      }, listening ? '■' : '🎙')
+      }, listening ? icon('stop') : icon('mic'))
     }
 
     // ============================================================== AI 助手
     //
-    // 它是**第一入口**：面板最上面那一行，既能问（「哪些逾期了」「这个计划有哪些资料」），
-    // 也能记（说一件事 → 拆成草稿 → 人确认才落库）。问答与录入是同一次调用的
-    // 两种产出，模型回 `{ reply, tasks }`，面板两种都渲染。
+    // 它是**第一入口**，而入口只有一个：底部那颗浮球。点开是一块输入浮层，
+    // 既能问（「哪些逾期了」「这个计划有哪些资料」），也能记（说一件事 →
+    // 拆成草稿 → 人确认才落库）。问答与录入是同一次调用的两种产出，
+    // 模型回 `{ reply, tasks }`，浮层两种都渲染。
+    //
+    // 「面板顶部原来那行常驻输入」已经撤掉：同一件事有两个入口，人就得先想
+    // 「我该用哪个」，而那个问题的答案对用户毫无价值。
     //
     // 三件不改的事：
     //   ① **解析不写入**——中途改主意没有任何副作用，也就不需要「撤销 AI 导入」；
     //   ② **草稿先进表单**——AI 给的是草稿不是决定；
     //   ③ **对话只活在这次会话**——它是「接着聊」用的，不是档案（不进 plan.json）。
-    const [aiOpen, setAiOpen] = React.useState(false)
+    const [fabOpen, setFabOpen] = React.useState(false)
+    const [fabGap, setFabGap] = React.useState(0)     // 键盘占掉的高度
+    // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
+    // 放在面板自己身上（而不是浮球子组件）：面板本来就常驻，多一个 effect
+    // 比多一个只为拿键盘高度而存在的子组件便宜。
+    React.useEffect(() => {
+      const vv = typeof window === 'undefined' ? undefined : window.visualViewport
+      if (vv === undefined || vv === null) return undefined
+      const onShift = () => setFabGap(Math.max(0, window.innerHeight - vv.height - vv.offsetTop))
+      vv.addEventListener('resize', onShift)
+      vv.addEventListener('scroll', onShift)
+      onShift()
+      return () => { vv.removeEventListener('resize', onShift); vv.removeEventListener('scroll', onShift) }
+    }, [fabOpen])
     const [aiText, setAiText] = React.useState('')
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
@@ -782,7 +945,6 @@ function apply(ctx) {
       api('persona-set', { sessionId, text: aiPersonaDraft })
         .then((r) => {
           setAiPersona(typeof r.text === 'string' ? r.text : '')
-          setAiPersonaOpen(false)
           flash('人设已保存，下次提问就生效')
         })
         .catch((e) => store.set({ error: e instanceof Error ? e.message : String(e) }))
@@ -839,7 +1001,7 @@ function apply(ctx) {
         queue.push(aiDraftOf(task, parent))
       }
       setAiTasks([])
-      setAiOpen(false)
+      setFabOpen(false)
       if (queue.length === 0) return
       setAiQueue(queue.slice(1))
       openDraft(queue[0])
@@ -854,10 +1016,11 @@ function apply(ctx) {
     /** 「＋」上传文件。三个入口共用同一份上限与提示逻辑。 */
     const picButton = (key) => h('label', {
       key,
-      className: 'dsh-wb-aibtn',
+      // dsh-wb-pic 是稳定钩子（同 dsh-wb-send）：图标换成 SVG 后按钮里没有文字了。
+      className: 'dsh-wb-aibtn dsh-wb-pic',
       title: '上传文件：图片识别内容，文本直接随问题带上',
     },
-      '+',
+      icon('plus'),
       h('input', {
         type: 'file',
         multiple: true,
@@ -870,18 +1033,41 @@ function apply(ctx) {
       }))
 
     /**
-     * AI 助手：**第一入口**。
+     * AI 助手的**内容块**——渲染在浮球浮层里，不再占面板的一行。
      *
-     * 形态：面板最上面常驻一行输入（问一句 / 说件事 / 贴一张图都能进），
-     * 有内容时展开成这次会话的问答与草稿。宿主没有模型服务时**整块不渲染**——
-     * 给一个点不亮的输入框，不如不给。
+     * 形态：一行输入（问一句 / 说件事 / 贴一张图都能进），下面接着这次会话的
+     * 问答、草稿卡与清单卡。宿主没有模型服务时退化成**纯输入框**而不是消失：
+     * 「零摩擦把事收进来」是这个插件的立身之本，不能依赖模型在不在。
      */
     const aiBlock = () => {
       const ai = state.ai === null || state.ai === undefined ? { available: false } : state.ai
-      if (ai.available !== true) return null
+      // 没有模型服务：不整块消失，退化成「记一条待办」的纯输入框。
+      // 记仍然要走得通——「零摩擦把事收进来」是这个插件的立身之本，不能依赖模型。
+      if (ai.available !== true) {
+        const submitPlain = () => {
+          const title = plainDraft.trim()
+          if (title === '') return
+          addNode({ title }, () => { setPlainDraft(''); flash('已记入收件箱') })
+        }
+        return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' },
+          h('div', { className: 'dsh-wb-aibar' },
+            h('input', {
+              className: 'dsh-wb-aiinput',
+              placeholder: '记一条待办，回车入收件箱…',
+              value: plainDraft,
+              onChange: (e) => setPlainDraft(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitPlain() } },
+            }),
+            micButton(setPlainDraft, 'mic'),
+            h('button', {
+              className: 'dsh-wb-iconbtn',
+              title: '记入收件箱',
+              disabled: plainDraft.trim() === '',
+              onClick: submitPlain,
+            }, icon('plus')),
+          ))
+      }
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
-      const hasChat = aiTurns.length > 0 || aiTasks.length > 0
-      const open = aiOpen === true || hasChat
 
       const rows = []
       rows.push(h('div', { className: 'dsh-wb-aibar', key: 'bar' },
@@ -889,21 +1075,21 @@ function apply(ctx) {
           className: 'dsh-wb-aiinput',
           placeholder: '问一句（「哪些逾期了」），或直接说要做什么…',
           value: aiText,
-          onFocus: () => { setAiOpen(true); if (aiPersona === '') loadPersona() },
+          onFocus: () => { if (aiPersona === '') loadPersona() },
           onChange: (e) => setAiText(e.target.value),
           onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runAi() } },
         }),
         micButton(setAiText, 'mic'),
         picButton('pic'),
         h('button', {
-          className: 'dsh-wb-aibtn primary',
+          // dsh-wb-send 是给测试用的稳定钩子：图标换成 SVG 之后按钮里没有文字了，
+          // 靠字形找它的断言会全军覆没。
+          className: 'dsh-wb-aibtn dsh-wb-send primary',
           title: '发送（回车同样有效）',
           disabled: aiBusy === true,
           onClick: () => runAi(),
-        }, aiBusy === true ? '…' : '↑'),
+        }, aiBusy === true ? '…' : icon('send')),
       ))
-
-      if (open !== true) return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
 
       // 快捷问法：把「助手能干什么」直接摆在眼前。它同时是最短的那条学习路径。
       rows.push(h('div', { className: 'dsh-wb-quick', key: 'quick' },
@@ -912,7 +1098,7 @@ function apply(ctx) {
           className: 'dsh-wb-chip',
           title: '问一句：' + q,
           disabled: aiBusy === true,
-          onClick: () => { setAiOpen(true); runAi(q) },
+          onClick: () => runAi(q),
         }, q)),
         h('span', { className: 'dsh-wb-aimodel', key: 'm' }, model),
         h('button', {
@@ -924,7 +1110,8 @@ function apply(ctx) {
         h('button', {
           key: 'fold',
           className: 'dsh-wb-aibtn',
-          onClick: () => { setAiOpen(false); setAiPersonaOpen(false) },
+          title: '收起浮层（会话不会丢，再点浮球还在）',
+          onClick: () => setFabOpen(false),
         }, '收起'),
       ))
 
@@ -943,11 +1130,11 @@ function apply(ctx) {
       if (aiPics.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aipics', key: 'pics' },
           aiPics.map((p, i) => h('span', { className: 'dsh-wb-aipic', key: 'p' + i },
-            '🖼 ' + p.name,
+            '▢ ' + p.name,
             h('button', {
               title: '去掉这张',
               onClick: () => setAiPics(aiPics.filter((_, j) => j !== i)),
-            }, '×'),
+            }, icon('close')),
           ))))
       }
 
@@ -969,7 +1156,7 @@ function apply(ctx) {
                 h('span', { className: 'dsh-wb-fmeta' }, String(i + 1)),
                 h('span', { className: 'dsh-wb-fref' }, String(it.title) + (it.ok === true ? '' : '（没对上任务）')),
                 n !== null
-                  ? h('button', { className: 'dsh-wb-fbtn', title: '打开这条任务', onClick: () => openEdit(n) }, '✎')
+                  ? h('button', { className: 'dsh-wb-fbtn', title: '打开这条任务', onClick: () => openEdit(n) }, icon('edit'))
                   : null,
               )
             })),
@@ -986,6 +1173,36 @@ function apply(ctx) {
       }
 
       return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
+    }
+
+    /**
+     * 浮球：AI 的**唯一入口**。
+     *
+     * 收起时是一颗球，点开是一块输入浮层。选这个形态而不是面板里的一行，是因为
+     * 面板住在一个又宽又矮的地方——常驻一行输入等于每屏少一条任务，而「问一句」
+     * 是个低频动作，它不配占这种地方。手机与桌面同一个入口，不必各记一套。
+     */
+    const fab = () => {
+      if (fabOpen !== true) {
+        return h('div', { className: 'dsh-wb-fab', key: 'fab' },
+          h('button', {
+            className: 'dsh-wb-fabball',
+            title: '说一句或问一句——点一下打开输入框，里面也有语音',
+            onClick: () => setFabOpen(true),
+          }, icon('mic', 20)))
+      }
+      return h('div', { className: 'dsh-wb-fab', key: 'fab' },
+        h('div', {
+          className: 'dsh-wb-fabsheet',
+          // 键盘弹起来时整块上移（visualViewport 差值），否则输入框被输入法盖住。
+          style: { bottom: 'calc(' + (12 + fabGap) + 'px + env(safe-area-inset-bottom,0px))' },
+        },
+        h('div', { className: 'dsh-wb-fabrow' },
+          h('span', { className: 'dsh-wb-fabhead' }, 'AI 助手'),
+          h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: () => setFabOpen(false) }, icon('close')),
+        ),
+        aiBlock(),
+      ))
     }
 
     /**
@@ -1007,10 +1224,10 @@ function apply(ctx) {
           className: 'dsh-wb-aibtn',
           title: '丢弃这条',
           onClick: () => setAiTasks((prev) => prev.filter((t) => t.key !== task.key)),
-        }, '×'),
+        }, icon('close')),
       ),
       typeof task.advice === 'string' && task.advice !== ''
-        ? h('div', { className: 'dsh-wb-advice', key: 'adv' }, '💡 ' + task.advice) : null,
+        ? h('div', { className: 'dsh-wb-advice', key: 'adv' }, '※ ' + task.advice) : null,
       Array.isArray(task.history) && task.history.length > 0
         ? h('div', { className: 'dsh-wb-aihist', key: 'hist' },
           task.history.map((x, i) => h('div', { key: 'h' + i },
@@ -1105,7 +1322,8 @@ function apply(ctx) {
     }, [sessionId])
 
     const setTodo = React.useCallback((id, status) => write('todo-set', { todo: id, status }), [write])
-    const setPriority = React.useCallback((id, priority) => write('node-set', { node: id, priority }), [write])
+    // 行内「点徽章换重要程度」已去掉（理由见 priBadge）——换档统一走详情页，
+    // 所以不再需要 setPriority 这条通路。
     // 换型：待办 ↔ 计划。原地换型而不是「新建一个再搬」——用户想说的是
     // 「这就是同一件事，只是现在要往下拆」，换个容器会多出一层没有意义的嵌套。
     const setNodeKind = React.useCallback((id, type) => write(
@@ -1195,6 +1413,7 @@ function apply(ctx) {
       setFormFileRef('')
       setFormDepPick('')
       setFormParent('')
+      setMoreOpen(false)               // 编辑：只给简单信息，低频项收在「更多」里
       setForm({ mode: 'edit', id: node.id, draft: formDraftOf(node) })
     }
     /** 关掉表单。顺手清掉 AI 队列——否则取消之后它会在下一次保存时突然冒出来。 */
@@ -1204,6 +1423,7 @@ function apply(ctx) {
       setFormEvRef('')
       setFormFileRef('')
       setFormParent(draft.parent === undefined ? '' : draft.parent)
+      setMoreOpen(true)                // 新建：要一次填完，默认全展开
       setForm({ mode: 'new', id: null, draft })
     }
     /**
@@ -1295,6 +1515,10 @@ function apply(ctx) {
       () => flash(on === true ? '已纳入工作计划' : '已退回收件箱'),
     )
     const setRecurOn = (node, kind) => write('node-set', { node: node.id, recur: kind })
+    // 收尾复盘：把没做完的顺延到明天 / 下周（写 due），或清掉 due 退回收件箱。
+    // 复用 /node-set，不加工具不加路由。清空走 `clear: ['due']`（空串在 applyFields 里等同不动）。
+    const setDueOn = (node, due) => write('node-set', { node: node.id, due })
+    const clearDueOn = (node) => write('node-set', { node: node.id, clear: ['due'] }, () => flash('已退回收件箱'))
     const addDepOn = (node, otherId) => write('node-set', { node: node.id, blockedAdd: otherId }, () => flash('已加依赖'))
     const removeDepOn = (node, otherId) => write('node-set', { node: node.id, blockedRemove: otherId }, () => flash('已移除依赖'))
     /**
@@ -1466,12 +1690,15 @@ function apply(ctx) {
     }
 
     /**
-     * 标题上的三种手势：单击切换完成、双击就地改名、按住拖动排序。
+     * 标题上的三种手势：**单击打开详情**、双击就地改名、按住拖动排序。
      *
-     * 单击必须**延后执行**：双击会先触发两次 click，立刻切换的话，一次改名
-     * 会顺带把事办了（还留下两个版本快照）。延迟只加在这条便利路径上，
-     * 复选框依旧是即时的——想快就点框。
-     * 计划标题不参与切换（它没有「完成」这个单击语义），所以只延后待办。
+     * 单击**曾经**是「切换完成」——那是把高频低风险的「查看」让位给了低频高
+     * 风险的「改状态」：误触的代价是改状态 + 写盘 + 多留一个版本快照，而「完成」
+     * 本来就有明确的控件（复选框）。任务首先是**信息载体**，点它应当是查看 / 编辑。
+     * 所以单击改为打开详情，完成只走复选框（想快就点框）。
+     *
+     * 单击同样延后 200ms：双击会先触发两次 click，立刻打开详情的话，一次改名
+     * 会被详情盖住。双击时清掉定时器（见下），所以改名不会被盖。
      */
     const titleProps = (node, base, opts) => {
       const canToggle = opts.canToggle === true
@@ -1483,15 +1710,20 @@ function apply(ctx) {
         if (clickTimer.current !== null) { clearTimeout(clickTimer.current); clickTimer.current = null }
         startRename(node)
       }
-      if (!canToggle) return props
-      if (node.status === 'done') props.className += ' done'
-      else if (node.status === 'dropped') props.className += ' dropped'
-      props.onClick = () => {
-        if (clickTimer.current !== null) return
-        clickTimer.current = setTimeout(() => {
-          clickTimer.current = null
-          setTodo(node.id, toggleStatus(node.status))
-        }, 200)
+      // 完成态的视觉（删线 / 灰字）只跟状态走，与「能不能点开」无关——
+      // 所以这一段不再兼作「能不能点」的开关。
+      if (canToggle) {
+        if (node.status === 'done') props.className += ' done'
+        else if (node.status === 'dropped') props.className += ' dropped'
+      }
+      if (opts.noOpen !== true) {
+        props.onClick = () => {
+          if (clickTimer.current !== null) return
+          clickTimer.current = setTimeout(() => {
+            clickTimer.current = null
+            openEdit(node)
+          }, 200)
+        }
       }
       return props
     }
@@ -1502,13 +1734,19 @@ function apply(ctx) {
       return h('span', titleProps(node, base, opts || {}), node.title)
     }
 
-    /** 重要程度徽章：点击在高 → 中 → 低之间循环。 */
+    /**
+     * 重要程度徽章：**纯展示**。
+     *
+     * 以前点一下就在高 / 中 / 低之间循环——但 `priority` 在本项目是**管控强度**
+     * （决定这个节点要走多少流程），不是「重要程度」标签。把它做成行内一点就换挡，
+     * 等于把一个会改变流程要求的决定，藏在一个没有确认、也不在详情页里的角落，
+     * 代价与它的低调外表完全不成比例。换档统一回详情页。
+     */
     const priBadge = (node) => {
       const p = node.priority === 'high' || node.priority === 'low' ? node.priority : 'normal'
       return h('span', {
         className: 'dsh-wb-pri ' + p,
-        title: '重要程度：' + priorityLabel(p) + '（点击切换）',
-        onClick: (e) => { e.preventDefault(); e.stopPropagation(); setPriority(node.id, nextPriority(p)) },
+        title: '重要程度：' + priorityLabel(p) + '（在详情页里改）',
       }, priorityLabel(p))
     }
 
@@ -1520,16 +1758,23 @@ function apply(ctx) {
       const lines = ['委派给 ' + String(d.to) + '：' + delegateLabel(d.status)]
       if (d.expectAt !== null && d.expectAt !== undefined) lines.push('期望完成：' + d.expectAt)
       if (d.at !== null && d.at !== undefined) lines.push('委派时间：' + String(d.at).slice(0, 10))
-      if (d.overdueReceipt) lines.push('⚠ 已逾期未回执')
-      else if (d.overdueWork) lines.push('⚠ 已逾期未完成')
+      if (d.overdueReceipt) lines.push('⚠︎ 已逾期未回执')
+      else if (d.overdueWork) lines.push('⚠︎ 已逾期未完成')
       return h('span', { className: 'dsh-wb-deleg' + (d.overdueReceipt ? ' late' : ''), title: lines.join('\n') }, text)
     }
 
-    /** 管控缺口提示（重要度为高但缺周期/负责人等）。 */
+    /**
+     * 管控缺口提示。**只在「高」档显示**：normal 档那条是「建议补一个截止日期」，
+     * 而绝大多数待办本来就没有截止日期——于是它变成常驻噪声，反而没人看它
+     * （真机反馈：「那个感叹号是什么意思」）。high 档才是显式承诺了完整流程的，
+     * 缺周期 / 缺负责人 / 完成没证据都值得摆出来。
+     */
     const warnBadge = (node) => {
+      const p = node.priority === 'high' || node.priority === 'low' ? node.priority : 'normal'
+      if (p !== 'high') return null
       const list = Array.isArray(node.warnings) ? node.warnings : []
       if (list.length === 0) return null
-      return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, '⚠')
+      return h('span', { className: 'dsh-wb-warn', title: list.join('\n') }, icon('warn', 12))
     }
 
     /**
@@ -1554,7 +1799,7 @@ function apply(ctx) {
 
     /**
      * 完成证据。两种形态，回答的是同一个问题——「这条完成，凭什么信」：
-     *   📎n  附了 n 条证据，悬停列出来；文件类证据若服务端核验不存在，标红
+     *   ⎘n  附了 n 条证据，悬停列出来；文件类证据若服务端核验不存在，标红
      *   ⊘    已完成但没有证据 → 会进「无证据的完成项」筛选，等人核验
      * 这里没有「补证据」的输入框：证据的自然生产者是 agent（它才知道自己
      * 产出了哪个文件、跑过什么命令），手填一份的代价高于让 agent 补。
@@ -1573,13 +1818,13 @@ function apply(ctx) {
       return h('span', {
         className: 'dsh-wb-evid' + (bad.length > 0 ? ' bad' : ''),
         title: '证据 ' + list.length + ' 条\n' + lines.join('\n')
-          + (bad.length > 0 ? '\n⚠ ' + bad.join('\n⚠ ') : ''),
-      },       (bad.length > 0 ? '⚠' : '📎') + list.length)
+          + (bad.length > 0 ? '\n⚠︎ ' + bad.join('\n⚠︎ ') : ''),
+      },       (bad.length > 0 ? '⚠︎' : '⎘') + list.length)
     }
 
     /**
      * 文件库关联块：列出节点挂到 Obsidian vault 的资料（文件 / 文件夹）。
-     * 与证据（📎）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
+     * 与证据（⎘）刻意分开——资料是「做这件事要看的」，文件夹也行，跟完没完成
      * 无关，也不进「无证据的完成项」那条审查线。
      * vault 已配置时渲染可点的 obsidian:// 链接；host 算好的 fileWarnings 命中
      * 则标红（文件可能被挪走了）。
@@ -1621,14 +1866,14 @@ function apply(ctx) {
           key: 'f-' + ref,
           className: 'dsh-wb-file' + (missingRefs.has(ref) ? ' missing' : ''),
         },
-          h('span', { className: 'dsh-wb-fkind' }, isFolder ? '📁' : '📄'),
+          h('span', { className: 'dsh-wb-fkind' }, isFolder ? '▤' : '▢'),
           inner,
           f.note ? h('span', { className: 'dsh-wb-fnote', title: f.note }, '· ' + f.note) : null,
           h('button', {
             className: 'dsh-wb-fx',
             title: '移除这条关联',
             onClick: (e) => { e.stopPropagation(); unlinkFile(node, ref) },
-          }, '×'),
+          }, icon('close')),
         ))
       }
       // 内联「添加关联」表单：仅在该节点处于 linking 态时展开。
@@ -1713,7 +1958,7 @@ function apply(ctx) {
       const rows = [h('div', Object.assign({
         className: 'dsh-wb-task' + dragClass(node.id),
         key: 'row',
-        style: { marginLeft: (10 + depth * 16) + 'px' },
+        style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' },
         title: statusLabel(node.status) + (node.note ? '\n' + node.note : '')
           + '\n（单击切换完成 · 双击改名 · 拖动可排序或归位）',
       }, dragOnto(node, false)),
@@ -1723,6 +1968,10 @@ function apply(ctx) {
           onChange: () => setTodo(node.id, toggleStatus(node.status)),
         }),
         titleNode(node, 'dsh-wb-tasktitle', { canToggle: true }),
+        // 标题之后的一切（徽章 / 日期 / 纳入计划 / 动作按钮）包成一块：
+        // 窄屏时整块折到第二行，行与行之间才有一致的版式（真机反馈：
+        // 不包的话「折到哪一行」取决于标题多长，看起来每行都不一样）。
+        h('div', { className: 'dsh-wb-taskmeta', key: 'meta' },
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -1733,7 +1982,7 @@ function apply(ctx) {
           ? h('span', {
             className: 'dsh-wb-taskdue',
             title: '被挡住：等 ' + node.blocked.join('、'),
-          }, '🔒') : null,
+          }, icon('lock', 12)) : null,
         // 「纳入工作计划」只在**收件箱那一层**（depth 0）出现，而且做得常显而不是
         // 悬停才出：它的意义就是催人把收件箱清空，藏起来等于不做。措辞用「纳入计划」
         // 而不是「提升为计划」——它并不改变节点的形态，只是不再待在收件箱。
@@ -1748,38 +1997,28 @@ function apply(ctx) {
           className: 'dsh-wb-act star' + (node.starred === true ? ' on' : ''),
           title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
           onClick: (e) => { e.stopPropagation(); setStarOn(node, node.starred !== true) },
-        }, '★'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '编辑全部信息（负责人 / 截止 / 备注 / 证据 …）',
-          onClick: (e) => { e.stopPropagation(); openEdit(node) },
-        }, '✎'),
+        }, icon('star')),
+        // 这里不再有「编辑 / 关联资料 / 删除」按钮：单击标题就是打开详情编辑页，
+        // 资料关联与删除都在详情页里（见 titleProps），
+        // 原标题：
+        // 行内再放一个 ✎ 是同一个入口的第二遍，还白占窄屏上宝贵的宽度。
         h('button', {
           className: 'dsh-wb-act',
           title: '归位到某个计划下',
           onClick: (e) => { e.stopPropagation(); store.set({ moving: state.moving === node.id ? null : node.id }) },
-        }, '↳'),
+        }, icon('move')),
         h('button', {
           className: 'dsh-wb-act',
           title: '加子项：往下拆，它会自动变成计划',
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
-        }, '＋'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '关联资料：Obsidian 文件 / 文件夹',
-          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '🔗'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '删除',
-          onClick: (e) => { e.stopPropagation(); doRemove(node) },
-        }, '×'),
+        }, icon('plus')),
+        ),
       )]
       if (state.moving === node.id) rows.push(movePick(node))
       rows.push(filesBlock(node))
       // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
       if (state.adding === node.id) {
-        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -1837,14 +2076,21 @@ function apply(ctx) {
       const head = h('div', Object.assign({
         className: 'dsh-wb-planhead' + dragClass(node.id),
         key: 'head',
-        style: { marginLeft: (depth * 16) + 'px' },
+        style: { marginLeft: 'min(' + (depth * 16) + 'px, 12%)' },
         // id 不再显示出来：它是等宽不定的（`n3` 与 `n12` 宽度不同），摆在标题前
         // 会让**每条计划的标题起始位置都不一样**，看着就是「上下没对齐」。
         // 保留成 data-id，定位/排查时仍然拿得到。
         'data-id': node.id,
       }, dragOnto(node, true)),
-        caret(node),
-        titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
+        // 展开箭头**跟在标题后面**，不放前面。放前面时标题被顶右，而折到第二行的
+        // 元信息是顶格的——两行左边缘对不齐（真机反馈「两行看起来不美观」）。
+        // 挪到后面之后，标题与元信息都从最左边开始，两行是一条竖线。
+        // 包一层 wrap 是为了让箭头**贴着标题**（而不是被 flex:1 顶到行尾）：
+        // 标题在 wrap 里不伸张，箭头就紧跟在最后一个字后面。
+        h('span', { className: 'dsh-wb-planwrap', key: 'tt' },
+          titleNode(node, 'dsh-wb-plantitle' + titleStateClass(node), { canToggle: kids.length === 0 }),
+          caret(node)),
+        h('div', { className: 'dsh-wb-taskmeta', key: 'meta' },
         delegChip(node),
         warnBadge(node),
         behindChip(node),
@@ -1852,36 +2098,24 @@ function apply(ctx) {
         priBadge(node),
         q !== null ? h('span', { className: 'dsh-wb-planq' }, q) : null,
         h('span', { className: 'dsh-wb-planpct' }, pct(progress)),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '编辑全部信息（负责人 / 周期 / 指标 / 备注 / 证据 …）',
-          onClick: (e) => { e.stopPropagation(); openEdit(node) },
-        }, '✎'),
+        // 与待办行同理：点标题即打开详情。行内也不再放「关联资料」与「删除」——
+        // 这两件都在详情页里（破坏性与资料关联不该在列表里误触）。
         h('button', {
           className: 'dsh-wb-act',
           title: '在这个计划下加一项',
           // 往收着的计划里加子项要顺手展开：不展开的话新加的东西立刻不可见，
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
-        }, '＋'),
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '关联资料：Obsidian 文件 / 文件夹',
-          onClick: (e) => { e.stopPropagation(); setLinkRef(''); setLinkKind('file'); setLinking(String(node.id)) },
-        }, '🔗'),
+        }, icon('plus')),
         // 只有「已纳入工作计划的叶子」才有这一手：把它退回收件箱。纳入不该是单向门。
         filedOf(node)
           ? h('button', {
             className: 'dsh-wb-act',
             title: '退回收件箱（它不再是工作计划栏里的独立条目）',
             onClick: (e) => { e.stopPropagation(); setFiledOn(node, false) },
-          }, '↩')
+          }, icon('move'))
           : null,
-        h('button', {
-          className: 'dsh-wb-act',
-          title: '删除这个计划（连同子项）',
-          onClick: (e) => { e.stopPropagation(); doRemove(node) },
-        }, '×'),
+        ),
       )
 
       // 收起来时只留标题行：进度百分比已经在标题行里，进度条与元信息属于
@@ -1890,7 +2124,7 @@ function apply(ctx) {
       const body = [head]
       if (open) {
         if (meta.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: (depth * 16) + 'px' } },
+          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: 'min(' + (depth * 16) + 'px, 12%)' } },
             meta.map((x, i) => h('span', { key: i }, x))))
         }
         // 不再画计划进度条。它横贯整行，紧贴在计划标题下面、子计划上面，读起来
@@ -1905,7 +2139,7 @@ function apply(ctx) {
           if (title === '') return
           addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
-        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: (10 + depth * 16) + 'px' } },
+        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -1972,7 +2206,7 @@ function apply(ctx) {
           key: 'edit',
           title: '编辑全部信息',
           onClick: () => openEdit(node),
-        }, '✎'),
+        }, icon('edit')),
       )
     }
 
@@ -2012,8 +2246,9 @@ function apply(ctx) {
             className: 'dsh-wb-act star' + (x.starred ? ' on' : ''),
             title: x.starred ? '取消星标' : '星标：接下来做（清单置顶）',
             onClick: () => setStarOn(node, x.starred !== true),
-          }, '★'),
-          h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(node) }, '✎'),
+          }, icon('star')),
+          // 行尾不放「编辑」：**点标题就是打开详情**（单击统一 openEdit，见
+          // titleProps）。多给一颗 ✎ 等于把同一件事说两遍，而这一行本来就窄。
         )
       }
       rows.push(h('div', { className: 'dsh-wb-aihead', key: 'oh' },
@@ -2023,15 +2258,14 @@ function apply(ctx) {
       rows.push(h('div', { className: 'dsh-wb-formlist', key: 'open' }, open.map((x, i) => row(x, i))))
       if (blocked.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aihead', key: 'bh' },
-          h('span', null, '🔒 被挡住的（' + blocked.length + '）'),
+          h('span', null, '⊠ 被挡住的（' + blocked.length + '）'),
           h('span', { className: 'dsh-wb-formnote' }, '它们等的前置还没做完'),
         ))
         rows.push(h('div', { className: 'dsh-wb-formlist', key: 'blocked' }, blocked.map((x, i) =>
           h('div', { className: 'dsh-wb-task', key: x.node.id },
-            h('span', { className: 'dsh-wb-todoseq' }, '🔒'),
+            h('span', { className: 'dsh-wb-todoseq' }, '⊠'),
             titleNode(x.node, 'dsh-wb-tasktitle', { canToggle: false }),
             h('span', { className: 'dsh-wb-path' }, '等 ' + x.blockers.join('、')),
-            h('button', { className: 'dsh-wb-act', title: '编辑全部信息', onClick: () => openEdit(x.node) }, '✎'),
           ))))
       }
       return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
@@ -2053,7 +2287,7 @@ function apply(ctx) {
       const colsView = cols.map((col) => {
         const head = h('div', { className: 'dsh-wb-colhead', key: 'h' },
           col.kind === 'inbox'
-            ? h('span', { className: 'dsh-wb-coltitle' }, '📥 收件箱')
+            ? h('span', { className: 'dsh-wb-coltitle' }, '▤ 收件箱')
             : h('span', { className: 'dsh-wb-coltitle' }, String(col.title)),
           col.kind === 'plan'
             ? h('span', { className: 'dsh-wb-colpct' }, pct(col.progress))
@@ -2191,7 +2425,10 @@ function apply(ctx) {
         }, o.label))),
       )
 
+      // 渐进披露：body = 一级（简单信息，默认可见）；more = 二级（低频 / 复杂，
+      // 收在「更多」里）。点开一条任务不该像开工单——高频项与低频项不能平权重。
       const body = []
+      const more = []
 
       body.push(h('div', { className: 'dsh-wb-field', key: 'title' },
         h('span', { className: 'dsh-wb-label' }, '标题'),
@@ -2218,18 +2455,17 @@ function apply(ctx) {
         seg('priority', '重要程度', PRIORITIES.map((p) => ({ value: p, label: priorityLabel(p) }))),
       ))
 
-      body.push(h('div', { className: 'dsh-wb-grid2', key: 'when' },
-        field('owner', '负责人', { placeholder: '谁负责（可空）' }),
-        isPlan
-          ? h('div', { className: 'dsh-wb-field', key: 'f-period' },
-            h('span', { className: 'dsh-wb-label' }, '周期'),
-            h('div', { className: 'dsh-wb-seg' },
-              h('input', { className: 'dsh-wb-inp', type: 'date', value: d.start, onChange: (e) => patchForm('start', e.target.value) }),
-              h('input', { className: 'dsh-wb-inp', type: 'date', value: d.end, onChange: (e) => patchForm('end', e.target.value) })))
-          : field('due', '截止日期', { type: 'date' }),
-      ))
+      // 一级只留「什么时候到期」——这是点开一条任务最想确认的；负责人是低频项，进「更多」。
+      body.push(isPlan
+        ? h('div', { className: 'dsh-wb-field', key: 'f-period' },
+          h('span', { className: 'dsh-wb-label' }, '周期'),
+          h('div', { className: 'dsh-wb-seg' },
+            h('input', { className: 'dsh-wb-inp', type: 'date', value: d.start, onChange: (e) => patchForm('start', e.target.value) }),
+            h('input', { className: 'dsh-wb-inp', type: 'date', value: d.end, onChange: (e) => patchForm('end', e.target.value) })))
+        : field('due', '截止日期', { type: 'date' }))
+      more.push(field('owner', '负责人', { placeholder: '谁负责（可空）' }))
 
-      body.push(h('div', { className: 'dsh-wb-field', key: 'metric' },
+      more.push(h('div', { className: 'dsh-wb-field', key: 'metric' },
         h('span', { className: 'dsh-wb-label' }, '量化进度（可空：留空就按子项 / 状态算）'),
         h('div', { className: 'dsh-wb-grid3' },
           h('input', { className: 'dsh-wb-inp', type: 'number', placeholder: '目标', value: d.target, onChange: (e) => patchForm('target', e.target.value) }),
@@ -2245,7 +2481,7 @@ function apply(ctx) {
           onChange: (e) => patchForm('note', e.target.value),
         })))
 
-      body.push(h('div', { className: 'dsh-wb-grid2', key: 'deleg' },
+      more.push(h('div', { className: 'dsh-wb-grid2', key: 'deleg' },
         field('to', '委派给', { placeholder: '人名 / agent（可空）' }),
         field('expectAt', '期望完成', { type: 'date' }),
       ))
@@ -2262,7 +2498,7 @@ function apply(ctx) {
             .filter((it) => it.type === 'plan')
             .map((it) => ({ id: it.node.id, title: it.node.title, depth: it.depth })))
           : [inboxOpt].concat(moveTargets(plan, node).map((t) => ({ id: t.id, title: t.title, depth: t.depth })))
-        body.push(h('div', { className: 'dsh-wb-field', key: 'move' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'move' },
           h('span', { className: 'dsh-wb-label' }, isNew ? '放在' : '位置'),
           h('div', { className: 'dsh-wb-fadd' },
             h('select', {
@@ -2283,7 +2519,7 @@ function apply(ctx) {
       // 草稿要简单，也不会出现「建了一半失败」的中间态。
       if (!isNew) {
         const evs = evidenceList(node)
-        body.push(h('div', { className: 'dsh-wb-field', key: 'ev' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'ev' },
           evs.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, evs.map((e, i) => h('div', { className: 'dsh-wb-formrow', key: 'ev' + i },
               h('span', { className: 'dsh-wb-fmeta' }, evidenceLabel(e.kind)),
@@ -2292,8 +2528,11 @@ function apply(ctx) {
               h('button', {
                 className: 'dsh-wb-fbtn',
                 title: '删除这条证据',
+                // 补 title：这个按钮原先没有可读名称（图标按钮必须自述），
+                // 而且测试也不该再按字形找它。
+                title: '删除这条证据',
                 onClick: () => removeEvidenceFrom(node, e.ref, e.kind),
-              }, '×'),
+              }, icon('close')),
             )))
             : null,
           h('div', { className: 'dsh-wb-fadd' },
@@ -2312,7 +2551,7 @@ function apply(ctx) {
           )))
 
         const files = filesList(node)
-        body.push(h('div', { className: 'dsh-wb-field', key: 'files' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'files' },
           h('span', { className: 'dsh-wb-label' }, '关联资料（' + files.length + '）'),
           files.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, files.map((f, i) => {
@@ -2322,7 +2561,7 @@ function apply(ctx) {
                 href !== null
                   ? h('a', { className: 'dsh-wb-fref', href, title: '在 Obsidian 里打开' }, String(f.ref))
                   : h('span', { className: 'dsh-wb-fref' }, String(f.ref)),
-                h('button', { className: 'dsh-wb-fbtn', title: '移除关联', onClick: () => unlinkFile(node, f.ref) }, '×'),
+                h('button', { className: 'dsh-wb-fbtn', title: '移除关联', onClick: () => unlinkFile(node, f.ref) }, icon('close')),
               )
             }))
             : null,
@@ -2350,13 +2589,13 @@ function apply(ctx) {
         const depChoices = flattenNodes(plan).filter((it) => it.type === 'todo'
           && String(it.node.id) !== String(node.id)
           && !deps.includes(String(it.node.id)))
-        body.push(h('div', { className: 'dsh-wb-field', key: 'deps' },
+        more.push(h('div', { className: 'dsh-wb-field', key: 'deps' },
           h('span', { className: 'dsh-wb-label' }, '依赖（这些做完才能做这条）'),
           depNodes.length > 0
             ? h('div', { className: 'dsh-wb-formlist' }, depNodes.map((d) => h('div', { className: 'dsh-wb-formrow', key: d.id },
-              h('span', { className: 'dsh-wb-fmeta' }, d.status === 'done' ? '✓ 已完成' : '⏳ 未完成'),
+              h('span', { className: 'dsh-wb-fmeta' }, d.status === 'done' ? '✓ 已完成' : '◷ 未完成'),
               h('span', { className: 'dsh-wb-fref' }, String(d.title)),
-              h('button', { className: 'dsh-wb-fbtn', title: '移除依赖', onClick: () => removeDepOn(node, d.id) }, '×'),
+              h('button', { className: 'dsh-wb-fbtn', title: '移除依赖', onClick: () => removeDepOn(node, d.id) }, icon('close')),
             )))
             : null,
           h('div', { className: 'dsh-wb-fadd' },
@@ -2372,25 +2611,53 @@ function apply(ctx) {
             }, '添加'),
           )))
 
-        // 重复 + 星标：都即时写（列表式改动不等保存，与证据 / 关联一致）。
-        body.push(h('div', { className: 'dsh-wb-grid2', key: 'flags' },
-          h('div', { className: 'dsh-wb-field', key: 'recur' },
-            h('span', { className: 'dsh-wb-label' }, '重复（完成时自动生成下一条并顺推截止）'),
-            h('div', { className: 'dsh-wb-seg' },
-              [['', '不重复'], ['week', '每周'], ['month', '每月']].map(([k, label]) => h('button', {
-                key: k,
-                className: ((node.recur !== null && node.recur !== undefined && node.recur.kind) || '') === k ? 'on' : '',
-                onClick: () => setRecurOn(node, k === '' ? 'none' : k),
-              }, label)))),
-          h('div', { className: 'dsh-wb-field', key: 'star' },
-            h('span', { className: 'dsh-wb-label' }, '标记'),
-            h('div', { className: 'dsh-wb-seg' },
-              h('button', {
-                className: node.starred === true ? 'on' : '',
-                title: '星标：执行清单里置顶',
-                onClick: () => setStarOn(node, node.starred !== true),
-              }, '★ 我正在做 / 接下来做')))))
+        // 星标是高频（「我正在做 / 接下来做」），留在一级；重复是低频，进「更多」。
+        // 两者都即时写（列表式改动不等保存，与证据 / 关联一致）。
+        body.push(h('div', { className: 'dsh-wb-field', key: 'star' },
+          h('span', { className: 'dsh-wb-label' }, '标记'),
+          h('div', { className: 'dsh-wb-seg' },
+            h('button', {
+              className: node.starred === true ? 'on' : '',
+              title: '星标：执行清单里置顶',
+              onClick: () => setStarOn(node, node.starred !== true),
+            }, '★ 我正在做 / 接下来做'))))
+        more.push(h('div', { className: 'dsh-wb-field', key: 'recur' },
+          h('span', { className: 'dsh-wb-label' }, '重复（完成时自动生成下一条并顺推截止）'),
+          h('div', { className: 'dsh-wb-seg' },
+            [['', '不重复'], ['week', '每周'], ['month', '每月']].map(([k, label]) => h('button', {
+              key: k,
+              className: ((node.recur !== null && node.recur !== undefined && node.recur.kind) || '') === k ? 'on' : '',
+              onClick: () => setRecurOn(node, k === '' ? 'none' : k),
+            }, label)))))
 
+      }
+
+      // 删除：破坏性操作，不和「保存 / 取消」并排（误触代价太高），收进「更多」。
+      if (node !== null) {
+        more.push(h('div', { className: 'dsh-wb-field', key: 'del' },
+          h('span', { className: 'dsh-wb-label' }, '危险操作'),
+          h('button', {
+            className: 'dsh-wb-aibtn',
+            title: '删除这个节点',
+            onClick: () => {
+              const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
+              if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
+              write('node-remove', { node: node.id }, () => { flash('已删除'); closeForm() })
+            },
+          }, '删除')))
+      }
+
+      // 「更多」折叠条。窄面板放不下长标签，所以按钮上只写「更多 ▾」，
+      // 具体含哪些项交给 title 悬停——既省宽度又不丢信息。
+      if (more.length > 0) {
+        const moreLabel = '负责人 / 量化进度 / 委派 / 位置 / 证据 / 关联资料 / 依赖 / 重复 / 删除'
+        body.push(h('button', {
+          className: 'dsh-wb-morebtn',
+          key: 'morebtn',
+          title: (moreOpen ? '收起：' : '展开：') + moreLabel,
+          onClick: () => setMoreOpen((v) => !v),
+        }, moreOpen ? '收起更多 ▴' : '更多 ▾'))
+        if (moreOpen) for (let mi = 0; mi < more.length; mi++) body.push(more[mi])
       }
 
       const rows = []
@@ -2399,44 +2666,40 @@ function apply(ctx) {
         h('span', { className: 'dsh-wb-formtitle' },
           isNew ? (isPlan ? '新建计划' : '新建待办') : (isPlan ? '编辑计划' : '编辑待办')),
         node !== null ? h('span', { className: 'dsh-wb-formsub' }, String(node.title)) : null,
-      ))
-      if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
-      if (state.error !== null && state.error !== undefined) {
-        rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
-      }
-      rows.push(h('div', { className: 'dsh-wb-form', key: 'form' },
-        body,
-        h('div', { className: 'dsh-wb-formactions', key: 'acts' },
+        // 保存紧跟头栏（不随表单滚动）。理由见 CSS 里 .dsh-wb-formacts 的注释：
+        // 手机上输入法会盖住滚动区底部，保存在底部等于要求人先收键盘再点。
+        h('div', { className: 'dsh-wb-formacts', key: 'acts' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
             disabled: formSaving || errs.length > 0,
             title: errs.length > 0 ? errs.join('；') : '保存全部改动',
             onClick: saveForm,
           }, formSaving ? '保存中…' : '保存'),
-          h('button', { className: 'dsh-wb-aibtn', onClick: closeForm }, '取消'),
-          h('span', { className: 'spacer' }),
-          node !== null
-            ? h('button', {
-              className: 'dsh-wb-aibtn',
-              title: '删除这个节点',
-              onClick: () => {
-                const extra = nodeType(node) === 'plan' ? '（连同它下面的全部子项）' : ''
-                if (!window.confirm('删除「' + String(node.title) + '」' + extra + '？')) return
-                write('node-remove', { node: node.id }, () => { flash('已删除'); closeForm() })
-              },
-            }, '删除')
-            : null,
         ),
+      ))
+      if (state.flash !== '') rows.push(h('div', { className: 'dsh-wb-flash', key: 'flash' }, state.flash))
+      if (state.error !== null && state.error !== undefined) {
+        rows.push(h('div', { className: 'dsh-wb-err', key: 'err' }, state.error))
+      }
+      rows.push(h('div', { className: 'dsh-wb-form', key: 'form' },
+        // 校验错误挪到表单**顶部**：保存按钮现在在头栏，而它被禁用时原因要立刻
+        // 看得见；留在滚动区最底下就等于让人自己去翻。
         errs.length > 0 ? h('div', { className: 'dsh-wb-formerr', key: 'errs' }, errs.join('；')) : null,
+        body,
       ))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
     // 详情编辑页与设置页优先：打开时它们本身就是一屏，不必再往下走树 / 看板的组装。
+    // （浮球只在主视图那一个 return 里挂——详情页/设置页是整屏，浮球压在上面
+    //   既不合适、也会挡住表单底部的字段。）
     if (form !== null) return detailPage()
     if (state.showSettings === true) return h('div', { className: 'dsh-wb-wrap' }, settingsPage())
 
     const rows = []
+    const today = todayStr()
+    // 收尾复盘的对象：今天组里的未做完项 = 逾期 + 今天到期（upcomingByDay 已把逾期滚入今日组）。
+    const unfinished = (upcomingByDay(plan, today).days.find((d) => d.date === today) || { items: [] }).items
     rows.push(h('div', { className: 'dsh-wb-header', key: 'h' },
       // 视图切换兼作表头标题：左上角原来那个「工作计划」标题是重复的——分段控件
       // 的第一个按钮就叫「工作计划」，它本身就是这块面板的名字，再写一遍是噪音。
@@ -2458,42 +2721,70 @@ function apply(ctx) {
         }, '看板'),
       ),
       h('div', { className: 'dsh-wb-headright' },
-        // 「＋ 新建」打开完整表单（可一次填全负责人 / 周期 / 指标 / 备注）。
-        // 它**不取代**底部那行快速输入——「随手记一条」的成本必须趋近于零，
-        // 记的时候想不起来负责人是正常的，事后再补。
-        h('button', {
-          className: 'dsh-wb-icon',
-          key: 'new',
-          title: '新建计划或待办（打开完整表单）',
-          onClick: () => openNew('todo', null),
-        }, '＋ 新建'),
-        h('span', { className: 'dsh-wb-pct' }, pct(sum.progress)),
+        // 这里不再有「＋ 新建」：新建的入口就是顶部那行 AI 输入（说一句，模型给草稿，
+        // 计划与待办都在草稿里成形），表头只留「看/管」这类控件。
         // 折叠控点只在真有嵌套时出现：一层都没有的时候，两个按钮做什么都不发生。
-        sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部收起（只看主线）', onClick: collapseAll }, '⊟') : null,
-        sum.depth >= 2 ? h('button', { className: 'dsh-wb-icon', title: '全部展开', onClick: () => applyCollapse([]) }, '⊞') : null,
-        h('button', { className: 'dsh-wb-icon', title: '留档一个版本', onClick: snapshot, disabled: !sum.hasPlan }, '⤓'),
-        h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, '⟳'),
+        // 收起 / 展开合成**一个**按钮：同一个位子按当前状态切换，图标与提示都跟着变
+        // （还折着东西时给「全部展开」，否则给「全部收起」）。表头按钮已经够多了。
+        sum.depth >= 2 ? h('button', {
+          className: 'dsh-wb-icon',
+          title: collapsed.length > 0 ? '全部展开' : '全部收起（只看主线）',
+          onClick: () => (collapsed.length > 0 ? applyCollapse([]) : collapseAll()),
+        }, collapsed.length > 0 ? icon('expand') : icon('collapse')) : null,
+        // 表头不再显示整体完成度，也不放「留档一个版本」——版本留档是自动的
+        // （每次写入前都会归档），要手动留档让 agent 调 plan_snapshot 即可。
+        h('button', { className: 'dsh-wb-icon', title: '刷新', onClick: refresh, disabled: state.loading }, icon('refresh')),
         // 设置：工作区级配置收拢到一个界面（vault、AI 人设……）。
         h('button', {
           className: 'dsh-wb-icon',
           title: '设置：Obsidian vault、AI 人设',
           onClick: () => {
-            store.set({ showSettings: true, aiOpen: false })
+            store.set({ showSettings: true })
+            setFabOpen(false)
             if (aiPersona === '') loadPersona()
           },
-        }, '设置'),
+        }, icon('gear')),
+        // 收尾复盘（Sunsama 式）：每天收工前把没做完的顺延，而非留着堆。
+        // 只在真有未做完项时才出现——没东西要复盘时它不该占一行。
+        unfinished.length > 0 ? h('button', {
+          className: 'dsh-wb-icon' + (shutdownOpen ? ' on' : ''),
+          key: 'shutdown',
+          title: '收尾复盘：把没做完的重新规划，而非留着堆',
+          onClick: () => setShutdownOpen((v) => !v),
+        }, '收尾 ' + unfinished.length) : null,
       ),
     ))
     rows.push(h('div', { className: 'dsh-wb-bar', key: 'bar' },
       h('div', { className: 'dsh-wb-bar-fill', style: { width: barWidth(sum.progress) } }),
     ))
 
-    // AI 助手是**第一入口**：放在筛选条之上——打开面板第一眼就该看见
-    // 「可以问、可以说」。宿主没有模型服务时整块不渲染（见 aiBlock）。
-    {
-      const block = aiBlock()
-      if (block !== null) rows.push(block)
+    // 收尾复盘面板：把未做完项逐条重新规划，而非留着堆。复用到期的写通道，
+    // 顺延走 deferDate（明天 / 下周），「稍后」清掉 due 退回收件箱。
+    const shutdownRow = (item) => {
+      const node = item.node
+      const isLeaf = item.type === 'todo'
+      return h('div', { className: 'dsh-wb-shrow', key: item.path },
+        titleNode(node, 'dsh-wb-tasktitle', { canToggle: isLeaf, draggable: false }),
+        h('div', { className: 'dsh-wb-shact' },
+          h('button', { className: 'dsh-wb-act', onClick: () => { setDueOn(node, deferDate(today, 'tomorrow')); flash('顺延到明天') } }, '明天'),
+          h('button', { className: 'dsh-wb-act', onClick: () => { setDueOn(node, deferDate(today, 'nextweek')); flash('顺延到下周') } }, '下周'),
+          h('button', { className: 'dsh-wb-act', onClick: () => clearDueOn(node) }, '稍后'),
+          isLeaf
+            ? h('button', { className: 'dsh-wb-act done', onClick: () => setTodo(node.id, 'done') }, '完成')
+            : h('button', { className: 'dsh-wb-act done', onClick: () => togglePlanDone(node) }, '完成'),
+        ),
+      )
     }
+    if (shutdownOpen && unfinished.length > 0) {
+      rows.push(h('div', { className: 'dsh-wb-shutdown', key: 'shutdown' },
+        h('div', { className: 'dsh-wb-shutdown-head' },
+          h('span', null, '收尾复盘 · 没做完 ' + unfinished.length + ' 条'),
+          h('button', { className: 'dsh-wb-act', title: '收工', onClick: () => setShutdownOpen(false) }, '完成')),
+        unfinished.map(shutdownRow)))
+    }
+
+    // (AI 入口不在这里——它整体搬到了底部那颗浮球上，见 fab()。
+    //  面板顶部不再有一个常驻输入行：又把纵向空间还给了任务列表。)
 
     // 筛选条：只显示「有货」的筛选器，窄侧栏里不堆一排空按钮。
     const chips = [h('button', {
@@ -2548,7 +2839,7 @@ function apply(ctx) {
         const items = viewItems(plan, v.ids)
         body.push(h('div', { className: 'dsh-wb-customview', key: 'cv' },
           h('div', { className: 'dsh-wb-aihead' },
-            h('span', null, '📋 ' + v.name + '（' + items.length + '）'),
+            h('span', null, '≡ ' + v.name + '（' + items.length + '）'),
             h('button', {
               className: 'dsh-wb-aibtn',
               title: '删除这个视图（只删本机的视图定义，不动任务）',
@@ -2563,7 +2854,7 @@ function apply(ctx) {
             : h('div', { className: 'dsh-wb-formlist' }, items.map((n, i) => h('div', { className: 'dsh-wb-formrow', key: n.id },
               h('span', { className: 'dsh-wb-fmeta' }, String(i + 1)),
               titleNode(n, 'dsh-wb-tasktitle', { canToggle: true, draggable: false }),
-              h('button', { className: 'dsh-wb-fbtn', title: '打开详情', onClick: () => openEdit(n) }, '✎'),
+              h('button', { className: 'dsh-wb-fbtn', title: '打开详情', onClick: () => openEdit(n) }, icon('edit')),
             ))),
         ))
       }
@@ -2576,20 +2867,14 @@ function apply(ctx) {
     }
 
     if (state.filter !== 'all') {
-      // 聚焦列表：筛选结果通常跨层级，摊平并带上路径比树形更好读。
-      const items = focusList(plan, state.filter, todayStr())
-      const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
-      if (items.length === 0) {
-        body.push(h('div', { className: 'dsh-wb-empty', key: 'nofocus' },
-          h('div', null, '「' + label + '」下没有未完成的事项。')))
-      }
-      for (const item of items) {
+      // 聚焦行：扁平列表与未来日程共用（两处各画一遍，迟早会长出不一致）。
+      const focusRow = (item) => {
         const node = item.node
         const isLeaf = item.type === 'todo'
         // 完成语义一体化：叶子计划（无子项）也能勾选完成，只是通路不同
         // （计划走 /node-set 的 status，待办走 /todo-set）。
         const canCheck = isLeaf || childrenOf(node).length === 0
-        body.push(h('div', { className: 'dsh-wb-focus', key: item.path },
+        return h('div', { className: 'dsh-wb-focus', key: item.path },
           canCheck
             ? h('input', {
               type: 'checkbox',
@@ -2606,14 +2891,43 @@ function apply(ctx) {
           behindChip(node),
           evidChip(node),
           priBadge(node),
-          isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' }, node.end) : null),
+          isLeaf ? dueSpan(node) : (node.end ? h('span', { className: 'dsh-wb-taskdue' + (node.overdue === true ? ' overdue' : '') }, node.end) : null),
           h('button', {
             className: 'dsh-wb-act',
             title: '编辑全部信息',
             onClick: () => openEdit(node),
-          }, '✎'),
-        ))
+          }, icon('edit')),
+        )
       }
+
+      // 「未来 7 天」是一个**时间视角**，不是一个筛选结果：同一批事项按天摊开
+      // 才回答得了「下周三我有什么事」。所以这一档走按天分组；逾期项按 TeuxDeux
+      // 顺延滚入「今天」组（红标区分），不单独置顶成段。其余筛选器仍是扁平列表。
+      if (state.filter === 'week') {
+        const up = upcomingByDay(plan, todayStr())
+        if (up.days.length === 0) {
+          body.push(h('div', { className: 'dsh-wb-empty', key: 'noup' },
+            h('div', null, '未来 7 天没有安排。')))
+        }
+        for (const d of up.days) {
+          const isToday = d.date === todayStr()
+          body.push(h('div', { className: 'dsh-wb-daygroup', key: d.date },
+            h('div', { className: 'dsh-wb-dayhead' + (isToday ? ' today' : '') },
+              d.label + (isToday ? ' · 今天' : '')),
+            d.items.map(focusRow)))
+        }
+        rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
+        if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
+        return h('div', { className: 'dsh-wb-wrap' }, rows)
+      }
+
+      const items = focusList(plan, state.filter, todayStr())
+      const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
+      if (items.length === 0) {
+        body.push(h('div', { className: 'dsh-wb-empty', key: 'nofocus' },
+          h('div', null, '「' + label + '」下没有未完成的事项。')))
+      }
+      for (const item of items) body.push(focusRow(item))
       rows.push(h('div', { className: 'dsh-wb-body', key: 'body' }, body))
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
@@ -2627,61 +2941,22 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    // 收件箱：先记下来，之后再归位（↳）。没有它，「收不进来」这条就一直成立。
-    //
-    // 记入收件箱走这一个函数。回车与「记下」按钮原来各写了一遍提交逻辑——两份就会
-    // 有一份漏掉后面的「展开建议」，于是键盘记的没有建议、点按钮记的才有。
-    const submitInbox = () => {
-      const title = draft.trim()
-      if (title === '') return
-      addNode({ title, type: 'todo' }, (res) => {
-        setDraft('')
-        // 记完立刻把「该归到哪」摊开。它是**行内**的（不是弹窗），不打断连着记几条
-        // 的节奏；没有够格的建议就不弹，免得白占一行。
-        const fresh = freshNode(res)
-        const sug = fresh !== null && Array.isArray(fresh.parentSuggestions) ? fresh.parentSuggestions : []
-        if (sug.length > 0) {
-          store.set({ moving: fresh.id })
-          flash('已记入收件箱 · 建议归到「' + sug[0].title + '」')
-        } else {
-          flash('已记入收件箱')
-        }
-      })
-    }
     const inboxRows = []
+    // 分栏标题前**不放图标**：下面「工作计划」那一段没有图标，两段标题只差一个
+    // 图标会显得一段比另一段「更重要」，而它们本来是并列的两段。层级交给字重与
+    // 留白，与面板里其它地方一致（见「文字只留两级」）。
     inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-      h('span', { className: 'dsh-wb-planid' }, '📥'),
       h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
       h('span', { className: 'dsh-wb-count' }, inbox.length > 0
         ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
         : '空'),
-    ))
-    inboxRows.push(h('div', { className: 'dsh-wb-add', key: 'add' },
-      h('input', {
-        type: 'text',
-        placeholder: '记一条待办，回车入收件箱…',
-        value: draft,
-        onChange: (e) => setDraft(e.target.value),
-        onKeyDown: (e) => {
-          if (e.key === 'Enter') {
-            e.preventDefault()
-            submitInbox()
-          }
-        },
-      }),
-      micButton(setDraft, 'mic'),
-      h('button', {
-        onClick: submitInbox,
-        disabled: draft.trim() === '',
-        title: '记入收件箱',
-      }, '记下'),
     ))
     for (const todo of sortNodes(inbox)) inboxRows.push(renderTodo(todo, 0))
     body.push(h('div', { className: 'dsh-wb-inbox', key: 'inbox' }, inboxRows))
 
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-        h('div', null, '记下第一件事，或在上面跟 AI 说一句——'),
+        h('div', null, '点右下角那颗浮球，跟 AI 说一句就行——'),
         h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
           '「帮我把这个季度的工作拆成计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } },
@@ -2730,13 +3005,13 @@ function apply(ctx) {
     }, body))
     if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
 
-    return h('div', { className: 'dsh-wb-wrap' }, rows)
+    return h('div', { className: 'dsh-wb-wrap' }, rows, fab())
   }
 
   ctx.effect(() => betterSidebar.registerTab({
     id: 'dsh-workbench:plan',
     title: '工作计划',
-    icon: (size) => h('span', { style: { fontSize: size, lineHeight: '1' } }, '🎯'),
+    icon: (size) => icon('target', Math.max(14, Number(size) || 16)),
     order: 40,
     single: true,
     badge: () => {

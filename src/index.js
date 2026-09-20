@@ -93,6 +93,7 @@ import {
 import {
   DEFAULT_PERSONA,
   MAX_IMAGES,
+  MAX_OUTPUT_TOKENS,
   aiContext,
   aiSystemPrompt,
   aiUserText,
@@ -1170,8 +1171,9 @@ export function apply(ctx) {
       })
 
       let raw = ''
+      let truncated = false
       try {
-        raw = await collectText(serverCtx.get('llm'), {
+        const out = await collectText(serverCtx.get('llm'), {
           provider: status.provider,
           model: status.model,
           messages,
@@ -1180,9 +1182,13 @@ export function apply(ctx) {
             context: aiContext(plan, today),
             history,
           }),
-          maxTokens: 2048,
+          // 额度要放得下提示词自己要的东西（最多 MAX_TASKS 条带 advice/options 的
+          // 待办），见 ai.js 里 MAX_OUTPUT_TOKENS 那段。
+          maxTokens: MAX_OUTPUT_TOKENS,
           signal: AbortSignal.timeout(AI_TIMEOUT_MS),
         })
+        raw = out.text
+        truncated = out.truncated
       } catch (e) {
         if (e !== null && typeof e === 'object' && (e.name === 'TimeoutError' || e.name === 'AbortError')) {
           throw new Error('模型 ' + Math.round(AI_TIMEOUT_MS / 1000) + ' 秒没有返回，素材可能太复杂，少一点再试')
@@ -1191,7 +1197,17 @@ export function apply(ctx) {
       }
 
       const parsed = parseAiReply(raw)
-      if (parsed.error !== '') throw new Error(parsed.error)
+      // 被截断**不是**「什么都没有」：extractJson 会把残缺 JSON 里完整的那部分捞回来
+      // （补右括号，丢掉最后那条写了一半的）。只有连一段完整前缀都凑不出来时才报错。
+      if (parsed.error !== '') {
+        if (truncated) throw new Error('模型回复被长度上限截断，素材可能太长，少说一点再试')
+        throw new Error(parsed.error)
+      }
+      if (truncated) {
+        // 拿到了东西、但只拿到一部分——**说出来**。悄悄少几条待办比报错更难发现。
+        parsed.reply = (parsed.reply === '' ? '' : parsed.reply + '\n')
+          + '· （回复被长度上限截断，上面只拿到前面这些；先采纳，再补一句处理剩下的）'
+      }
       json(res, {
         ok: true,
         // 问答与录入是同一次调用的两种产出：只提问时 tasks 为空，
