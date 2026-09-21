@@ -2061,6 +2061,34 @@ test('浮层里的「收起」把浮球还回来', async () => {
   assert.equal(firstByClass(folded, 'dsh-wb-fabsheet'), null, '浮层不再在树里')
 })
 
+test('有字可确认时，提交键上要出现「确认」两个字', async () => {
+  // 真机：「语音识别是识别成功了，但是没有可以让我选择确认的一个按钮」——识别的字
+  // 已经躺在输入框里，可提交键只有一个 ↑ 图标（纯输入框那半边是个 ＋），说完话的人
+  // 不知道按哪个键算数。有字就补上名字；没字不显示（那时没有东西要确认）。
+  withAi()
+  const { render, view } = await mountAi()
+  const labelOf = (root) => {
+    const span = findAll(root, (x) => classesOf(x).includes('dsh-wb-sendlabel'))
+    return span.length === 0 ? '' : textOf(span[0])
+  }
+  assert.equal(labelOf(view), '', '还没输入时不该有「确认」')
+  aiEntry(view).props.onChange({ target: { value: '把台账补完' } })
+  assert.equal(labelOf(render()), '确认', '有字就该把「确认」显出来')
+})
+
+test('纯输入框（没模型）也照样有「确认」两个字', async () => {
+  const ctx = await mount()
+  firstByClass(ctx.view, 'dsh-wb-fabball').props.onClick(ev())
+  const opened = ctx.render()
+  const labelOf = (root) => {
+    const span = findAll(root, (x) => classesOf(x).includes('dsh-wb-sendlabel'))
+    return span.length === 0 ? '' : textOf(span[0])
+  }
+  assert.equal(labelOf(opened), '', '空的时候不显示')
+  byClass(opened, 'dsh-wb-aiinput')[0].props.onChange({ target: { value: '交电费' } })
+  assert.equal(labelOf(ctx.render()), '确认', '有字就该显出来')
+})
+
 test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起」已删）', async () => {
   // 两颗按钮调同一个 setFabOpen(false)，是纯粹的重复。留哪颗的判断依据是位置：
   // 标题行右上角是「关闭一个面板」的常规位置，快捷行那颗文字按钮反而占宽度。
