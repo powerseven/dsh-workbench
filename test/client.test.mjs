@@ -2089,6 +2089,25 @@ test('纯输入框（没模型）也照样有「确认」两个字', async () =>
   assert.equal(labelOf(ctx.render()), '确认', '有字就该显出来')
 })
 
+test('点开浮层助手先说一句「现在什么情况」——本地算的，数字和面板同源', async () => {
+  // 「我点开它，你就应该给我所有建议」的第一步：**不用你问**，先说现状。
+  // 数字取的是 summarize() 里那份和面板筛选芯片同源的派生量，所以两边永远一致；
+  // 没有任何值得说的时候也要说一句，否则「点开就有建议」会时灵时不灵。
+  withAi()
+  const { render, view } = await mountAi()
+  const brief = firstByClass(view, 'dsh-wb-aibrief')
+  assert.ok(brief !== null, '浮层里应该有一行现状')
+  assert.match(textOf(brief), /现在：|眼下没有/, '要么给数字，要么明说没什么')
+  // fixture 里有一条顶层待办（收件箱一条），所以应该给出「收件箱 1」
+  assert.match(textOf(brief), /收件箱 1/)
+
+  // 点它：收起浮层（收件箱没有对应的筛选芯片，所以只是把人送回面板）
+  const chip = byClass(brief, 'dsh-wb-chip').find((b) => textOf(b).includes('收件箱'))
+  assert.ok(chip !== undefined)
+  chip.props.onClick(ev())
+  assert.equal(firstByClass(render(), 'dsh-wb-fabsheet'), null, '点完应该收起浮层')
+})
+
 test('改动卡：写出「旧 → 新」、带上可选项，采纳后进表单逐字段确认', async () => {
   // 「我输入 → 你决策 → 给清晰的意见和**可选项** → 我选 → 你照做」里，
   // 改动卡就是「意见」，芯片就是「可选项」，而**落库那一下永远在表单里**。
