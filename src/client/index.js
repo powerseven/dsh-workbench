@@ -386,7 +386,10 @@ const CSS = [
   // 无描边、软底：宿主 composer 里的图标按钮就是这个样子（真机反馈：一排描边方框很山寨）。
   // dsh-wb-iconbtn 是**没有模型时**那颗「记入收件箱」的提交键——它跟发送键是同一个
   // 位子上的同一件事，外观必须共用一套；单独写一份迟早会走形。
-  '.dsh-wb-aibtn,.dsh-wb-iconbtn{border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
+  // 图标 + 文字并排：`.dsh-wb-svg` 是 display:block，button 里块级子元素后面再跟一个
+  // span 会**折到第二行**（与坑 #28 同一个成因）。所以这两个按钮统一 inline-flex 居中，
+  // 间距交给 gap——图标和文字才会规规矩矩在同一行上。
+  '.dsh-wb-aibtn,.dsh-wb-iconbtn{display:inline-flex;align-items:center;gap:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-aibtn:hover:not(:disabled),.dsh-wb-iconbtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-aibtn:disabled,.dsh-wb-iconbtn:disabled{opacity:.4;cursor:default;}',
   // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
@@ -863,7 +866,9 @@ function apply(ctx) {
         // .dsh-wb-add 之下——在顶部这行里它会退回浏览器默认按钮（灰底+描边，
         // 真机反馈：「话筒不该有个框，应该跟旁边的加号一样」）。
         className: 'dsh-wb-aibtn dsh-wb-mic' + (listening ? ' on' : ''),
-        title: listening ? '正在听，点一下停止' : '点一下开始说话，说完自动填进输入框',
+        title: listening
+          ? '正在听，点一下停止'
+          : '点一下开始说话；说完自动填进输入框（可以改），改完点「确认」',
         onClick: () => { if (listening) stopVoice(); else startVoice(setter) },
       }, listening ? icon('stop') : icon('mic'))
     }
@@ -1187,10 +1192,12 @@ function apply(ctx) {
             micButton(setPlainDraft, 'mic'),
             h('button', {
               className: 'dsh-wb-iconbtn',
-              title: '记入收件箱',
+              title: '确认：记入收件箱（回车同样有效）',
               disabled: plainDraft.trim() === '',
               onClick: submitPlain,
-            }, icon('plus')),
+            }, icon('plus'),
+              // 与发送键同一条纪律：有字可确认时把「确认」显出来（见发送键那段注释）。
+              plainDraft.trim() === '' ? null : h('span', { className: 'dsh-wb-sendlabel' }, '确认')),
           ))
       }
       const model = typeof ai.model === 'string' && ai.model !== '' ? ai.model : ''
@@ -1214,10 +1221,17 @@ function apply(ctx) {
           // dsh-wb-send 是给测试用的稳定钩子：图标换成 SVG 之后按钮里没有文字了，
           // 靠字形找它的断言会全军覆没。
           className: 'dsh-wb-aibtn dsh-wb-send primary',
-          title: '发送（回车同样有效）',
+          title: '确认：把这句话交给助手（拆成待办 / 回答），回车同样有效',
           disabled: aiBusy === true,
           onClick: () => runAi(),
-        }, aiBusy === true ? '…' : icon('send')),
+        }, aiBusy === true ? '…' : icon('send'),
+          // **有字可确认时，把「确认」两个字显出来。**
+          //
+          // 真机反馈：「语音识别是识别成功了，但是没有可以让我选择确认的一个按钮」
+          // ——识别的字已经躺在输入框里了，可提交键只有一个 ↑ 图标，说完话的人不知道
+          // 按哪个键算数（纯输入框那半边是个 ＋，同样没有字）。这里补上名字；
+          // **没字的时候不显示**：那时没有东西要确认，多两个字只是噪音。
+          aiText.trim() === '' ? null : h('span', { className: 'dsh-wb-sendlabel' }, '确认')),
       ))
 
       // 快捷问法：把「助手能干什么」直接摆在眼前。它同时是最短的那条学习路径。
