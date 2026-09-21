@@ -150,6 +150,9 @@ const CSS = [
   // 而不是把浮层撑出屏幕——手机上它已经占满整个视口宽度了（390px）。
   '.dsh-wb-fabsheet{position:fixed;left:50%;transform:translateX(-50%);width:min(520px,calc(100vw - var(--wb-sp-5) * 2));max-height:min(72vh,560px);overflow-y:auto;overscroll-behavior:contain;background:var(--wb-bg);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);padding:var(--wb-sp-4);display:flex;flex-direction:column;gap:var(--wb-sp-3);pointer-events:auto;z-index:2147483001;}',
   '.dsh-wb-fabsheet .dsh-wb-fabrow{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  // 浮层那颗 ✕ 是**唯一**的关闭入口（快捷行里重复的那颗「收起」已删），所以点击区
+  // 按宿主图标按钮的标尺给足 28×28；图标是 display:block 的 svg，靠对称内边距居中。
+  '.dsh-wb-fabrow .dsh-wb-fabclose{padding:var(--wb-sp-3);}',
   '.dsh-wb-fabhead{font:var(--wb-f2s);flex:1;min-width:0;}',
   // 侧栏页脚入口：一个「工作计划」按钮。它同时是**手机端主屏的一颗 chip**——
   // 手机外壳插件 dsh-zen-remote 会扫描 [data-slot="sidebar.footer.action"] 的
@@ -608,7 +611,14 @@ function injectStyles(css) {
  * AI 助手的快捷问法。它们同时承担两件事：① 最短的使用路径（不用想怎么问）；
  * ② 告诉用户这个助手**能回答什么**——「AI 能干什么」不演示一遍是看不出来的。
  */
-const QUICK_ASKS = ['我今天该做什么', '哪些逾期了', '总结一下进展', '哪个方向没动']
+/**
+ * 快捷问法。**最多三条**——这条限制是量出来的，不是审美：浮层在手机上宽
+ * `min(520px, 100vw − 24px)`，390px 的手机里只剩约 350px 内容宽，四个芯片
+ * （每个 5–7 个汉字 + 内边距）加上右边的「清空 / 收起」就会折成两行，
+ * 而这一行折行会直接把浮层顶高一行（真机反馈：「3 条就好了，4 条就变成两行了」）。
+ * 想加第四条，先回去量一遍宽度。
+ */
+const QUICK_ASKS = ['我今天该做什么', '哪些逾期了', '总结一下进展']
 
 /** 极简可订阅 store：只在 set 时替换整个 state 对象，getSnapshot 引用稳定。 */
 function createStore() {
@@ -1040,6 +1050,9 @@ function apply(ctx) {
       }
       setAiTasks((prev) => prev.filter((t) => t.key !== task.key))
       setAiQueue([])
+      // 交给表单就**把浮层关掉**：表单是整块替换面板、浮层本来就不渲染，留着 fabOpen
+      // 只会让「保存完回到树上」时浮层又自己弹回来——用户还得再点一次收起。
+      setFabOpen(false)
       openDraft(draft)
       flash('已按「' + String(option.label) + '」填好，改完点保存')
     }
@@ -1079,6 +1092,8 @@ function apply(ctx) {
       }
       setAiTasks((prev) => prev.filter((t) => t.key !== task.key))
       setAiQueue([])
+      // 同 aiApplyOption：交给表单就把浮层关掉，免得保存完它又弹回来。
+      setFabOpen(false)
       openDraft(aiDraftOf(task, parent))
       flash('AI 草稿已填进表单（将放进「' + where + '」），改完点保存')
     }
@@ -1151,7 +1166,12 @@ function apply(ctx) {
         const submitPlain = () => {
           const title = plainDraft.trim()
           if (title === '') return
-          addNode({ title }, () => { setPlainDraft(''); flash('已记入收件箱') })
+          addNode({ title }, () => {
+            setPlainDraft('')
+            // 记完就收起浮层：这一步已经结束了，不该再让用户点一次「收起」。
+            setFabOpen(false)
+            flash('已记入收件箱')
+          })
         }
         return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' },
           h('div', { className: 'dsh-wb-aibar' },
@@ -1213,15 +1233,9 @@ function apply(ctx) {
         h('button', {
           key: 'clear',
           className: 'dsh-wb-aibtn',
-          title: '清空这次会话（不写盘，它本来只在内存里）',
+          title: '清空这一轮：把问答与草稿都抹掉，重新说（不写盘，它本来只在内存里）',
           onClick: aiClear,
         }, '清空'),
-        h('button', {
-          key: 'fold',
-          className: 'dsh-wb-aibtn',
-          title: '收起浮层（会话不会丢，再点浮球还在）',
-          onClick: () => setFabOpen(false),
-        }, '收起'),
       ))
 
       // 这次会话的问答。助手的答复与「它读了哪些文件」都留在这里，
@@ -1291,6 +1305,27 @@ function apply(ctx) {
      * 面板住在一个又宽又矮的地方——常驻一行输入等于每屏少一条任务，而「问一句」
      * 是个低频动作，它不配占这种地方。手机与桌面同一个入口，不必各记一套。
      */
+    /**
+     * 打开浮层 = **开一个全新的**。
+     *
+     * 用户原话：「下次再点开的时候应该自动清空之前那个任务，不然话又堆在一起；
+     * 每次点开那个应该是一个全新的。」——它是件**输入工具**，不是一本对话记录：
+     * 上次没发出去的那句话（用输入法接着说话会**接在后面**）、上一轮的问答、
+     * 上一轮拆出来的草稿卡，全部清掉，打开的永远是干净的一屏。
+     *
+     * 代价说清楚：**没处理的 AI 草稿也会一起清**。那是建议、不是数据（真正的数据
+     * 只有点过保存才落库），要一次处理多条就用草稿区那颗「全部按首选建议加入」。
+     */
+    const openFab = () => {
+      setPlainDraft('')
+      setAiText('')
+      setAiPics([])
+      setAiTurns([])
+      setAiTasks([])
+      setAiList(null)
+      setFabOpen(true)
+    }
+
     const fab = () => {
       if (fabOpen !== true) {
         return h('div', { className: 'dsh-wb-fab', key: 'fab' },
@@ -1299,7 +1334,7 @@ function apply(ctx) {
             // 说的是**键盘上那颗话筒**，不是本插件自己那颗（那颗要安全上下文，手机上
             // 走 HTTP 时用不了）。点一下就弹键盘，这是手机上最短的语音路径。
             title: '说一句或问一句——点一下弹出键盘，用输入法自带的话筒说话',
-            onClick: () => setFabOpen(true),
+            onClick: openFab,
           }, icon('mic', 20)))
       }
       return h('div', { className: 'dsh-wb-fab', key: 'fab' },
@@ -1310,7 +1345,18 @@ function apply(ctx) {
         },
         h('div', { className: 'dsh-wb-fabrow' },
           h('span', { className: 'dsh-wb-fabhead' }, 'AI 助手'),
-          h('button', { className: 'dsh-wb-icon', title: '关闭', onClick: () => setFabOpen(false) }, icon('close')),
+          // 浮层**只有一个关闭入口**，就是这个 ✕。
+          //
+          // 原来快捷行里还有一颗「收起」，两者调的是同一个 `setFabOpen(false)`
+          // ——同一个动作摆两个控件，用户会先想「这俩有区别吗」，而那个问题的答案
+          // 对他是零价值（真机反馈：「那个收取按钮跟下面那个打叉叉有什么不同吗？
+          // 如果相同的就删掉」）。删掉文字那颗，留标题行这颗常规位置。
+          // 它现在是唯一入口，点击区按宿主图标按钮的标尺给到 28×28。
+          h('button', {
+            className: 'dsh-wb-icon dsh-wb-fabclose',
+            title: '收起浮层（再点浮球还在）',
+            onClick: () => setFabOpen(false),
+          }, icon('close')),
         ),
         aiBlock(),
       ))

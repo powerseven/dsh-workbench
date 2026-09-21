@@ -2047,7 +2047,7 @@ test('浮球点开就是一个输入框：说一句统一走 /ai-parse，由模�
   assert.equal(requests[0].body.text, '哪些逾期了')
 })
 
-test('浮层里的「收起」把浮球还回来，会话不丢', async () => {
+test('浮层里的「收起」把浮球还回来', async () => {
   withAi()
   aiReply = { tasks: [], reply: '没什么要紧的。' }
   const { render, view } = await mountAi()
@@ -2055,12 +2055,56 @@ test('浮层里的「收起」把浮球还回来，会话不丢', async () => {
   aiBtn(render(), '↑').props.onClick(ev())
   await settle()
 
-  aiBtn(render(), '收起').props.onClick(ev())
+  firstByClass(render(), 'dsh-wb-fabclose').props.onClick(ev())
   const folded = render()
   assert.ok(firstByClass(folded, 'dsh-wb-fabball') !== null, '收起后回到浮球')
   assert.equal(firstByClass(folded, 'dsh-wb-fabsheet'), null, '浮层不再在树里')
-
-  // 再点开：刚才那轮对话还在——它只活在这次会话里，收起不该等于清空。
-  firstByClass(folded, 'dsh-wb-fabball').props.onClick(ev())
-  assert.match(textOf(firstByClass(render(), 'dsh-wb-chat')), /没什么要紧的/)
 })
+
+test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起」已删）', async () => {
+  // 两颗按钮调同一个 setFabOpen(false)，是纯粹的重复。留哪颗的判断依据是位置：
+  // 标题行右上角是「关闭一个面板」的常规位置，快捷行那颗文字按钮反而占宽度。
+  withAi()
+  const { view } = await mountAi()
+  assert.equal(byClass(view, 'dsh-wb-fabclose').length, 1, '关闭入口只留一个')
+  const sheet = firstByClass(view, 'dsh-wb-fabsheet')
+  const labels = findAll(sheet, (x) => x.type === 'button').map((b) => textOf(b))
+  assert.ok(!labels.includes('收起'), '不再有与 ✕ 重复的「收起」按钮')
+})
+
+test('每次点开浮层都是全新的：输入框、上一轮问答、上一轮草稿全部清掉', async () => {
+  // 用户原话：「下次再点开的时候应该自动清空之前那个任务，不然话又堆在一起；
+  // 每次点开那个应该是一个全新的。」——它是件输入工具，不是一本对话记录。
+  // 不清的话最直接的症状是：上次没发出去的那句话还躺在输入框里，接着用输入法
+  // 说话就会**接在后面**。
+  withAi()
+  aiReply = { reply: '没什么要紧的。', tasks: [{ title: '补台账', due: '', priority: '', note: '', plan: '', candidates: [] }] }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把台账补完' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+  assert.ok(firstByClass(render(), 'dsh-wb-chat') !== null, '这一轮有问答')
+  assert.ok(firstByClass(render(), 'dsh-wb-aitask') !== null, '这一轮有草稿卡')
+
+  // 收起再点开
+  firstByClass(render(), 'dsh-wb-fabclose').props.onClick(ev())
+  firstByClass(render(), 'dsh-wb-fabball').props.onClick(ev())
+  const reopened = render()
+  assert.equal(firstByClass(reopened, 'dsh-wb-chat'), null, '上一轮问答不该留到下一次')
+  assert.equal(firstByClass(reopened, 'dsh-wb-aitask'), null, '上一轮草稿不该留到下一次')
+  assert.equal(aiEntry(reopened).props.value, '', '输入框必须是空的')
+})
+
+test('纯输入框（宿主没模型）提交后自动收起——不用再点一次', async () => {
+  const ctx = await mount()          // 不 withAi()：退化成纯输入框
+  firstByClass(ctx.view, 'dsh-wb-fabball').props.onClick(ev())
+  let view = ctx.render()
+  byClass(view, 'dsh-wb-aiinput')[0].props.onChange({ target: { value: '交电费' } })
+  byClass(ctx.render(), 'dsh-wb-iconbtn')[0].props.onClick(ev())
+  await settle()
+  const after = ctx.render()
+  assert.ok(firstByClass(after, 'dsh-wb-fabball') !== null, '记完就该回到浮球')
+  assert.equal(firstByClass(after, 'dsh-wb-fabsheet'), null, '浮层已经收起')
+  assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /已记入收件箱/)
+})
+
