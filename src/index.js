@@ -1208,15 +1208,22 @@ export function apply(ctx) {
         parsed.reply = (parsed.reply === '' ? '' : parsed.reply + '\n')
           + '· （回复被长度上限截断，上面只拿到前面这些；先采纳，再补一句处理剩下的）'
       }
+      // **已有同名任务的「草稿」不是新建，是归位/改动。**
+      // 用户的原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
+      // 而不是说让我确认再加任务」——模型经常一边在 reply 里写「这两条本来就在手上，
+      // 别当新任务再建一遍」，一边照样把它们塞进 tasks。那是**格式**上的错，靠改提示词
+      // 治不干净，所以在 host 这一层直接拦住：同名的转成 edits，tasks 里不再下发。
+      const split = splitExistingTasks(plan, attachSuggestions(plan, parsed.tasks, today))
       json(res, {
         ok: true,
         // 问答与录入是同一次调用的两种产出：只提问时 tasks 为空，
         // 只报事时 reply 是一句确认。面板两种都要能渲染。
         reply: parsed.reply,
-        tasks: attachSuggestions(plan, parsed.tasks, today),
+        tasks: split.fresh,
         // **改动已有任务**与**合并任务**：模型给的是标题，这里匹配回真实节点。
         // 匹配不上的 ok=false 原样带回去——AI 指错了要让人看见（同 list 的纪律）。
-        edits: matchEdits(plan, parsed.edits),
+        // 转出来的改动排在前面：它们对应「我刚才说的那条其实已经有了」，最该先看见。
+        edits: split.moved.concat(matchEdits(plan, parsed.edits)),
         merges: matchMerges(plan, parsed.merges),
         // AI 动态生成的清单：标题匹配回真实节点（匹配不上的 ok=false 带回去）。
         list: matchListTitles(plan, parsed.list),
@@ -1225,6 +1232,46 @@ export function apply(ctx) {
         model: { provider: status.provider, model: status.model },
       })
     }, AI_MAX_BODY_BYTES)
+
+    /**
+     * **把「其实是已有任务」的草稿摘出来，转成改动。**
+     *
+     * 判据是**标题完全相等**（去掉空白标点后），不做模糊匹配：模糊匹配在这里会把
+     * 「去长安应急指挥中心进行验收」和另一条沾边的标题并到一起，那是猜，不是判。
+     * 对不上的照样留在 tasks 里——新建是常态，「这条已经有了」是例外。
+     *
+     * 转出来的改动带上 `exists: true`，面板据此说清「已经在计划里」而不是「要新建」：
+     * 用户看到一张改动卡（归入 / 改截止），而不是一张「再建一遍」的草稿卡。
+     */
+    function splitExistingTasks(plan, tasks) {
+      const flat = collectNodes(plan, 'any')
+      const exact = new Map()
+      for (const x of flat) {
+        const t = norm(String(x.node.title ?? ''))
+        if (t !== '' && !exact.has(t)) exact.set(t, x.node)
+      }
+      const fresh = []
+      const moved = []
+      for (const t of tasks) {
+        const hit = exact.get(norm(String(t.title)))
+        if (hit === undefined) { fresh.push(t); continue }
+        const patch = {}
+        // 只放模型**明确给了**的字段：没给表示「这个不改」，不是「清空」。
+        if (typeof t.due === 'string' && t.due !== '') patch.due = t.due
+        if (typeof t.priority === 'string' && t.priority !== '') patch.priority = t.priority
+        if (typeof t.note === 'string' && t.note !== '') patch.note = t.note
+        if (typeof t.plan === 'string' && t.plan !== '') patch.plan = t.plan
+        moved.push({
+          target: String(hit.title),
+          patch,
+          why: typeof t.advice === 'string' ? t.advice : '',
+          id: String(hit.id ?? ''),
+          ok: true,
+          exists: true,
+        })
+      }
+      return { fresh, moved }
+    }
 
     /**
      * 把 AI 清单里的**任务标题**匹配回节点。

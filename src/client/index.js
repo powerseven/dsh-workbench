@@ -1124,29 +1124,59 @@ function apply(ctx) {
      * 全部按首选建议**逐条过一遍表单**，而不是一键全存。
      * 逐个 await：建新计划那一步要拿回 id 才能挂下一条。
      */
-    const aiApplyAll = async () => {
-      const queue = []
-      for (const task of aiTasks) {
-        const pick = Array.isArray(task.candidates) && task.candidates.length > 0
-          ? task.candidates[0] : { kind: 'inbox' }
-        let parent = ''
-        if (pick.kind === 'plan') {
-          parent = pick.id
-        } else if (pick.kind === 'new') {
-          const title = String(pick.title === undefined ? '' : pick.title).trim()
-          if (title === '') continue
-          const res = await write('node-add', { title, type: 'plan' })
-          if (res === null || res === undefined || res.node === null || res.node === undefined) continue
-          parent = res.node.id
-        }
-        queue.push(aiDraftOf(task, parent))
+    /**
+     * **一条草稿，直接落库**——AI 的首选建议 + 人的一次点击 = 一次写入。
+     *
+     * 为什么要有这条路（用户原话：「你反馈出来的东西没有可以让我选择确定，然后确定
+     * 之后你就帮我做」）：原来三条路都要过表单——芯片把你送进详情页，你还得再点保存。
+     * 「AI 草稿必经表单」那条纪律的本意是「AI 不替你决定」，而**点这一下就是你的决定**；
+     * 卡片上已经写着标题、截止、归入哪条，按下去就是它写的那个意思。
+     * 想改一改再存的人走芯片那条路（进表单），两条路并存。
+     *
+     * 去重/顺序说明：选「新建计划」时先建计划（要拿它的 id 当 parent），再建待办——
+     * 与表单那条路完全一样，只是不经过人眼。
+     */
+    const aiAddNow = async (task) => {
+      const pick = Array.isArray(task.candidates) && task.candidates.length > 0
+        ? task.candidates[0] : { kind: 'inbox' }
+      let parent = ''
+      let where = '收件箱'
+      if (pick.kind === 'plan') {
+        parent = String(pick.id)
+        where = String(pick.title)
+      } else if (pick.kind === 'new') {
+        const title = String(pick.title === undefined ? '' : pick.title).trim()
+        if (title === '') { flash('这条要新建计划，但还没有名字——点下面的芯片进去填'); return false }
+        const made = await write('node-add', { title, type: 'plan' })
+        if (made === null || made === undefined || made.node === null || made.node === undefined) return false
+        parent = String(made.node.id)
+        where = title
       }
-      setAiTasks([])
+      const input = { title: String(task.title) }
+      if (typeof task.due === 'string' && task.due !== '') input.due = task.due
+      if (typeof task.priority === 'string' && task.priority !== '') input.priority = task.priority
+      if (typeof task.note === 'string' && task.note !== '') input.note = task.note
+      if (parent !== '') input.parent = parent
+      const res = await write('node-add', input)
+      if (res === null || res === undefined) return false
+      setAiTasks((prev) => prev.filter((t) => t.key !== task.key))
+      flash('已加入「' + where + '」：' + String(task.title))
+      return true
+    }
+
+    /**
+     * **全部按首选建议加入**——真的全部落库，不再逐条开表单。
+     *
+     * 它原来的名字这么写、行为却是「打开第一条的表单，让你逐条过」，名不副实（用户就是
+     * 被这个坑住的）。想逐条改的人有的是入口：每张卡上的芯片会把你送进表单。
+     * 逐条 await：建计划那一步要拿回 id 才能挂下一条。
+     */
+    const aiApplyAll = async () => {
+      const todo = aiTasks.slice()
+      let added = 0
+      for (const task of todo) if (await aiAddNow(task) === true) added++
       setFabOpen(false)
-      if (queue.length === 0) return
-      setAiQueue(queue.slice(1))
-      openDraft(queue[0])
-      flash('逐条确认 AI 草稿（共 ' + queue.length + ' 条），改完点保存')
+      flash(added === 0 ? '没有可加入的条目' : '已按首选建议加入 ' + added + ' 条')
     }
 
     /**
@@ -1245,6 +1275,57 @@ function apply(ctx) {
     }
 
     /**
+     * **改动，直接落库**——与草稿卡那颗「就这么办」同一个道理：一次点击 = 一次写入。
+     *
+     * 走的是既有的 `/node-set`（计划与待办同一条路由，host 按 node 定位），
+     * 所以**零新增通路**；`plan` 那个字段是**名字**，在这里换成 parent id
+     * （与表单里的做法一致：找不到就让用户进表单自己选，而不是猜一个）。
+     */
+    const aiEditNow = async (edit) => {
+      const node = nodeById(edit.id)
+      if (node === null) { flash('这条任务不在了（刚被改过？），刷新再看看'); return }
+      const p = edit.patch === null || edit.patch === undefined ? {} : edit.patch
+      const args = { node: node.id }
+      if (typeof p.title === 'string') args.title = p.title
+      if (typeof p.due === 'string') args.due = p.due
+      if (typeof p.priority === 'string') args.priority = p.priority
+      if (typeof p.note === 'string') args.note = p.note
+      if (typeof p.owner === 'string') args.owner = p.owner
+      if (typeof p.start === 'string') args.start = p.start
+      if (typeof p.end === 'string') args.end = p.end
+      if (typeof p.status === 'string') args.status = p.status
+      if (typeof p.plan === 'string') {
+        const name = p.plan.trim()
+        if (name === '收件箱' || name === '顶层' || name === '无') args.parent = ''
+        else {
+          const hit = planByName(plan, name)
+          if (hit === null) { flash('没找到叫「' + name + '」的计划——点「按这个改」进表单自己选'); return }
+          args.parent = String(hit.id)
+        }
+      }
+      const res = await write('node-set', args)
+      if (res === null || res === undefined) return
+      setAiEdits((prev) => prev.filter((e) => e.key !== edit.key))
+      flash('已改「' + String(node.title) + '」')
+    }
+
+    /** 一条改动的摘要（用在按钮上）：改了哪几项，一眼看得出。 */
+    const editSummary = (edit) => {
+      const p = edit.patch === null || edit.patch === undefined ? {} : edit.patch
+      const parts = []
+      if (typeof p.plan === 'string' && p.plan !== '') parts.push('归入「' + p.plan + '」')
+      if (typeof p.due === 'string') parts.push('截止 ' + p.due)
+      if (typeof p.status === 'string') parts.push('状态 ' + statusLabel(p.status))
+      if (typeof p.title === 'string') parts.push('改标题')
+      if (typeof p.note === 'string') parts.push('改备注')
+      if (typeof p.priority === 'string') parts.push('重要程度 ' + priorityLabel(p.priority))
+      if (typeof p.owner === 'string') parts.push('负责人 ' + p.owner)
+      if (typeof p.start === 'string') parts.push('开始 ' + p.start)
+      if (typeof p.end === 'string') parts.push('结束 ' + p.end)
+      return parts.length === 0 ? '（没有要改的字段）' : parts.join(' · ')
+    }
+
+    /**
      * 改动卡上挑一个可选项：把它的 patch 并进这条改动，再走同一个表单。
      * 与草稿卡的选项**同一个姿势**——选项不直接建，只是「预填得更多一点」。
      */
@@ -1285,7 +1366,9 @@ function apply(ctx) {
       if (typeof p.end === 'string') rows.push(['结束', node === null || node.end === undefined ? '（无）' : String(node.end), p.end])
       return h('div', { className: 'dsh-wb-aitask' + (edit.ok === true ? '' : ' miss'), key: edit.key },
         h('div', { className: 'dsh-wb-aititle', key: 't' },
-          h('span', null, '改：' + String(edit.target) + (edit.ok === true ? '' : '（没对上这条任务）')),
+          h('span', null, '改：' + String(edit.target)
+            + (edit.exists === true ? '（已经在计划里，不用再建）' : '')
+            + (edit.ok === true ? '' : '（没对上这条任务）')),
           h('button', {
             key: 'x',
             className: 'dsh-wb-aibtn',
@@ -1298,6 +1381,16 @@ function apply(ctx) {
           rows.map((r, i) => h('div', { className: 'dsh-wb-formrow', key: 'r' + i },
             h('span', { className: 'dsh-wb-fmeta' }, r[0]),
             h('span', { className: 'dsh-wb-fref' }, (r[1] === '' ? '' : r[1] + ' → ') + r[2])))),
+        // **主动作**：直接改（一次 /node-set），不经过表单。
+        // 上面那行「旧 → 新」就是它要写的东西——按下去之前看得见自己会得到什么。
+        rows.length === 0 && edit.exists !== true
+          ? null
+          : h('div', { className: 'dsh-wb-movepick', key: 'now' },
+            h('button', {
+              className: 'dsh-wb-aibtn primary',
+              title: '就这么办：直接写入（' + editSummary(edit) + '）。想先改再存，点「按这个改」进表单',
+              onClick: () => { aiEditNow(edit) },
+            }, '就这么办：' + editSummary(edit))),
         Array.isArray(edit.options) && edit.options.length > 0
           ? h('div', { className: 'dsh-wb-movepick', key: 'opts' },
             h('span', { className: 'dsh-wb-movepicklabel' }, '可以这样：'),
@@ -1574,7 +1667,7 @@ function apply(ctx) {
 
       if (aiTasks.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aipics', key: 'all' },
-          h('span', null, '待确认 ' + aiTasks.length + ' 条，逐条挑去处，或'),
+          h('span', null, '待确认 ' + aiTasks.length + ' 条——点「就这么办」逐条加，或'),
           h('button', { className: 'dsh-wb-aibtn', disabled: aiBusy === true, onClick: aiApplyAll },
             '全部按首选建议加入'),
         ))
@@ -1685,6 +1778,24 @@ function apply(ctx) {
             + (x.days !== null && x.days !== undefined ? '，用了 ' + x.days + ' 天' : '')
             + (x.evidence > 0 ? '，附 ' + x.evidence + ' 条证据' : '') + '）')))
         : null,
+      // **主动作**：按首选建议**直接加入**，不经过表单。
+      // 位置在芯片**之前**——它是这张卡最该被点的那一个；下面的芯片是「我想改改」的次要路径。
+      (() => {
+        const pick = Array.isArray(task.candidates) && task.candidates.length > 0
+          ? task.candidates[0] : { kind: 'inbox' }
+        const where = pick.kind === 'plan' ? '归入「' + String(pick.title) + '」'
+          : (pick.kind === 'new'
+            ? '新建计划「' + String(pick.title === undefined ? '' : pick.title) + '」'
+            : '进收件箱')
+        return h('div', { className: 'dsh-wb-movepick', key: 'now' },
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            title: '就这么办：直接建这条待办（' + where + '，'
+              + String(task.due === undefined || task.due === '' ? '无截止' : task.due)
+              + '）。想先改再存，点下面的芯片进表单',
+            onClick: () => { aiAddNow(task) },
+          }, '就这么办：' + where))
+      })(),
       Array.isArray(task.options) && task.options.length > 0
         ? h('div', { className: 'dsh-wb-movepick', key: 'opts' },
           h('span', { className: 'dsh-wb-movepicklabel' }, '可以这样：'),
