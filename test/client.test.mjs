@@ -676,11 +676,18 @@ function fakeSpeech() {
     this.continuous = false
     this.interimResults = false
     this.lang = ''
+    // Chrome 138+ 的端上识别开关；面板必须在 start() 之前设它。
+    this.processLocally = undefined
     this.start = () => { state.started++ }
     this.stop = () => { state.stopped++; if (typeof this.onend === 'function') this.onend() }
   }
   globalThis.window.SpeechRecognition = Rec
   return state
+}
+
+/** 给替身补上 Chrome 138+ 的静态探测方法 `available({langs, processLocally})`。 */
+function fakePackState(state) {
+  globalThis.window.SpeechRecognition.available = async () => state
 }
 
 /** 收件箱那个常驻输入框已删除：顶部那行（AI 行，或没模型时的退化输入框）是唯一
@@ -718,8 +725,7 @@ test('麦克风没授权时把原因说出来，不静默失败', async () => {
   assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /麦克风没有授权/)
 })
 
-test('明文 HTTP（不是安全上下文）时不去点麦克风，并说清真正的原因', async () => {
-  // 手机上就是这么访问的（http://192.168.31.231:3080）。浏览器在非安全上下文里
+test('明文 HTTP（不是安全上下文）时不去点麦克风，并说清真正的原因', async () => {  // 手机上就是这么访问的（http://192.168.31.231:3080）。浏览器在非安全上下文里
   // 把录音能力整个拿掉，`start()` 只会回 `not-allowed`——而那句话会把人引去翻
   // 「麦克风权限」设置，真正的原因却是**地址**。所以先自己拦下来。
   const sp = fakeSpeech()
@@ -734,6 +740,35 @@ test('明文 HTTP（不是安全上下文）时不去点麦克风，并说清真
   } finally {
     globalThis.window.isSecureContext = old
   }
+})
+
+test('端上语音包就绪时走本地识别——不碰 Google（国内唯一能用的那条）', async () => {
+  // Chrome 的 Web Speech 默认把录音发给 **Google 的语音服务器**，国内连不上，
+  // 于是必回 `network`——真机上就是这么失败的。Chrome 138 起有 `processLocally`：
+  // 用设备上的语音包在本地识别。探测到就绪时必须打开它，否则这台手机永远用不了。
+  const sp = fakeSpeech()
+  fakePackState('available')
+  const { render } = await mountAi()
+  micOfPanel(render()).props.onClick(ev())
+  await new Promise((r) => setTimeout(r, 0))   // available() 是异步的
+  assert.equal(sp.started, 1, '探测完要真的开始听')
+  assert.equal(sp.inst.processLocally, true, '端上包就绪时必须走本地识别')
+})
+
+test('云端识别连不上 Google 时，把原因和出路都说出来', async () => {
+  // `network` 最容易被误读成「插件坏了」。它的真相是浏览器要去连 Google，
+  // 而国内连不上——出路是键盘上输入法自带的那颗话筒（系统级，不受这个限制）。
+  const sp = fakeSpeech()
+  fakePackState('downloadable')
+  const { render } = await mountAi()
+  micOfPanel(render()).props.onClick(ev())
+  await new Promise((r) => setTimeout(r, 0))
+  assert.equal(sp.inst.processLocally, undefined, '包还没下载好时不该硬开端上识别')
+  sp.inst.onerror({ error: 'network' })
+  const msg = textOf(firstByClass(render(), 'dsh-wb-flash'))
+  assert.match(msg, /Google/, '要说清是连不上 Google')
+  assert.match(msg, /输入法/, '要给出路：用键盘上输入法的话筒')
+  assert.match(msg, /端上语音包还没下载/, '包没就绪时顺手说明这一点')
 })
 
 test('浮球点开就把焦点交给输入框——手机上这就是最短的语音路径', async () => {

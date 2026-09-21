@@ -749,54 +749,91 @@ function apply(ctx) {
     /**
      * 收声：把中间结果实时灌进输入框，最后一段也是。
      *
-     * 先用 `isSecureContext` 自己拦一道：明文 HTTP（局域网 IP 就是这么访问的）
-     * 在浏览器眼里不是安全上下文，录音能力被整个拿掉，而且报的错是 `not-allowed`
-     * ——那句话会把人引去翻「麦克风权限」设置，而真正的原因是**地址**。
-     * 说清楚该怎么办，比让人白找一场强（见坑 #33）。
+     * 三道前置，各说各的原因，别混成一句「语音失败」：
+     *
+     * ① **不是安全上下文**（明文 HTTP + 局域网 IP）：录音能力被浏览器整个拿掉，
+     *    报的却是 `not-allowed`——那句话会把人引去翻「麦克风权限」设置，真正的原因
+     *    是**地址**（见坑 #33）。
+     * ② **优先端上识别**：Chrome 的 Web Speech 不是本地跑的，它把录音发给
+     *    **Google 的语音服务器**；国内连不上，于是必回 `network`。Chrome 138 起有
+     *    个绕开的办法——`processLocally`：用设备上的语音包在本地识别，一次网络都
+     *    不碰。有就一定要用（见坑 #35）。
+     * ③ 都不行时，别只说「失败」：告诉用户**换键盘上输入法自带的那颗话筒**——
+     *    那是系统级的能力，不受这些限制，中文通常还更准。
      */
     const startVoice = (setter) => {
       if (typeof window !== 'undefined' && window.isSecureContext === false) {
         flash('当前是 HTTP 地址，浏览器不允许用麦克风——换 HTTPS 打开就能用；也可以用键盘上输入法自带的话筒')
         return
       }
-      let rec = null
-      try {
-        rec = new SR()
-      } catch (e) {
-        flash('这个浏览器起不了语音识别')
-        return
-      }
-      rec.lang = typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'zh-CN'
-      rec.continuous = false
-      rec.interimResults = true
-      rec.onresult = (ev) => {
-        let text = ''
-        for (let i = 0; i < ev.results.length; i++) text += ev.results[i][0].transcript
-        setter(text.trim())
-      }
-      // 失败必须说出来。「没听见」和「没授权」要分开——前者再试一次就行，
-      // 后者得去改浏览器设置，混成一句「语音失败」等于什么都没说。
-      rec.onerror = (ev) => {
-        const code = ev && ev.error ? String(ev.error) : ''
-        if (code === 'not-allowed' || code === 'service-not-allowed') {
-          flash('麦克风没有授权，请允许后再试')
-        } else if (code === 'no-speech') {
-          flash('没听到声音，再试一次')
-        } else if (code !== 'aborted') {
-          flash('语音识别失败：' + (code || '未知原因'))
+      const lang = typeof navigator !== 'undefined' && navigator.language ? navigator.language : 'zh-CN'
+      /** local=是否走端上识别；packState 只用于把「为什么不行」说清楚。 */
+      const begin = (local, packState) => {
+        let rec = null
+        try {
+          rec = new SR()
+        } catch (e) {
+          flash('这个浏览器起不了语音识别')
+          return
+        }
+        rec.lang = lang
+        rec.continuous = false
+        rec.interimResults = true
+        // 端上识别：必须在 start() 之前设。它不联网，所以国内也能用。
+        if (local === true) {
+          try { rec.processLocally = true } catch (e) { /* 老浏览器没这个属性，忽略 */ }
+        }
+        rec.onresult = (ev) => {
+          let text = ''
+          for (let i = 0; i < ev.results.length; i++) text += ev.results[i][0].transcript
+          setter(text.trim())
+        }
+        // 失败必须说出来。「没听见」「没授权」「连不上 Google」是三种不同的事，
+        // 混成一句「语音失败」等于什么都没说。
+        rec.onerror = (ev) => {
+          const code = ev && ev.error ? String(ev.error) : ''
+          if (code === 'not-allowed' || code === 'service-not-allowed') {
+            flash('麦克风没有授权，请允许后再试')
+          } else if (code === 'no-speech') {
+            flash('没听到声音，再试一次')
+          } else if (code === 'network') {
+            // 这条最容易被误判成「插件坏了」：其实是 Chrome 的识别要连 Google，
+            // 而国内连不上。把出路直接写出来——键盘上输入法的话筒。
+            flash('这个浏览器的语音识别要连 Google 服务器（国内连不上）——请用键盘上输入法自带的话筒；'
+              + (packState === 'downloadable' ? '端上语音包还没下载，下载同样要连 Google' : ''))
+          } else if (code !== 'aborted') {
+            flash('语音识别失败：' + (code || '未知原因'))
+          }
+        }
+        rec.onend = () => { recRef.current = null; setListening(false) }
+        recRef.current = rec
+        setListening(true)
+        try {
+          rec.start()
+        } catch (e) {
+          // 重复 start 会抛。别让它把整块面板带崩。
+          recRef.current = null
+          setListening(false)
+          flash('语音识别启动失败，稍后再试')
         }
       }
-      rec.onend = () => { recRef.current = null; setListening(false) }
-      recRef.current = rec
-      setListening(true)
-      try {
-        rec.start()
-      } catch (e) {
-        // 重复 start 会抛。别让它把整块面板带崩。
-        recRef.current = null
-        setListening(false)
-        flash('语音识别启动失败，稍后再试')
+      // 有 available() 就先问一句「端上语音包什么状态」。它是异步的，但只在
+      // Chrome 138+ 存在；老浏览器/替身没有这个方法，走同步直连云端（测试替身
+      // 就是靠这条保持同步行为的）。
+      if (typeof SR.available === 'function') {
+        let p = null
+        try { p = SR.available({ langs: [lang], processLocally: true }) } catch (e) { p = null }
+        if (p !== null && typeof p.then === 'function') {
+          p.then((state) => {
+            const st = String(state)
+            // 'available' → 本地包已就绪，直接用；其余（downloadable/downloading/
+            // unavailable）先用云端试一次，失败时那句提示会带上 st 说明原因。
+            begin(st === 'available', st)
+          }).catch(() => begin(false, null))
+          return
+        }
       }
+      begin(false, null)
     }
 
     const stopVoice = () => {

@@ -34,7 +34,7 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（436 个，分五层见下）
+node --test test/*.test.mjs   # 跑测试（438 个，分五层见下）
 npm test                      # 构建 + 测试
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
@@ -332,9 +332,12 @@ if (surface !== undefined && seed.target !== 'bottom') { /* 走 surface = 官方
 就在**点击的同一个任务里**——iOS 只认「用户手势里」的 focus，晚一个 tick 就不弹键盘
 （那个 `useEffect` 只是兜底）。改这里时别顺手改成 `setTimeout(() => focus(), 0)`。
 
-插件自己那颗话筒走 Web Speech API，它只在**安全上下文**里可用（见坑 #33）：手机上
+插件自己那颗话筒走 Web Speech API，有两道门：① **安全上下文**（见坑 #33）——手机上
 走明文 HTTP + 局域网 IP 时，点它会被 `startVoice` 的前置判断拦下来并说清原因，
-而不是让它去撞 `not-allowed`、再报一句错的「麦克风没有授权」。
+而不是让它去撞 `not-allowed`、再报一句错的「麦克风没有授权」；② **识别在 Google
+那边**（见坑 #35）——Chrome 把录音发给 Google 的服务器，国内连不上就回 `network`。
+所以现在会先探一次端上语音包（`processLocally`）：能用就用本地，不能用就把
+「换键盘上输入法的话筒」这条出路直接写进提示里。
 
 **「面板顶部常驻一行输入」是有意撤掉的**：同一件事有两个入口，人就得先想「我该用
 哪个」，而那个问题的答案对用户毫无价值；面板又住在一个又宽又矮的地方，常驻一行
@@ -626,6 +629,22 @@ if (surface !== undefined && seed.target !== 'bottom') { /* 走 surface = 官方
     `dayFromToday(n)` 相对算（`test/host.test.mjs` 里有这个 helper）；同理，
     「周期正在走」这类用例要把周期写成**覆盖今天**的区间，而不是某年的固定日期。
     判据：**这个字符串过了某一天会不会换意思？** 会 → 必须相对算。
+
+35. **浏览器自带的语音识别不是本地跑的——Chrome 把录音发给 Google。** 所以
+    「安全上下文」过关**不等于**话筒能用：在国行安卓 Chrome 上，`isSecureContext`
+    是 true、`getUserMedia` 也在，但一按话筒就回 `network`——因为它要连
+    `google.com/speech-api`，国内连不上。这条极易被误判成「插件坏了」，所以
+    错误提示必须把**出路**写出来（键盘上输入法自带的那颗话筒是系统级的、不受
+    这个限制、中文通常还更准）。
+    唯一的绕法是 **`processLocally`**（Chrome 138+ 的端上识别）：用设备上的语音包
+    在本地识别，一次网络都不碰。用法三步——① `SpeechRecognition.available({langs,
+    processLocally:true})` 是**异步**的，先问状态；② 只有返回 `'available'` 才在
+    `start()` **之前**设 `rec.processLocally = true`；③ 返回 `'downloadable'` 时
+    **别急着装**——语音包同样要从 Google 下，国内下不动，这时老实回落云端、并把
+    状态说出来。真机实测（给 `available` 打桩）：探测 → `downloadable` → 回落云端
+    `start({processLocally:false})`，这条链在浏览器里是通的。
+    **`available` 只在 Chrome 138+ 存在**：没有它的浏览器要能同步直连云端，别把整个
+    语音入口卡在一个 await 上（测试替身也没有它，正好守住这条）。
 
 ## 约定
 
