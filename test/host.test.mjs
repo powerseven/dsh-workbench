@@ -952,6 +952,37 @@ test('/ai-parse 的改动与合并：标题匹配回真实节点，对不上的�
   assert.equal(after.versions, before.versions, '也不该留版本快照')
 })
 
+test('/ai-parse 把「同名草稿」转成改动，不当新建下发（否则一点就多一条重复的）', async () => {
+  // 用户原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
+  // 而不是说让我确认再加任务」。模型经常一边在 reply 里写「这两条本来就在手上，
+  // 别当新任务再建一遍」，一边照样塞进 tasks——那是格式上的错，提示词治不干净，
+  // 所以在 host 这一层拦住：**标题完全相等**的，转成 edits、tasks 里不再下发。
+  await call('plan_node_add', { title: '重复判定用计划', type: 'plan' })
+  await call('plan_node_add', { title: '重复判定用任务', parent: '重复判定用计划' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '这两条本来就在手上',
+    tasks: [
+      { title: '重复判定用任务', due: '2026-10-08', priority: 'high', plan: '重复判定用计划', advice: '已经在计划里了' },
+      { title: '重复判定用新任务', due: '2026-10-09' },
+    ],
+  }))
+
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把重复判定用任务排一下' })
+  assert.equal(r.payload.tasks.length, 1, '同名的那条不该再作为「新建」下发')
+  assert.equal(r.payload.tasks[0].title, '重复判定用新任务', '新任务照常留着')
+
+  const moved = r.payload.edits.find((e) => e.exists === true)
+  assert.ok(moved !== undefined, '同名的那条要转成改动')
+  assert.equal(moved.target, '重复判定用任务')
+  assert.equal(moved.ok, true)
+  assert.equal(typeof moved.id, 'string')
+  assert.equal(moved.patch.due, '2026-10-08', '模型给的字段要带过去')
+  assert.equal(moved.patch.priority, 'high')
+  assert.equal(moved.patch.plan, '重复判定用计划')
+  assert.equal(moved.why, '已经在计划里了', '理由也带过去，卡片上要显示')
+})
+
 test('/ai-parse 把文本与计划大纲一起交给模型（模型得知道现有计划才能建议归位）', async () => {
   fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
   fakeLlm = llmReturning('{"tasks":[]}')

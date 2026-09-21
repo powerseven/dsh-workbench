@@ -2108,6 +2108,76 @@ test('点开浮层助手先说一句「现在什么情况」——本地算的�
   assert.equal(firstByClass(render(), 'dsh-wb-fabsheet'), null, '点完应该收起浮层')
 })
 
+test('草稿卡的「就这么办」：一次点击直接落库，不进表单', async () => {
+  // 用户原话：「你反馈出来的东西没有可以让我选择确定，然后确定之后你就帮我做」——
+  // 原来三条路都要过表单（芯片把你送进详情页，还得再点保存）。现在卡片上有一个
+  // 写着「就这么办：归入「X」」的主动作，按下去就是它写的那个意思。
+  withAi()
+  aiReply = {
+    reply: '好',
+    tasks: [{
+      title: '补台账', due: '2026-10-09', priority: '', note: '', plan: '',
+      candidates: [{ kind: 'plan', id: idOf('工作主线'), title: '工作主线', why: '模型判断' }],
+      options: [],
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '补台账，10月9号' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-aitask')
+  const now = findAll(card, (x) => x.type === 'button' && textOf(x).startsWith('就这么办')).at(0)
+  assert.ok(now !== undefined, '卡片上要有一个一步到位的按钮')
+  assert.match(textOf(now), /归入「工作主线」/, '按钮上要写清它会做什么')
+
+  requests = []
+  now.props.onClick(ev())
+  await settle()
+  const add = requests.find((r) => String(r.path).endsWith('/node-add'))
+  assert.ok(add !== undefined, '应该真的写入：' + requests.map((r) => r.path).join(','))
+  assert.equal(add.body.title, '补台账')
+  assert.equal(add.body.due, '2026-10-09')
+  assert.equal(add.body.parent, idOf('工作主线'), '按首选建议归位')
+  assert.equal(firstByClass(render(), 'dsh-wb-formhead'), null, '不该再打开表单')
+})
+
+test('改动卡的「就这么办」：一次点击直接改，不进表单', async () => {
+  withAi()
+  aiReply = {
+    reply: '好',
+    edits: [{
+      target: '表层待办',
+      id: idOf('表层待办'),
+      ok: true,
+      exists: true,
+      patch: { due: '2026-10-09', priority: 'high' },
+      options: [],
+      why: '这两条本来就在手上',
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把表层待办改到10月9号' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-aitask')
+  assert.match(textOf(card), /已经在计划里，不用再建/, '同名的那条要说清「不是新建」')
+  const now = findAll(card, (x) => x.type === 'button' && textOf(x).startsWith('就这么办')).at(0)
+  assert.ok(now !== undefined)
+  assert.match(textOf(now), /截止 2026-10-09/, '按钮上写清要改什么')
+
+  requests = []
+  now.props.onClick(ev())
+  await settle()
+  const set = requests.find((r) => String(r.path).endsWith('/node-set'))
+  assert.ok(set !== undefined, '应该真的写入：' + requests.map((r) => r.path).join(','))
+  assert.equal(set.body.node, idOf('表层待办'))
+  assert.equal(set.body.due, '2026-10-09')
+  assert.equal(set.body.priority, 'high')
+  assert.equal(firstByClass(render(), 'dsh-wb-formhead'), null, '不该再打开表单')
+})
+
 test('改动卡：写出「旧 → 新」、带上可选项，采纳后进表单逐字段确认', async () => {
   // 「我输入 → 你决策 → 给清晰的意见和**可选项** → 我选 → 你照做」里，
   // 改动卡就是「意见」，芯片就是「可选项」，而**落库那一下永远在表单里**。
