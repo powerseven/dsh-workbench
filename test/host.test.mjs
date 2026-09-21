@@ -897,6 +897,61 @@ test('/ai-parse 把模型回复变成待办 + 归位候选，且不写入任何�
   assert.equal(after.versions, before.versions, '解析不该留版本快照')
 })
 
+test('/ai-parse 的改动与合并：标题匹配回真实节点，对不上的照样带回去', async () => {
+  // 模型只能给**标题**（与 plan 字段、清单 items 同一条纪律：它复述的 id 无从校验）。
+  // 所以「匹配回节点」是 host 的活，而且**匹配不上要让人看得见**——悄悄丢掉的话，
+  // 用户只会看到一张不执行的卡片，还以为是自己没说清。
+  // ⚠️ 标题必须**全文件唯一**：这个 fixture 是整份测试共用的，用了别的用例也在用的
+  // 名字（比如「补台账」），后面那条按标题匹配的用例就会命中我这里建的那条——
+  // 表现是它拿到的 id 对不上（我第一版就是这么红的）。
+  await call('plan_node_add', { title: 'AI改动用计划', type: 'plan' })
+  await call('plan_node_add', { title: 'AI改动用任务', parent: 'AI改动用计划' })
+  await call('plan_node_add', { title: 'AI改动用旧清单', parent: 'AI改动用计划' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning([
+    '```json',
+    JSON.stringify({
+      reply: '照你说的改了',
+      edits: [
+        { target: 'AI改动用任务', patch: { due: '2026-10-12' }, why: '你说改到周五' },
+        { target: '不存在的任务', patch: { due: '2026-10-12' } },
+      ],
+      merges: [
+        { keep: 'AI改动用任务', fold: ['AI改动用旧清单'], title: 'AI改动用任务（含旧清单）', why: '是一件事' },
+        { keep: 'AI改动用任务', fold: ['没这条'], title: '' },
+      ],
+    }),
+    '```',
+  ].join('\n'))
+
+  const before = await snapshotOfAiFixture()
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把补台账改到周五，旧清单整理并进去' })
+  const after = await snapshotOfAiFixture()
+
+  assert.equal(r.status, 200)
+  assert.equal(r.payload.edits.length, 2)
+  const [hit, miss] = r.payload.edits
+  assert.equal(hit.ok, true, '标题对得上就该带 id')
+  assert.equal(typeof hit.id, 'string')
+  assert.equal(hit.patch.due, '2026-10-12')
+  assert.equal(miss.ok, false, '对不上的 ok=false')
+  assert.equal(miss.id, null)
+  assert.equal(miss.target, '不存在的任务', '原样带回去，面板才能显示「没对上：X」')
+
+  assert.equal(r.payload.merges.length, 2)
+  const [ok, bad] = r.payload.merges
+  assert.equal(ok.ok, true)
+  assert.equal(ok.keepTitle, 'AI改动用任务')
+  assert.equal(ok.folds.length, 1)
+  assert.equal(ok.folds[0].title, 'AI改动用旧清单')
+  assert.equal(ok.title, 'AI改动用任务（含旧清单）')
+  assert.equal(bad.ok, false, 'fold 里有一条对不上，整组就不能执行')
+  assert.deepEqual(bad.missing, ['没这条'], '哪一条没对上要说出来')
+
+  assert.equal(after.plan, before.plan, '解析仍然只读——一个字都不该写进计划')
+  assert.equal(after.versions, before.versions, '也不该留版本快照')
+})
+
 test('/ai-parse 把文本与计划大纲一起交给模型（模型得知道现有计划才能建议归位）', async () => {
   fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
   fakeLlm = llmReturning('{"tasks":[]}')

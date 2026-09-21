@@ -123,13 +123,74 @@ test('parseAiReply 丢掉没有标题的条目；连一句回复都没有才算�
   const r = parseAiReply('{"tasks":[{"due":"2026-10-01"},{"title":"   "}]}')
   assert.equal(r.tasks.length, 0)
   // 「只提问不录入」现在是合法结果（reply 非空即可），所以不再因为没标题就报错。
-  assert.equal(r.error, '模型既没有回答，也没有给出待办')
+  assert.equal(r.error, '模型既没有回答，也没有给出待办或改动')
   assert.equal(parseAiReply('{"reply":"没有待办，只是在闲聊"}').error, '', '只回答不建任务也不算失败')
 
   // 完全没有 JSON 时也要说清，而不是抛 JSON.parse 的原始报错。
   const bad = parseAiReply('抱歉，我没看懂。')
   assert.match(bad.error, /没有给出能解析的 JSON/)
   assert.ok(bad.error.includes('我没看懂'), '错误里带上模型的原话片段，便于判断是提示词的问题还是模型抽风')
+})
+
+test('改动已有任务：认得的字段归一，认不得的一个都不进来', () => {
+  // 白名单的边界要钉住：**认得的字段**（说一句就能改的那些）归一后进来，
+  // **认不得的**（metric / starred / 什么乱七八糟的键）一律丢——放进来就等于
+  // 让模型能清空任意字段，而它并不真的知道那些字段的语义。
+  const r = parseAiReply(JSON.stringify({
+    reply: '好的',
+    edits: [
+      {
+        target: ' 补台账 ',
+        patch: { due: '2026-10-02', priority: '高', note: '改成周五', plan: '数据治理', status: '完成', owner: '张三', start: '2026-10-01', end: '2026-12-31' },
+        options: [
+          { label: '挪到下周', why: '这周排不开', patch: { due: '2026-10-09' } },
+          { label: '没有 patch 的选项', why: '' },
+        ],
+        why: '你说的',
+      },
+      { target: '旧清单', patch: { metric: { target: 10 }, starred: true } },
+      { target: '', patch: { due: '2026-10-01' } },
+    ],
+  }))
+  assert.equal(r.edits.length, 1, '只有第一条真的改得动')
+  const e = r.edits[0]
+  assert.equal(e.target, '补台账', 'target 两侧空白要修掉')
+  assert.equal(e.patch.priority, 'high', '「高」要归一到 high')
+  assert.equal(e.patch.status, 'done', '「完成」要归一到 done')
+  assert.equal(e.patch.owner, '张三')
+  assert.equal(e.patch.note, '改成周五')
+  assert.equal(e.patch.metric, undefined, 'metric 不在白名单里')
+  assert.equal(e.patch.starred, undefined, 'starred 不在白名单里')
+  // 可选项：patch 为空的选项等于没有内容，丢掉（点它什么都不会变）。
+  assert.equal(e.options.length, 1)
+  assert.equal(e.options[0].label, '挪到下周')
+  assert.equal(e.options[0].patch.due, '2026-10-09')
+})
+
+test('合并任务：keep 不能并进自己，fold 空了整条丢掉', () => {
+  const r = parseAiReply(JSON.stringify({
+    reply: '好的',
+    merges: [
+      { keep: '数据梳理', fold: ['旧清单', '数据梳理', ' '], title: '数据梳理（含旧清单）', why: '是一件事' },
+      { keep: 'A', fold: [], title: 'x' },
+      { keep: '', fold: ['B'] },
+    ],
+  }))
+  assert.equal(r.merges.length, 1)
+  assert.deepEqual(r.merges[0].fold, ['旧清单'], 'keep 自己与空白项都要剔掉')
+  assert.equal(r.merges[0].title, '数据梳理（含旧清单）')
+  assert.equal(r.merges[0].why, '是一件事')
+})
+
+test('只有改动或只有合并，也算一次成功的解析（不能判成失败）', () => {
+  // 这条是坑 #25 的又一次执行：给模型加新产出时，**旧的「成功判据」要回头看**。
+  // 「把 X 挪到某计划下」既不需要新任务、也不需要回答——漏了就会把它判成失败。
+  const onlyEdit = parseAiReply('{"edits":[{"target":"补台账","patch":{"due":"2026-10-01"}}]}')
+  assert.equal(onlyEdit.error, '', '只有改动不算失败')
+  const onlyMerge = parseAiReply('{"merges":[{"keep":"A","fold":["B"]}]}')
+  assert.equal(onlyMerge.error, '', '只有合并不算失败')
+  // 但真的一份产出都没有时，还是要报错。
+  assert.match(parseAiReply('{"reply":"","tasks":[],"edits":[],"merges":[]}').error, /没有任何|没有回答/)
 })
 
 test('parseAiReply 最多 ' + MAX_TASKS + ' 条，防止模型一口气吐几百条把面板撑垮', () => {

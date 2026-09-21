@@ -2089,6 +2089,84 @@ test('纯输入框（没模型）也照样有「确认」两个字', async () =>
   assert.equal(labelOf(ctx.render()), '确认', '有字就该显出来')
 })
 
+test('改动卡：写出「旧 → 新」、带上可选项，采纳后进表单逐字段确认', async () => {
+  // 「我输入 → 你决策 → 给清晰的意见和**可选项** → 我选 → 你照做」里，
+  // 改动卡就是「意见」，芯片就是「可选项」，而**落库那一下永远在表单里**。
+  withAi()
+  aiReply = {
+    reply: '照你说的改',
+    edits: [{
+      target: '表层待办',
+      id: idOf('表层待办'),
+      ok: true,
+      patch: { due: '2026-10-09' },
+      options: [{ label: '挪到下周', why: '这周排不开', patch: { due: '2026-10-16' } }],
+      why: '你说改到周五',
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把表层待办改到周五' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-aitask')
+  assert.ok(card !== null, '应该渲染出一张改动卡')
+  const cardText = textOf(card)
+  assert.match(cardText, /改：表层待办/)
+  assert.match(cardText, /（无） → 2026-10-09/, '要让人看见从什么变成什么，而不是只给新值')
+  assert.match(cardText, /你说改到周五/, '要把理由带上')
+  // 可选项：与草稿卡同一种芯片
+  const chip = byClass(card, 'dsh-wb-chip').find((b) => textOf(b) === '挪到下周')
+  assert.ok(chip !== undefined, '可选项要渲染成芯片')
+
+  // 采纳 → 打开那条任务的表单（草稿已填好），并**关掉浮层**（同草稿那条路）
+  // 必须限定 type==='button'：外层 .dsh-wb-movepick 的 textOf 也是这几个字，
+  // 而 findAll 是前序遍历——第一版就匹配到了那层 div，报 onClick is not a function。
+  const apply = findAll(card, (x) => x.type === 'button' && textOf(x) === '按这个改')[0]
+  apply.props.onClick(ev())
+  const after = render()
+  assert.ok(firstByClass(after, 'dsh-wb-formhead') !== null, '应该打开详情表单')
+  assert.equal(firstByClass(after, 'dsh-wb-fabsheet'), null, '交给表单后浮层要收起')
+  assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /改动已填进表单/)
+})
+
+test('合并卡：明写会删掉哪条；采纳后依次走既有的写入口（先搬后删）', async () => {
+  withAi()
+  aiReply = {
+    reply: '是一件事',
+    merges: [{
+      keep: '表层待办',
+      keepId: idOf('表层待办'),
+      keepTitle: '表层待办',
+      fold: ['深层待办'],
+      folds: [{ id: idOf('深层待办'), title: '深层待办' }],
+      title: '表层待办（含深层）',
+      missing: [],
+      ok: true,
+      why: '两条是一件事',
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把这两条合并' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-aitask')
+  assert.match(textOf(card), /会删掉：.*深层待办/, '删除是这张卡的全部风险，必须写在卡上')
+  assert.match(textOf(card), /子项、证据、关联会先并进保留的那条/, '并说明不丢东西')
+  assert.match(textOf(card), /→ 「表层待办（含深层）」/, '标题会怎么变也要写出来')
+
+  requests = []
+  findAll(card, (x) => x.type === 'button' && textOf(x) === '按这个合并')[0].props.onClick(ev())
+  await settle()
+  const paths = requests.map((r) => String(r.path).split('/').pop())
+  assert.ok(paths.includes('node-set'), '先改保留那条的标题：' + paths.join(','))
+  assert.ok(paths.includes('node-remove'), '最后删掉并进去的那条：' + paths.join(','))
+  assert.ok(paths.indexOf('node-set') < paths.indexOf('node-remove'), '顺序必须是先改/先搬、后删')
+  assert.equal(requests.find((r) => String(r.path).endsWith('/node-set')).body.title, '表层待办（含深层）')
+  assert.equal(requests.find((r) => String(r.path).endsWith('/node-remove')).body.node, idOf('深层待办'))
+})
+
 test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起」已删）', async () => {
   // 两颗按钮调同一个 setFabOpen(false)，是纯粹的重复。留哪颗的判断依据是位置：
   // 标题行右上角是「关闭一个面板」的常规位置，快捷行那颗文字按钮反而占宽度。

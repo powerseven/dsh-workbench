@@ -1214,6 +1214,10 @@ export function apply(ctx) {
         // 只报事时 reply 是一句确认。面板两种都要能渲染。
         reply: parsed.reply,
         tasks: attachSuggestions(plan, parsed.tasks, today),
+        // **改动已有任务**与**合并任务**：模型给的是标题，这里匹配回真实节点。
+        // 匹配不上的 ok=false 原样带回去——AI 指错了要让人看见（同 list 的纪律）。
+        edits: matchEdits(plan, parsed.edits),
+        merges: matchMerges(plan, parsed.merges),
         // AI 动态生成的清单：标题匹配回真实节点（匹配不上的 ok=false 带回去）。
         list: matchListTitles(plan, parsed.list),
         read: picked.map((f) => f.ref),
@@ -1231,18 +1235,7 @@ export function apply(ctx) {
       if (list === null || list === undefined) return null
       const flat = collectNodes(plan, 'any')
       const items = (Array.isArray(list.items) ? list.items : []).map((t) => {
-        const want = norm(String(t))
-        let hit = null
-        let best = 0
-        for (const x of flat) {
-          const got = norm(String(x.node.title ?? ''))
-          if (got === '') continue
-          if (got === want) { hit = x.node; best = got.length; break }
-          if ((got.includes(want) || want.includes(got)) && got.length > best) {
-            hit = x.node
-            best = got.length
-          }
-        }
+        const hit = hitByTitle(flat, t)
         return {
           title: String(t),
           id: hit === null ? null : String(hit.id ?? ''),
@@ -1250,6 +1243,88 @@ export function apply(ctx) {
         }
       })
       return { title: String(list.title ?? ''), items }
+    }
+
+    /**
+     * 按标题在整棵树里找节点：完全相等优先，其次互相包含（取标题最长的那个，
+     * 免得「数据」命中一堆）。找不到返回 null。
+     *
+     * 三种「模型点名了一个已有节点」的地方（清单 / 改动 / 合并）共用这一处，
+     * 免得三处各写一套、慢慢长出三套匹配口径。
+     */
+    function hitByTitle(flat, want) {
+      const w = norm(String(want))
+      if (w === '') return null
+      let hit = null
+      let best = 0
+      for (const x of flat) {
+        const got = norm(String(x.node.title ?? ''))
+        if (got === '') continue
+        if (got === w) return x.node
+        if ((got.includes(w) || w.includes(got)) && got.length > best) {
+          hit = x.node
+          best = got.length
+        }
+      }
+      return hit
+    }
+
+    /**
+     * **改动已有任务**：把 target 标题匹配回节点。
+     * 匹配不上、或者那条根本没字段可改的，ok=false 照样带回去——面板显示成
+     * 「没对上：<标题>」，用户一眼看出模型抄错了哪个名字。
+     */
+    function matchEdits(plan, edits) {
+      if (!Array.isArray(edits)) return []
+      const flat = collectNodes(plan, 'any')
+      return edits.map((e) => {
+        const hit = hitByTitle(flat, e.target)
+        return {
+          target: e.target,
+          patch: e.patch,
+          why: e.why,
+          id: hit === null ? null : String(hit.id ?? ''),
+          ok: hit !== null,
+        }
+      })
+    }
+
+    /**
+     * **合并任务**：keep 保留、fold 并进去（会被删掉）。两边都要匹配上才算 ok。
+     *
+     * 额外剔两种无意义项：fold 里混进了 keep 自己（按 id 判，标题写得不完全一样时
+     * 也能认出来）、同一个节点被 fold 两次。剩下的对不上就记在 missing 里带回去——
+     * 「哪一条没对上」必须说出来，否则用户只会看到一条不执行的卡片。
+     */
+    function matchMerges(plan, merges) {
+      if (!Array.isArray(merges)) return []
+      const flat = collectNodes(plan, 'any')
+      return merges.map((m) => {
+        const keep = hitByTitle(flat, m.keep)
+        const keepId = keep === null ? null : String(keep.id ?? '')
+        const missing = []
+        const fold = []
+        const seen = new Set(keepId === null ? [] : [keepId])
+        for (const t of (Array.isArray(m.fold) ? m.fold : [])) {
+          const hit = hitByTitle(flat, t)
+          if (hit === null) { missing.push(String(t)); continue }
+          const id = String(hit.id ?? '')
+          if (seen.has(id)) continue
+          seen.add(id)
+          fold.push({ id, title: String(hit.title ?? '') })
+        }
+        return {
+          keep: m.keep,
+          fold: m.fold,
+          title: m.title,
+          why: m.why,
+          keepId,
+          keepTitle: keep === null ? '' : String(keep.title ?? ''),
+          folds: fold,
+          missing,
+          ok: keep !== null && fold.length > 0 && missing.length === 0,
+        }
+      })
     }
 
     /** 与 ai.js 的 norm 同款（ai.js 没导出它，这里只用到这一种形态）。 */

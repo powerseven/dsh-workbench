@@ -399,6 +399,9 @@ const CSS = [
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
   '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
   '.dsh-wb-aitask{padding:var(--wb-sp-3) 0;border-top:1px dashed var(--wb-line-2);}',
+  // AI 点名了一个对不上的标题（清单/改动/合并都会出现）：**压暗但不隐藏**。
+  // 藏起来用户只会觉得「它没反应」，压暗 + 明写「没对上」才看得出是模型抄错了名字。
+  '.dsh-wb-aitask.miss{opacity:.55;}',
   '.dsh-wb-aititle{display:flex;gap:var(--wb-sp-3);align-items:baseline;}',
   '.dsh-wb-aititle > span{flex:1;word-break:break-word;}',
   '.dsh-wb-aimeta{font:var(--wb-f3);color:var(--wb-fg-2);white-space:nowrap;}',
@@ -924,7 +927,11 @@ function apply(ctx) {
     const [aiText, setAiText] = React.useState('')
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
-    const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿，逐条采纳
+    const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿（新建），逐条采纳
+    // 对**已有**任务的产出：edits 改字段、merges 合并。与 tasks 一样是建议，
+    // 落库前都要经过人（edits 走表单，merges 走卡片上那句「会删掉哪条」）。
+    const [aiEdits, setAiEdits] = React.useState([])
+    const [aiMerges, setAiMerges] = React.useState([])
     const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
     // AI 动态生成的清单卡（「明天在家能做的」）。它不是数据——是一个**视图建议**。
     const [aiList, setAiList] = React.useState(null)
@@ -1011,7 +1018,13 @@ function apply(ctx) {
               newTitle: fresh !== undefined && typeof fresh.title === 'string' ? fresh.title : '',
             })
           })))
-          if (reply === '' && list.length === 0) flash('没解析出待办，换个说法试试')
+          // 「改已有的」与「合并已有的」：host 已经把标题匹配回真实节点（含 ok 标记），
+          // 面板只管渲染与采纳——匹配不上的那几条要**显示成没对上**，不能悄悄丢。
+          setAiEdits((prev) => prev.concat((Array.isArray(r.edits) ? r.edits : []).map((e, i) => Object.assign({}, e, { key: 'ed' + Date.now() + '-' + i }))))
+          setAiMerges((prev) => prev.concat((Array.isArray(r.merges) ? r.merges : []).map((m, i) => Object.assign({}, m, { key: 'mg' + Date.now() + '-' + i }))))
+          const gotEdits = Array.isArray(r.edits) ? r.edits.length : 0
+          const gotMerges = Array.isArray(r.merges) ? r.merges.length : 0
+          if (reply === '' && list.length === 0 && gotEdits === 0 && gotMerges === 0) flash('没解析出待办，换个说法试试')
         })
         .catch((e) => {
           setAiBusy(false)
@@ -1020,7 +1033,7 @@ function apply(ctx) {
     }
 
     /** 清空这次会话（不写盘——它本来就只在内存里）。 */
-    const aiClear = () => { setAiTurns([]); setAiTasks([]); setAiList(null) }
+    const aiClear = () => { setAiTurns([]); setAiTasks([]); setAiEdits([]); setAiMerges([]); setAiList(null) }
 
     /** 把 AI 清单存成自定义视图（localStorage，与折叠 / 视图偏好同类：本机偏好）。 */
     const saveAiView = () => {
@@ -1130,6 +1143,213 @@ function apply(ctx) {
       setAiQueue(queue.slice(1))
       openDraft(queue[0])
       flash('逐条确认 AI 草稿（共 ' + queue.length + ' 条），改完点保存')
+    }
+
+    /**
+     * **改动已有任务**：把 AI 的 patch 盖在那条任务的**现状**上，打开详情表单。
+     *
+     * 与「AI 草稿」同一条纪律：**不直接落库**。而且这里更该过表单——改的是你已经在
+     * 用的那条，标题/截止被改错了比新建一条错得难受得多。
+     * 表单保存走的还是 `/node-set`，所以**零新增通路**。
+     */
+    const openAiEdit = (edit) => {
+      const node = nodeById(edit.id)
+      if (node === null) { flash('这条任务不在了（刚被改过？），刷新再看看'); return }
+      const draft = draftFromPatch(node, edit.patch)
+      setFormEvRef('')
+      setFormFileRef('')
+      setFormDepPick('')
+      setFormParent(draft.parent === undefined ? '' : draft.parent)
+      setMoreOpen(false)                 // 编辑：与 openEdit 一致，低频项收起
+      setAiEdits((prev) => prev.filter((e) => e.key !== edit.key))
+      setFabOpen(false)                  // 交给表单就把浮层关掉（同 aiApply）
+      setForm({ mode: 'edit', id: node.id, draft })
+      flash('改动已填进表单（原「' + String(node.title) + '」），确认后点保存')
+    }
+
+    /**
+     * **合并**：keep 留下、fold 并进去（fold 会被删掉）。
+     *
+     * 走的是**既有的四个写入口**，一步都不新：
+     *   ① keep 改标题（模型给了合并稿才改）      → /node-set
+     *   ② fold 的子项逐个移到 keep 下（追加）    → /node-move
+     *   ③ fold 的证据与关联**追加**到 keep       → /node-set / todo-set
+     *   ④ 删掉 fold                             → /node-remove
+     *
+     * 顺序是有意的：**先搬干净再删**，所以任何一步失败都不会丢掉子项或证据
+     * （最坏情况是留下一条空了但还在的节点，再合一次即可）。每一步 host 都会自动
+     * 归档版本，所以合错了能回滚。结果用 flash 说清楚并了哪些、删了哪条。
+     */
+    const applyMerge = async (merge) => {
+      const keep = nodeById(merge.keepId)
+      if (keep === null) { flash('保留的那条不在了（刚被改过？），刷新再看看'); return }
+      setAiMerges((prev) => prev.filter((m) => m.key !== merge.key))
+      const keepTitle = merge.title !== undefined && merge.title !== '' ? merge.title : String(keep.title)
+      if (keepTitle !== String(keep.title)) await write('node-set', { node: keep.id, title: keepTitle })
+      const done = []
+      for (const f of merge.folds) {
+        const node = nodeById(f.id)
+        if (node === null) continue
+        for (const kid of childrenOf(node)) await doMove(kid.id, keep.id)
+        for (const ev of (Array.isArray(node.evidence) ? node.evidence : [])) {
+          await write('node-set', { node: keep.id, evidenceKind: ev.kind, evidenceRef: ev.ref, evidenceNote: ev.note })
+        }
+        for (const file of (Array.isArray(node.files) ? node.files : [])) {
+          await write('node-set', { node: keep.id, fileKind: file.kind, fileRef: file.ref, fileNote: file.note })
+        }
+        await write('node-remove', { node: node.id })
+        done.push(String(node.title))
+      }
+      setFabOpen(false)
+      flash(done.length === 0
+        ? '没有可合并的条目'
+        : '已合并：' + done.map((t) => '「' + t + '」').join('、') + ' → 「' + keepTitle + '」')
+    }
+
+    /**
+     * 把一份 patch 盖在某个节点的**现状**上，得到表单草稿。
+     *
+     * 抽出来是因为有三条路要用同一套：改动卡、改动卡上的可选项、合并时改标题。
+     * 字段清单与 ai.js 的白名单一一对应——那边放宽一个字段，这里就得能接住，
+     * 否则「模型给了但界面没填」会静默变成「没改」。
+     */
+    const draftFromPatch = (node, patch) => {
+      const p = patch === null || patch === undefined ? {} : patch
+      const draft = Object.assign(formDraftOf(node), {})
+      if (typeof p.title === 'string') draft.title = p.title
+      if (typeof p.due === 'string') draft.due = p.due
+      if (typeof p.priority === 'string') draft.priority = p.priority
+      if (typeof p.note === 'string') draft.note = p.note
+      if (typeof p.owner === 'string') draft.owner = p.owner
+      if (typeof p.start === 'string') draft.start = p.start
+      if (typeof p.end === 'string') draft.end = p.end
+      // 状态要落在**该类型合法的那几个**上：计划与待办的状态集合不一样，
+      // 塞一个非法值进去，表单会显示成没选中，保存时又静默写回别的档。
+      if (typeof p.status === 'string' && statusListOf(draft.type).indexOf(p.status) >= 0) draft.status = p.status
+      if (typeof p.plan === 'string') {
+        // plan 也是**名字**不是 id（同草稿那条纪律）；找不到就让用户在表单里自己选。
+        // 「收件箱」「顶层」这类说法 = 移回顶层（不传 parent）。
+        const name = p.plan.trim()
+        if (name === '收件箱' || name === '顶层' || name === '无') draft.parent = ''
+        else {
+          const hit = planByName(plan, name)
+          if (hit !== null) draft.parent = String(hit.id)
+          else flash('没找到叫「' + name + '」的计划，位置请在表单里选')
+        }
+      }
+      return draft
+    }
+
+    /**
+     * 改动卡上挑一个可选项：把它的 patch 并进这条改动，再走同一个表单。
+     * 与草稿卡的选项**同一个姿势**——选项不直接建，只是「预填得更多一点」。
+     */
+    const aiEditOption = (edit, option) => {
+      const node = nodeById(edit.id)
+      if (node === null) { flash('这条任务不在了（刚被改过？），刷新再看看'); return }
+      const merged = Object.assign({}, edit.patch, option.patch === undefined ? {} : option.patch)
+      const draft = draftFromPatch(node, merged)
+      setFormEvRef('')
+      setFormFileRef('')
+      setFormDepPick('')
+      setFormParent(draft.parent === undefined ? '' : draft.parent)
+      setMoreOpen(false)
+      setAiEdits((prev) => prev.filter((e) => e.key !== edit.key))
+      setFabOpen(false)
+      setForm({ mode: 'edit', id: node.id, draft })
+      flash('已按「' + String(option.label) + '」填好，确认后点保存')
+    }
+
+    /**
+     * **改动卡**：`改：<任务>` + 每个字段的「旧 → 新」。
+     *
+     * 让用户看见**从什么变成什么**，而不是只说「要改这条」——改了截止 / 重要程度这种，
+     * 光看新值没法判断该不该点。对不上的那条（ok=false）压暗并列出来，不隐藏。
+     */
+    const aiEditCard = (edit) => {
+      const node = edit.ok === true && edit.id !== null ? nodeById(edit.id) : null
+      const p = edit.patch === null || edit.patch === undefined ? {} : edit.patch
+      const rows = []
+      if (typeof p.title === 'string') rows.push(['标题', node === null ? '' : String(node.title), p.title])
+      if (typeof p.due === 'string') rows.push(['截止', node === null ? '' : (node.due === '' || node.due === undefined ? '（无）' : String(node.due)), p.due])
+      if (typeof p.priority === 'string') rows.push(['重要程度', node === null ? '' : priorityLabel(node.priority === '' || node.priority === undefined ? 'normal' : node.priority), priorityLabel(p.priority)])
+      if (typeof p.note === 'string') rows.push(['备注', node === null ? '' : (node.note === '' || node.note === undefined ? '（无）' : String(node.note)), p.note])
+      if (typeof p.plan === 'string') rows.push(['归属', '', p.plan])
+      if (typeof p.owner === 'string') rows.push(['负责人', node === null ? '' : (node.owner === '' || node.owner === undefined ? '（无）' : String(node.owner)), p.owner])
+      if (typeof p.status === 'string') rows.push(['状态', node === null ? '' : statusLabel(node.status), statusLabel(p.status)])
+      if (typeof p.start === 'string') rows.push(['开始', node === null || node.start === undefined ? '（无）' : String(node.start), p.start])
+      if (typeof p.end === 'string') rows.push(['结束', node === null || node.end === undefined ? '（无）' : String(node.end), p.end])
+      return h('div', { className: 'dsh-wb-aitask' + (edit.ok === true ? '' : ' miss'), key: edit.key },
+        h('div', { className: 'dsh-wb-aititle', key: 't' },
+          h('span', null, '改：' + String(edit.target) + (edit.ok === true ? '' : '（没对上这条任务）')),
+          h('button', {
+            key: 'x',
+            className: 'dsh-wb-aibtn',
+            title: '丢掉这条改动',
+            onClick: () => setAiEdits((prev) => prev.filter((e) => e.key !== edit.key)),
+          }, icon('close')),
+        ),
+        edit.why === '' || edit.why === undefined ? null : h('div', { className: 'dsh-wb-advice', key: 'w' }, '※ ' + edit.why),
+        h('div', { className: 'dsh-wb-formlist', key: 'd' },
+          rows.map((r, i) => h('div', { className: 'dsh-wb-formrow', key: 'r' + i },
+            h('span', { className: 'dsh-wb-fmeta' }, r[0]),
+            h('span', { className: 'dsh-wb-fref' }, (r[1] === '' ? '' : r[1] + ' → ') + r[2])))),
+        Array.isArray(edit.options) && edit.options.length > 0
+          ? h('div', { className: 'dsh-wb-movepick', key: 'opts' },
+            h('span', { className: 'dsh-wb-movepicklabel' }, '可以这样：'),
+            edit.options.map((o, i) => h('button', {
+              key: 'o' + i,
+              className: 'dsh-wb-chip' + (i === 0 ? ' sug' : ''),
+              title: o.why === '' ? '按这个来' : o.why,
+              onClick: () => aiEditOption(edit, o),
+            }, o.label)))
+          : null,
+        node === null ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            title: '打开这条任务的表单（改动已填好，你可以再改），确认后保存',
+            onClick: () => openAiEdit(edit),
+          }, '按这个改')),
+      )
+    }
+
+    /**
+     * **合并卡**：并哪几条、留下哪条、**会删掉哪条**——三件事写在同一张卡上。
+     *
+     * 删除是这张卡的全部风险，所以「会删掉：X」是卡片的固定一行（不是 tooltip），
+     * 按钮也不叫「采纳」而叫「按这个合并」。合并本身不丢东西：子项、证据、关联
+     * 都先并进保留的那条（见 applyMerge）。
+     */
+    const aiMergeCard = (merge) => {
+      const folds = Array.isArray(merge.folds) ? merge.folds : []
+      const missing = Array.isArray(merge.missing) ? merge.missing : []
+      const keepName = '「' + (merge.keepTitle === '' || merge.keepTitle === undefined ? String(merge.keep) : String(merge.keepTitle)) + '」'
+      return h('div', { className: 'dsh-wb-aitask' + (merge.ok === true ? '' : ' miss'), key: merge.key },
+        h('div', { className: 'dsh-wb-aititle', key: 't' },
+          h('span', null, '合并：' + folds.map((f) => '「' + String(f.title) + '」').join('、') + ' → ' + keepName),
+          h('button', {
+            key: 'x',
+            className: 'dsh-wb-aibtn',
+            title: '丢掉这条合并',
+            onClick: () => setAiMerges((prev) => prev.filter((m) => m.key !== merge.key)),
+          }, icon('close')),
+        ),
+        merge.why === '' || merge.why === undefined ? null : h('div', { className: 'dsh-wb-advice', key: 'w' }, '※ ' + merge.why),
+        merge.title === '' || merge.title === undefined ? null : h('div', { className: 'dsh-wb-formrow', key: 'tt' },
+          h('span', { className: 'dsh-wb-fmeta' }, '标题'),
+          h('span', { className: 'dsh-wb-fref' }, keepName + ' → 「' + String(merge.title) + '」')),
+        h('div', { className: 'dsh-wb-aihist', key: 'del' },
+          '会删掉：' + (folds.length === 0 ? '（没有能对上的）' : folds.map((f) => '「' + String(f.title) + '」').join('、'))
+          + '（子项、证据、关联会先并进保留的那条）'),
+        missing.length === 0 ? null : h('div', { className: 'dsh-wb-aihist', key: 'miss' },
+          '没对上：' + missing.map((t) => '「' + String(t) + '」').join('、')),
+        merge.ok !== true ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            title: '按这个合并；上面列出的条目会被删掉（每一步都有版本留档，合错了能回滚）',
+            onClick: () => { applyMerge(merge) },
+          }, '按这个合并')),
+      )
     }
 
     /** 改某条草稿的新建计划名。用函数式更新，避免连着改几条时互相覆盖。 */
@@ -1309,6 +1529,11 @@ function apply(ctx) {
         for (const task of aiTasks) rows.push(aiTaskCard(task))
       }
 
+      // 「改已有的」与「合并」的卡片。它们和草稿卡是同一层东西（都是**建议**），
+      // 所以排在一起；差别只在采纳之后走哪条路。
+      for (const edit of aiEdits) rows.push(aiEditCard(edit))
+      for (const merge of aiMerges) rows.push(aiMergeCard(merge))
+
       return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
     }
 
@@ -1336,6 +1561,8 @@ function apply(ctx) {
       setAiPics([])
       setAiTurns([])
       setAiTasks([])
+      setAiEdits([])
+      setAiMerges([])
       setAiList(null)
       setFabOpen(true)
     }

@@ -335,7 +335,10 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '"priority":"high|normal|low 或留空","note":"备注或留空","plan":"计划名或留空",',
     '"advice":"计划专家意见或留空","options":[{"label":"选项名","why":"为什么",',
     '"patch":{"due":"...","priority":"...","plan":"...","note":"..."}}]}],',
-    '"list":{"title":"清单名","items":["任务标题","任务标题"]}}',
+    '"list":{"title":"清单名","items":["任务标题","任务标题"]},',
+    '"edits":[{"target":"已有任务的标题","patch":{"due":"...","priority":"...","plan":"...","note":"...","title":"..."},',
+    '"why":"为什么这么改"}],',
+    '"merges":[{"keep":"保留的那条标题","fold":["并进去的那条标题"],"title":"合并后的标题或留空","why":"为什么"}]}',
     '',
     '规则：',
     '1. reply **必填**：回答用户的问题。**分行写**——一行一个点（以「· 」开头），最多 4~6 行，',
@@ -357,6 +360,16 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '   例如「今天就排上」（priority=high）、「排到下周」（due=下周一）、「并入某计划」（plan=计划名）。',
     '8. 一条口述含多件事就拆成多条；同一件事的补充说明合并进 note，不要单独成条。',
     '9. 最多 ' + MAX_TASKS + ' 条，按原文顺序。',
+    '9a. **改动已有任务**（「把 X 的截止改到周五」「X 挪到某计划下」「X 加一句备注」）：放进 edits。',
+    '   target **必须是从【当前全貌】里原样抄下来的标题**，一个字都不要改写、不要自己起名字；',
+    '   patch 只可含 due / priority / plan / note / title 五个键，只放**要改的那几个**——',
+    '   没提到的键不要出现在 patch 里（那表示「不改」，不是「清空」）。',
+    '   只改已有的东西时**不要**再给一条同名 tasks：那是「新建一条」的意思，会变成两条。',
+    '9b. **合并任务**（「A 和 B 其实是一件事」「把这两条并起来」）：放进 merges。',
+    '   keep 是**保留**的那条、fold 是**并进去（会被删掉）**的那些，都必须是原样标题；',
+    '   fold 至少一条、不能含 keep 自己；title 留空表示沿用 keep 的标题，',
+    '   要改标题就写一个合并后的（例如「A（含 B）」）。合并前先想清楚留哪条：',
+    '   **留子项多的、在推进的那条**，把零散的那条并进去。',
     '10. 不要编造：上下文里没有的日期、文件、完成记录一律当作不存在。',
   ].filter((x) => x !== '' && x !== undefined).join('\n')
 }
@@ -517,21 +530,132 @@ function normOption(raw) {
  */
 export function parseAiReply(raw) {
   const parsed = extractJson(raw)
-  if (parsed === null) return { reply: '', tasks: [], list: null, error: '模型没有给出能解析的 JSON：' + clip(String(raw ?? '')) }
+  if (parsed === null) return emptyParsed('模型没有给出能解析的 JSON：' + clip(String(raw ?? '')))
   if (Array.isArray(parsed)) {
     // 模型偶尔直接给一个数组（旧格式的习惯），按「只有 tasks」处理。
-    return { reply: '', tasks: tasksOf(parsed), list: null, error: '' }
+    return Object.assign(emptyParsed(''), { tasks: tasksOf(parsed) })
   }
   if (parsed === null || typeof parsed !== 'object') {
-    return { reply: '', tasks: [], list: null, error: '模型给出的不是对象也不是数组' }
+    return emptyParsed('模型给出的不是对象也不是数组')
   }
   const list = Array.isArray(parsed.tasks) ? parsed.tasks : []
   const reply = isStr(parsed.reply) ? String(parsed.reply).trim().slice(0, 2000) : ''
   const tasks = tasksOf(list)
-  if (reply === '' && tasks.length === 0 && normList(parsed.list) === null) {
-    return { reply: '', tasks: [], list: null, error: '模型既没有回答，也没有给出待办' }
+  const edits = normEdits(parsed.edits)
+  const merges = normMerges(parsed.merges)
+  // **判失败的依据是「一样产出都没有」**：只提问（reply）是合法结果、只给清单是、
+  // 只给改动或合并也是（「把 X 挪到某计划下」就不需要新任务，也不需要回答）。
+  // 这条目录要跟着新产出一块长——漏一个就会把新形态误判成失败（见坑 #25）。
+  if (reply === '' && tasks.length === 0 && edits.length === 0 && merges.length === 0 && normList(parsed.list) === null) {
+    return emptyParsed('模型既没有回答，也没有给出待办或改动')
   }
-  return { reply, tasks, list: normList(parsed.list), error: '' }
+  return { reply, tasks, edits, merges, list: normList(parsed.list), error: '' }
+}
+
+/** 一份「什么都没解析出来」的骨架——所有产出都用同一个形状，调用方不用判 undefined。 */
+function emptyParsed(error) {
+  return { reply: '', tasks: [], edits: [], merges: [], list: null, error }
+}
+
+/** 一次最多提几条改动 / 几组合并——它们都是「要人一条条过的」，多了人就不看了。 */
+export const MAX_EDITS = 10
+
+/**
+ * 状态的中文口语 → 合法取值。
+ * 「完成」这个词最容易出事：它既可能是状态，也可能是标题的一部分，所以这里只认
+ * **整词**（前后没有别的字）；认不出就返回空串，宁可什么都不改。
+ */
+export function normStatus(v) {
+  if (!isStr(v)) return ''
+  const t = String(v).trim().toLowerCase()
+  const map = {
+    done: 'done', '完成': 'done', '已完成': 'done', '做完了': 'done', '已做完': 'done',
+    doing: 'doing', '进行中': 'doing', '在做': 'doing', '开始做': 'doing', '开工': 'doing',
+    todo: 'todo', '待办': 'todo', '未开始': 'todo', '还没做': 'todo',
+    dropped: 'dropped', '放弃': 'dropped', '不做了': 'dropped', '取消': 'dropped', '搁置': 'dropped',
+  }
+  return map[t] === undefined ? '' : map[t]
+}
+
+/**
+ * **改动已有任务**：{ target: 已有标题, patch: 只放要改的字段, why }。
+ *
+ * target 是**标题**不是 id——与 tasks.plan / list.items 同一条纪律：模型复述的 id
+ * 无从校验，而标题它抄错时人一眼能看出来（host 还会把匹配不上的标出来）。
+ * patch 的键是白名单：多一个键也不认（否则模型会顺手把 note 清空）。
+ */
+export function normEdits(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue
+    const target = isStr(item.target) ? String(item.target).trim().slice(0, 200) : ''
+    if (target === '') continue
+    const src = (item.patch !== null && typeof item.patch === 'object') ? item.patch : {}
+    const patch = {}
+    if (src.title !== undefined && isStr(src.title) && String(src.title).trim() !== '') patch.title = String(src.title).trim().slice(0, 200)
+    if (src.due !== undefined) { const d = normDue(src.due); if (d !== '') patch.due = d }
+    if (src.priority !== undefined) { const p = normPriority(src.priority); if (p !== '') patch.priority = p }
+    if (src.note !== undefined && isStr(src.note)) patch.note = String(src.note).trim().slice(0, 500)
+    if (src.plan !== undefined && isStr(src.plan) && String(src.plan).trim() !== '') patch.plan = String(src.plan).trim().slice(0, 100)
+    // 状态 / 负责人 / 周期：同样是「说一句就能改」的东西（「这条标完成」「归张三」
+    // 「下周一开始月底结束」）。白名单放宽的前提是**改动一律先过表单**——人确认那一下
+    // 才是安全边界，不是字段个数。
+    if (src.status !== undefined) { const st = normStatus(src.status); if (st !== '') patch.status = st }
+    if (src.owner !== undefined && isStr(src.owner)) patch.owner = String(src.owner).trim().slice(0, 100)
+    if (src.start !== undefined) { const d = normDue(src.start); if (d !== '') patch.start = d }
+    if (src.end !== undefined) { const d = normDue(src.end); if (d !== '') patch.end = d }
+    // 一个字段都没落到 patch 上 = 这条改动没有内容，丢掉（免得渲染出一张空卡）。
+    if (Object.keys(patch).length === 0) continue
+    // 可选项：同一件事有几种合理做法时（「改到周五」还是「挪到下周一」），
+    // 模型给 2–3 个 label + patch，面板渲染成芯片让人挑——与草稿卡的 options 同构。
+    // 注意：options 挂在**这条改动**上，不是挂在 patch 里（`src` 是 patch）——
+    // 我第一版写成 src.options，结果永远读到 undefined，芯片一个都不出。
+    const options = []
+    if (Array.isArray(item.options)) {
+      for (const o of item.options) {
+        const opt = normOption(o)
+        // normOption 在没有合法 patch 时**根本不返回 patch 键**（不是空对象），
+        // 直接 Object.keys(opt.patch) 会抛。这种选项点下去什么都不会变，丢掉。
+        if (opt !== null && opt.patch !== undefined) options.push(opt)
+        if (options.length >= MAX_OPTIONS) break
+      }
+    }
+    out.push({ target, patch, options, why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '' })
+    if (out.length >= MAX_EDITS) break
+  }
+  return out
+}
+
+/**
+ * **合并任务**：{ keep: 保留的标题, fold: [并进去的标题], title: 合并后的标题或空, why }。
+ *
+ * keep / fold 都是标题。host 会把两边都匹配回真实节点（匹配不上就标出来），
+ * 并且**把「自己并进自己」这种无意义项剔掉**。
+ */
+export function normMerges(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue
+    const keep = isStr(item.keep) ? String(item.keep).trim().slice(0, 200) : ''
+    if (keep === '') continue
+    const fold = (Array.isArray(item.fold) ? item.fold : [])
+      .filter((x) => isStr(x))
+      .map((x) => String(x).trim().slice(0, 200))
+      .filter((x) => x !== '' && x !== keep)
+      .slice(0, MAX_EDITS)
+    if (fold.length === 0) continue
+    out.push({
+      keep,
+      fold,
+      // 空 = 沿用 keep 的标题（模型不必为了「不改标题」编一个）。
+      title: isStr(item.title) ? String(item.title).trim().slice(0, 200) : '',
+      why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
+    })
+    if (out.length >= MAX_EDITS) break
+  }
+  return out
 }
 
 /**
