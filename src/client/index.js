@@ -936,6 +936,8 @@ function apply(ctx) {
     // 落库前都要经过人（edits 走表单，merges 走卡片上那句「会删掉哪条」）。
     const [aiEdits, setAiEdits] = React.useState([])
     const [aiMerges, setAiMerges] = React.useState([])
+    // 被忽略掉的「标题重复」组（客户端查出来的，本地记住即可——它每次都由计划派生）。
+    const [dupHidden, setDupHidden] = React.useState([])
     const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
     // AI 动态生成的清单卡（「明天在家能做的」）。它不是数据——是一个**视图建议**。
     const [aiList, setAiList] = React.useState(null)
@@ -1219,7 +1221,12 @@ function apply(ctx) {
       if (keep === null) { flash('保留的那条不在了（刚被改过？），刷新再看看'); return }
       setAiMerges((prev) => prev.filter((m) => m.key !== merge.key))
       const keepTitle = merge.title !== undefined && merge.title !== '' ? merge.title : String(keep.title)
-      if (keepTitle !== String(keep.title)) await write('node-set', { node: keep.id, title: keepTitle })
+      const patch = merge.patch === null || merge.patch === undefined ? {} : merge.patch
+      if (keepTitle !== String(keep.title) || Object.keys(patch).length > 0) {
+        // patch 是「保留那条缺、重复那条有」的字段（截止/重要程度/备注）——只搬子项
+        // 与证据的话，这些会**静默丢掉**：合并完发现截止没了，而谁也没提醒过。
+        await write('node-set', Object.assign({ node: keep.id, title: keepTitle }, patch))
+      }
       const done = []
       for (const f of merge.folds) {
         const node = nodeById(f.id)
@@ -1417,7 +1424,7 @@ function apply(ctx) {
      * 按钮也不叫「采纳」而叫「按这个合并」。合并本身不丢东西：子项、证据、关联
      * 都先并进保留的那条（见 applyMerge）。
      */
-    const aiMergeCard = (merge) => {
+    const aiMergeCard = (merge, onDismiss) => {
       const folds = Array.isArray(merge.folds) ? merge.folds : []
       const missing = Array.isArray(merge.missing) ? merge.missing : []
       const keepName = '「' + (merge.keepTitle === '' || merge.keepTitle === undefined ? String(merge.keep) : String(merge.keepTitle)) + '」'
@@ -1427,8 +1434,11 @@ function apply(ctx) {
           h('button', {
             key: 'x',
             className: 'dsh-wb-aibtn',
-            title: '丢掉这条合并',
-            onClick: () => setAiMerges((prev) => prev.filter((m) => m.key !== merge.key)),
+            title: merge.local === true ? '这条不用合并（只是这次不看了）' : '丢掉这条合并',
+            onClick: () => {
+              if (typeof onDismiss === 'function') onDismiss()
+              else setAiMerges((prev) => prev.filter((m) => m.key !== merge.key))
+            },
           }, icon('close')),
         ),
         merge.why === '' || merge.why === undefined ? null : h('div', { className: 'dsh-wb-advice', key: 'w' }, '※ ' + merge.why),
@@ -1502,6 +1512,10 @@ function apply(ctx) {
       if (f.unverified > 0) items.push({ id: 'unverified', label: '待核验', n: f.unverified })
       if (f.delegated > 0) items.push({ id: 'delegated', label: '委派', n: f.delegated })
       if (sum.inboxOpen > 0) items.push({ id: 'inbox', label: '收件箱', n: sum.inboxOpen })
+      // 标题重复的组数也报出来：它是最该动手的一类（见 duplicateGroupsOf）。
+      // 点它只是把浮层留在这儿不动——卡片就在下面，点那张卡才是动作。
+      const dups = duplicateGroupsOf(plan).length
+      if (dups > 0) items.push({ id: 'dup', label: '重复', n: dups })
       if (items.length === 0) {
         return h('div', { className: 'dsh-wb-aibrief', key: 'brief' },
           h('span', { className: 'dsh-wb-aibrieflabel' }, '眼下没有逾期、落后或待核验的东西——要我记点什么，直接说。'))
@@ -1516,6 +1530,8 @@ function apply(ctx) {
             ? '收件箱里有 ' + it.n + ' 条还没归位（在面板最上面）'
             : '点一下：面板切到筛选「' + it.label + '」',
           onClick: () => {
+            // 重复没有对应的筛选芯片，点了只是把卡片留在眼前（卡片就在这一行下面）。
+            if (it.id === 'dup') { flash('下面的卡片可以一键合并'); return }
             if (it.id !== 'inbox') store.set({ filter: it.id })
             setFabOpen(false)
             flash(it.id === 'inbox' ? '收件箱在面板最上面' : '面板已切到「' + it.label + '」')
@@ -1616,6 +1632,15 @@ function apply(ctx) {
       // 助手先说话（本地摘要，见 aiBriefing）：它排在快捷问法之后、问答之前——
       // 输入框和问法属于「我要说」，摘要是「它先说」，顺序上先听后说。
       rows.push(aiBriefing())
+
+      // **标题重复的，直接给一张一键合并的卡。**
+      // 这就是用户说的「你现在做的是要进行一些合并删减」：不用等模型看出来，也不用
+      // 重新解析——计划里现在就摆着四条（两条重复），客户端一眼能查出来。
+      // 纯客户端派生（duplicateGroupsOf），所以**刷新即生效**，与 host 半身的重启无关。
+      for (const dup of duplicateGroupsOf(plan)) {
+        if (dupHidden.indexOf(dup.key) >= 0) continue
+        rows.push(aiMergeCard(dup, () => setDupHidden((prev) => prev.concat([dup.key]))))
+      }
 
       // 这次会话的问答。助手的答复与「它读了哪些文件」都留在这里，
       // 人可以随时回看刚才那句建议到底依据什么。

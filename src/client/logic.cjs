@@ -654,6 +654,71 @@ function flattenNodes(plan) {
   return out
 }
 
+/**
+ * **标题重复的组**：同一个标题出现两次以上的。
+ *
+ * 「去长安应急指挥中心进行验收」在收件箱里躺着两条——这几乎总是重复记录（AI 建议
+ * 确认过一次、自己又记了一次，或两次都说了一遍）。用户的原话是「我本来就有两条任务
+ * 是已经存在的了，你现在做的是要进行一些合并删减」——所以这里**报出来**，
+ * 面板给一张一键合并的卡；合不合由人点，这里只负责找。
+ *
+ * 判据与 host 的 splitExistingTasks 同一把尺：**去掉空白与标点、大小写无关后完全相等**
+ * （不做模糊匹配——模糊匹配会把沾边的两条并到一起，那是猜不是判）。
+ * 已完成/已放弃的不参与：那两条留着是历史，不该劝人删。
+ */
+function duplicateGroupsOf(plan) {
+  var flat = flattenNodes(plan)
+  var map = {}
+  var order = []
+  for (var i = 0; i < flat.length; i++) {
+    var node = flat[i].node
+    if (node.status === 'done' || node.status === 'dropped') continue
+    var key = String(node.title === undefined || node.title === null ? '' : node.title)
+      .replace(/[\s\p{P}\p{S}]/gu, '').toLowerCase()
+    if (key === '') continue
+    if (map[key] === undefined) { map[key] = []; order.push(key) }
+    map[key].push(node)
+  }
+  var out = []
+  for (var j = 0; j < order.length; j++) {
+    var group = map[order[j]]
+    if (group.length < 2) continue
+    // 保留哪条：**信息多的那条**（有子项 > 有截止/重要度/备注）。都差不多就留先建的。
+    var keep = group[0]
+    var best = -1
+    for (var k = 0; k < group.length; k++) {
+      var n = group[k]
+      var score = childrenOf(n).length * 10
+        + (n.due ? 2 : 0) + (n.priority === 'high' ? 2 : 0) + (n.note ? 1 : 0)
+      if (score > best) { best = score; keep = n }
+    }
+    var folds = []
+    var patch = {}
+    for (var m = 0; m < group.length; m++) {
+      var x = group[m]
+      if (String(x.id) === String(keep.id)) continue
+      folds.push({ id: String(x.id), title: String(x.title) })
+      // 保留那条缺的字段，从重复的那些里补上——合并只搬子项/证据/关联的话，
+      // 「只有另一条填了截止」这种情况会把截止弄丢。
+      if (!patch.due && !keep.due && x.due) patch.due = x.due
+      if (!patch.priority && !keep.priority && x.priority) patch.priority = x.priority
+      if (!patch.note && !keep.note && x.note) patch.note = x.note
+    }
+    out.push({
+      key: 'dup-' + keep.id,
+      keepId: String(keep.id),
+      keepTitle: String(keep.title),
+      folds: folds,
+      title: '',
+      patch: patch,
+      why: '标题一模一样的有 ' + group.length + ' 条，是重复记录',
+      ok: true,
+      local: true,
+    })
+  }
+  return out
+}
+
 /** 筛选器定义。id 传给 focusList，label 上芯片。 */
 var FILTERS = [
   { id: 'all', label: '全部' },
@@ -1212,6 +1277,7 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     FILTERS: FILTERS,
     focusList: focusList,
     filterCounts: filterCounts,
+    duplicateGroupsOf: duplicateGroupsOf,
     upcomingByDay: upcomingByDay,
     deferDate: deferDate,
     dayLabel: dayLabel,
