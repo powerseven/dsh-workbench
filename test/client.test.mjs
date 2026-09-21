@@ -718,6 +718,41 @@ test('麦克风没授权时把原因说出来，不静默失败', async () => {
   assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /麦克风没有授权/)
 })
 
+test('明文 HTTP（不是安全上下文）时不去点麦克风，并说清真正的原因', async () => {
+  // 手机上就是这么访问的（http://192.168.31.231:3080）。浏览器在非安全上下文里
+  // 把录音能力整个拿掉，`start()` 只会回 `not-allowed`——而那句话会把人引去翻
+  // 「麦克风权限」设置，真正的原因却是**地址**。所以先自己拦下来。
+  const sp = fakeSpeech()
+  const old = globalThis.window.isSecureContext
+  globalThis.window.isSecureContext = false
+  try {
+    const { render } = await mountAi()
+    micOfPanel(render()).props.onClick(ev())
+    assert.equal(sp.started, 0, '非安全上下文里不该真的去启动识别')
+    assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /HTTP.*HTTPS/s,
+      '要说清是地址的问题、换成 HTTPS 就好')
+  } finally {
+    globalThis.window.isSecureContext = old
+  }
+})
+
+test('浮球点开就把焦点交给输入框——手机上这就是最短的语音路径', async () => {
+  // 手机上真正好用的语音是**输入法自带**的那颗话筒，而输入法是系统的东西，网页够不到
+  // （没有任何 API 能让网页按下它）。网页唯一能做的「唤起输入法」就是把输入框聚焦、
+  // 让键盘连着话筒一起弹出来——所以浮球点开后输入框必须已经聚焦，否则用户还要再点
+  // 一下输入框才够得着话筒。
+  //
+  // 用 `autoFocus`（React 把它实现成挂载时的一次 focus()，而这次挂载就在**点击的
+  // 同一个任务里**）——iOS 只认「用户手势里」的 focus，晚一个 tick 就不弹键盘了。
+  withAi()
+  const { render, view } = await mountAi()
+  const input = aiEntry(view)
+  assert.equal(input.props.autoFocus, true, '浮层里的输入框要 autoFocus')
+  assert.ok(input.props.ref !== undefined && input.props.ref !== null,
+    '要挂 ref：浮层打开时兜底再 focus 一次')
+  assert.ok(render() !== null)
+})
+
 // ============================================================ 归位建议
 
 /**

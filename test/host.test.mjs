@@ -21,6 +21,22 @@ import { apply } from '../src/index.js'
 
 const SESSION_ID = 'session-1'
 
+/**
+ * 相对今天的日期。**别把「未来」写死在日历上**：`expectAt: '2026-09-20'` 这种常量
+ * 过了那天就自动变成过去，于是「新建的委派不算逾期」这条断言会在某天早上突然变红，
+ * 而它跟当天任何改动都无关——排查时最容易被带偏的那种红。这里统一按「今天 + N 天」算。
+ */
+function dayFromToday(offset) {
+  const d = new Date()
+  d.setDate(d.getDate() + offset)
+  const mm = String(d.getMonth() + 1).padStart(2, '0')
+  const dd = String(d.getDate()).padStart(2, '0')
+  return d.getFullYear() + '-' + mm + '-' + dd
+}
+/** 委派用例用的两个日子：还早 / 更早之后（同一个人，只挪时间）。 */
+const FUTURE_DAY = dayFromToday(7)
+const LATER_DAY = dayFromToday(14)
+
 let dir = ''
 let tools = new Map()
 let routes = new Map()
@@ -441,7 +457,7 @@ test('建立委派：回执初始为待接受', async () => {
   const r = await call('plan_delegate_set', {
     node: '给张三的活',
     to: '张三',
-    expectAt: '2026-09-20',
+    expectAt: FUTURE_DAY,
   })
   assert.equal(r.delegate.status, 'pending')
   assert.equal(r.delegate.to, '张三')
@@ -452,7 +468,7 @@ test('plan_delegated 列出委派出去的事项（含类型与期望时间）',
   const r = await call('plan_delegated')
   assert.equal(r.ok, true)
   assert.equal(r.items.length, 1)
-  assert.equal(r.items[0].delegate.expectAt, '2026-09-20')
+  assert.equal(r.items[0].delegate.expectAt, FUTURE_DAY)
   assert.equal(r.items[0].typeLabel, '待办')
 })
 
@@ -480,9 +496,9 @@ test('没有委派记录时不能直接记回执', async () => {
 })
 
 test('重新委派会重置回执并刷新委派时间', async () => {
-  const before = await call('plan_delegate_set', { node: '给张三的活', to: '张三', expectAt: '2026-09-20' })
+  const before = await call('plan_delegate_set', { node: '给张三的活', to: '张三', expectAt: FUTURE_DAY })
   await call('plan_delegate_receipt', { node: '给张三的活', status: 'accepted' })
-  const after = await call('plan_delegate_set', { node: '给张三的活', to: '王五', expectAt: '2026-09-25' })
+  const after = await call('plan_delegate_set', { node: '给张三的活', to: '王五', expectAt: LATER_DAY })
   assert.equal(after.delegate.to, '王五')
   assert.equal(after.delegate.status, 'pending')
   assert.equal(before.delegate.status, 'pending')
