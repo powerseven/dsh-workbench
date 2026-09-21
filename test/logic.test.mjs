@@ -17,6 +17,7 @@ const {
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
   flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, boardColumns,
+  duplicateGroupsOf,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
   bytesToBase64, pickImages, AI_MAX_IMAGES,
@@ -1047,4 +1048,66 @@ test('dayLabel 按日格式化成「几月几日 周几」，脏日期原样返�
   assert.equal(dayLabel('2026-09-17'), '9月17日 周四')
   assert.equal(dayLabel('2026-01-04'), '1月4日 周日')
   assert.equal(dayLabel('乱七八糟'), '乱七八糟')
+})
+
+test('duplicateGroupsOf：只报标题完全一样的，忽略大小写与标点，done/dropped 不参与', () => {
+  // 用户截图里那两条「去长安应急指挥中心进行验收」就是它要抓的东西。
+  // 判据必须**严格**（去掉空白标点后完全相等）：模糊匹配会把沾边的两条并到一起，
+  // 那是猜不是判，而猜错了会让人把两件不同的事合成一件。
+  const plan = {
+    nodes: [
+      { id: 'a', type: 'todo', title: '去长安应急指挥中心进行验收', status: 'todo', due: '2026-09-22' },
+      { id: 'b', type: 'todo', title: '去长安应急指挥中心 进行验收。', status: 'todo' },
+      { id: 'c', type: 'todo', title: '  去长安应急指挥中心进行验收  ', status: 'todo', due: '2026-09-25' },
+      { id: 'd', type: 'todo', title: '去东北局验收', status: 'todo' },
+      { id: 'e', type: 'todo', title: '去东北局验收', status: 'done' },
+    ],
+  }
+  const groups = duplicateGroupsOf(plan)
+  assert.equal(groups.length, 1, '只有第一组算重复（e 已完成，不参与）')
+  const g = groups[0]
+  assert.equal(g.folds.length, 2, '三条里留一条、并两条')
+  assert.equal(g.keepId, 'a', '留信息多的那条（有截止）')
+  assert.equal(g.local, true, '这是客户端本地查出来的')
+  assert.equal(g.patch.due, undefined, '保留那条自己有截止，就不该被别人的覆盖')
+})
+
+test('duplicateGroupsOf：保留那条缺的字段从重复项里补上，别在合并时静默丢掉', () => {
+  // 「只有另一条填了截止」这种情况，合并只搬子项/证据的话会把截止弄没——
+  // 而界面上没有任何迹象。所以缺什么补什么。
+  const plan = {
+    nodes: [
+      { id: 'a', type: 'todo', title: '同一件事', status: 'todo' },
+      { id: 'b', type: 'todo', title: '同一件事', status: 'todo', due: '2026-10-01', priority: 'high', note: '打电话' },
+    ],
+  }
+  const g = duplicateGroupsOf(plan)[0]
+  assert.equal(g.keepId, 'b', '信息多的那条被留下')
+  assert.deepEqual(g.folds, [{ id: 'a', title: '同一件事' }])
+  assert.deepEqual(g.patch, {}, '留下的那条什么都不缺')
+
+  const reversed = duplicateGroupsOf({
+    nodes: [
+      { id: 'a', type: 'todo', title: '同一件事', status: 'todo', due: '2026-10-01' },
+      { id: 'b', type: 'todo', title: '同一件事', status: 'todo' },
+    ],
+  })[0]
+  assert.equal(reversed.keepId, 'a')
+  assert.deepEqual(reversed.patch, {})
+})
+
+test('duplicateGroupsOf：标题空、单条、跨层级都不误报', () => {
+  const plan = {
+    nodes: [
+      { id: 'p', type: 'plan', title: '计划甲', status: 'active', children: [
+        { id: 'x', type: 'todo', title: '子任务', status: 'todo' },
+      ] },
+      { id: 'y', type: 'todo', title: '子任务', status: 'todo' },
+      { id: 'z', type: 'todo', title: '   ', status: 'todo' },
+      { id: 'w', type: 'todo', title: '', status: 'todo' },
+    ],
+  }
+  const groups = duplicateGroupsOf(plan)
+  assert.equal(groups.length, 1, '跨层级的同名也算重复（它们确实是同一件事记了两遍）')
+  assert.equal(groups[0].keepId, 'x', '有子项的那条（score 高）被留下')
 })
