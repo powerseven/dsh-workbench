@@ -746,8 +746,19 @@ function apply(ctx) {
       if (rec !== null) { try { rec.stop() } catch (e) { /* 已经结束了 */ } }
     }, [])
 
-    /** 收声：把中间结果实时灌进输入框，最后一段也是。 */
+    /**
+     * 收声：把中间结果实时灌进输入框，最后一段也是。
+     *
+     * 先用 `isSecureContext` 自己拦一道：明文 HTTP（局域网 IP 就是这么访问的）
+     * 在浏览器眼里不是安全上下文，录音能力被整个拿掉，而且报的错是 `not-allowed`
+     * ——那句话会把人引去翻「麦克风权限」设置，而真正的原因是**地址**。
+     * 说清楚该怎么办，比让人白找一场强（见坑 #33）。
+     */
     const startVoice = (setter) => {
+      if (typeof window !== 'undefined' && window.isSecureContext === false) {
+        flash('当前是 HTTP 地址，浏览器不允许用麦克风——换 HTTPS 打开就能用；也可以用键盘上输入法自带的话筒')
+        return
+      }
       let rec = null
       try {
         rec = new SR()
@@ -826,6 +837,26 @@ function apply(ctx) {
     //   ③ **对话只活在这次会话**——它是「接着聊」用的，不是档案（不进 plan.json）。
     const [fabOpen, setFabOpen] = React.useState(false)
     const [fabGap, setFabGap] = React.useState(0)     // 键盘占掉的高度
+    // 浮球点开就把焦点交给输入行——**这是「语音」在手机上的正道**。
+    //
+    // 为什么不是自己录：手机上真正好用的语音是**输入法自带**的那颗话筒（豆包、讯飞…）。
+    // 它是系统输入法的一部分，网页**够不到**——没有任何 API 能让网页按下输入法的
+    // 话筒。网页唯一能做的「唤起输入法」就是 focus() 一个输入框；剩下的那一下必须
+    // 由人点。所以浮球能给的极限是：一点 → 键盘（连着话筒）立刻在手边。
+    //
+    // 而浏览器自带的那套 Web Speech 只在**安全上下文**里有：明文 HTTP + 局域网 IP
+    // 访问时 `navigator.mediaDevices` 直接是 undefined，`start()` 只会回
+    // `not-allowed`（见 startVoice 里的前置判断）。
+    //
+    // autoFocus 是主路径：React 把它实现成挂载时的一次 `focus()`，而这次挂载就在
+    // **点击的同一个任务里**——iOS 只认「用户手势里」的 focus，晚一个 tick 就不弹
+    // 键盘了。下面这个 effect 只是兜底（真跑起来键盘通常已经弹出来了）。
+    const aiInputRef = React.useRef(null)
+    React.useEffect(() => {
+      if (fabOpen !== true) return
+      const el = aiInputRef.current
+      if (el !== null && typeof el.focus === 'function') el.focus()
+    }, [fabOpen])
     // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
     // 放在面板自己身上（而不是浮球子组件）：面板本来就常驻，多一个 effect
     // 比多一个只为拿键盘高度而存在的子组件便宜。
@@ -1091,6 +1122,8 @@ function apply(ctx) {
               className: 'dsh-wb-aiinput',
               placeholder: '记一条待办，回车入收件箱…',
               value: plainDraft,
+              ref: aiInputRef,
+              autoFocus: true,
               onChange: (e) => setPlainDraft(e.target.value),
               onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); submitPlain() } },
             }),
@@ -1111,6 +1144,9 @@ function apply(ctx) {
           className: 'dsh-wb-aiinput',
           placeholder: '问一句（「哪些逾期了」），或直接说要做什么…',
           value: aiText,
+          ref: aiInputRef,
+          // 点开浮球就把键盘叫起来（手机上用输入法自带的话筒说话，见 fabOpen 那段）。
+          autoFocus: true,
           onFocus: () => { if (aiPersona === '') loadPersona() },
           onChange: (e) => setAiText(e.target.value),
           onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); runAi() } },
@@ -1223,7 +1259,9 @@ function apply(ctx) {
         return h('div', { className: 'dsh-wb-fab', key: 'fab' },
           h('button', {
             className: 'dsh-wb-fabball',
-            title: '说一句或问一句——点一下打开输入框，里面也有语音',
+            // 说的是**键盘上那颗话筒**，不是本插件自己那颗（那颗要安全上下文，手机上
+            // 走 HTTP 时用不了）。点一下就弹键盘，这是手机上最短的语音路径。
+            title: '说一句或问一句——点一下弹出键盘，用输入法自带的话筒说话',
             onClick: () => setFabOpen(true),
           }, icon('mic', 20)))
       }
