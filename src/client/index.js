@@ -549,6 +549,10 @@ const CSS = [
   '.dsh-wb-aiinput:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-aiinput::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-quick{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
+  // 打开浮层时助手先说一句「现在什么情况」——一行芯片，点一下就跳到面板对应的筛选。
+  // 数字全部来自面板同一份派生量（summarize().filters），所以两边永远对得上。
+  '.dsh-wb-aibrief{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
+  '.dsh-wb-aibrieflabel{font:var(--wb-f3);color:var(--wb-fg-2);}',
   // 对话：自己的话靠右、助手的靠左，靠**位置**而不是颜色区分（颜色要留给语义色）。
   '.dsh-wb-chat{display:flex;flex-direction:column;gap:var(--wb-sp-2);max-height:180px;overflow-y:auto;}',
   '.dsh-wb-msg{font:var(--wb-f2);line-height:1.6;padding:var(--wb-sp-2) var(--wb-sp-3);border-radius:var(--wb-r-3);max-width:88%;white-space:pre-wrap;}',
@@ -1383,6 +1387,50 @@ function apply(ctx) {
      * 问答、草稿卡与清单卡。宿主没有模型服务时退化成**纯输入框**而不是消失：
      * 「零摩擦把事收进来」是这个插件的立身之本，不能依赖模型在不在。
      */
+    /**
+     * **打开浮层时，助手先说话**（用户原话：「我点开它，你就应该要给我所有的一些建议」）。
+     *
+     * 这一版是**本地算的**：数字来自 summarize() 里那份和面板筛选芯片同源的派生量，
+     * 所以零模型成本、离线也在、而且**永远和面板上的数字一致**（重算就会出现
+     * 「浮层说 2 条、面板说 3 条」而没人知道哪个对——见「派生量不重算」那条纪律）。
+     *
+     * 它只回答「现在有什么值得动一下」，不给判断。想要模型的判断，接口就在上面那排
+     * 快捷问法（「我今天该做什么」）——那是**一次点击**的事，不该每次打开都替你花掉。
+     *
+     * 一行为限：浮层在手机上就 366px 宽、还压着键盘，多一行就少一条输入的空间。
+     * 没什么可说的时候也要说一句「眼下没有…」，否则「点开就有建议」这件事会时灵时不灵。
+     */
+    const aiBriefing = () => {
+      const sum = summarize(plan)
+      const f = sum.filters === undefined ? {} : sum.filters
+      const items = []
+      if (f.overdue > 0) items.push({ id: 'overdue', label: '逾期', n: f.overdue })
+      if (f.behind > 0) items.push({ id: 'behind', label: '落后', n: f.behind })
+      if (f.unverified > 0) items.push({ id: 'unverified', label: '待核验', n: f.unverified })
+      if (f.delegated > 0) items.push({ id: 'delegated', label: '委派', n: f.delegated })
+      if (sum.inboxOpen > 0) items.push({ id: 'inbox', label: '收件箱', n: sum.inboxOpen })
+      if (items.length === 0) {
+        return h('div', { className: 'dsh-wb-aibrief', key: 'brief' },
+          h('span', { className: 'dsh-wb-aibrieflabel' }, '眼下没有逾期、落后或待核验的东西——要我记点什么，直接说。'))
+      }
+      return h('div', { className: 'dsh-wb-aibrief', key: 'brief' },
+        h('span', { className: 'dsh-wb-aibrieflabel' }, '现在：'),
+        items.map((it) => h('button', {
+          key: it.id,
+          className: 'dsh-wb-chip',
+          // 收件箱没有对应的筛选芯片，点了就只是收起浮层让人看面板——title 里说清差别。
+          title: it.id === 'inbox'
+            ? '收件箱里有 ' + it.n + ' 条还没归位（在面板最上面）'
+            : '点一下：面板切到筛选「' + it.label + '」',
+          onClick: () => {
+            if (it.id !== 'inbox') store.set({ filter: it.id })
+            setFabOpen(false)
+            flash(it.id === 'inbox' ? '收件箱在面板最上面' : '面板已切到「' + it.label + '」')
+          },
+        }, it.label + ' ' + it.n)),
+      )
+    }
+
     const aiBlock = () => {
       const ai = state.ai === null || state.ai === undefined ? { available: false } : state.ai
       // 没有模型服务：不整块消失，退化成「记一条待办」的纯输入框。
@@ -1471,6 +1519,10 @@ function apply(ctx) {
           onClick: aiClear,
         }, '清空'),
       ))
+
+      // 助手先说话（本地摘要，见 aiBriefing）：它排在快捷问法之后、问答之前——
+      // 输入框和问法属于「我要说」，摘要是「它先说」，顺序上先听后说。
+      rows.push(aiBriefing())
 
       // 这次会话的问答。助手的答复与「它读了哪些文件」都留在这里，
       // 人可以随时回看刚才那句建议到底依据什么。
