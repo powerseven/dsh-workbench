@@ -1792,6 +1792,25 @@ test('快捷问法：点一下就把问题发出去（不用想怎么问）', as
   assert.equal(call.body.text, '我今天该做什么')
 })
 
+test('快捷问法：手里有东西时就让位（同一屏不重复问同样的事）', async () => {
+  withAi()
+  aiReply = { reply: '该做：补台账', tasks: [] }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onFocus(ev())
+  // 空手时问法在——那正是「我该问点什么」的时候。
+  assert.ok(byClass(render(), 'dsh-wb-quick').length > 0, '空手时应有快捷问法')
+
+  // 问过一轮之后，屏幕上已经有问答了；再摆一排「我今天该做什么 / 哪些逾期了」
+  // 就是同一屏里重复问同样的事——用户读完答案正要动手，那排问法只是噪音。
+  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '我今天该做什么')
+  chip.props.onClick(ev())
+  await settle()
+
+  const txt = textOf(render())
+  assert.doesNotMatch(txt, /哪些逾期了/, '有内容后不该再摆快捷问法')
+  assert.doesNotMatch(txt, /总结一下进展/, '有内容后不该再摆快捷问法')
+})
+
 test('草稿卡给出专家意见与历史依据（新增时要结合当前与历史）', async () => {
   withAi()
   aiReply = {
