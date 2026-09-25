@@ -94,18 +94,6 @@ const TAB_ID = 'dsh-workbench'
 const TAB_KIND = 'dsh-workbench'
 
 /**
- * 手机档底部块展开成 sheet 后，多久自己收回去（毫秒）。
- *
- * **只在「这一轮只有纯回答、没有留下要动手的东西」时才会用到它**（见 runAi）：
- * 有建议卡时永不自动收——那些卡要逐条确认，收走了用户还得重来。
- *
- * 30 秒而不是 8 秒：用户原话「8 秒钟时间都看都看不完，而且那个界面还存在滚动的，
- * 你让他怎么看嘛」。一段 reply 有 4~6 行、可能还要滚，8 秒只够扫一眼开头；
- * 给 30 秒才算「读得完」。反正真有卡要处理时它根本不会走这条路。
- */
-const AI_SHEET_AUTOFOLD_MS = 30000
-
-/**
  * 建议向导里那一行「分类」的中文名。
  *
  * 为什么要标出来：用户看到「改动已有」就该知道这条动的是**已有数据**，
@@ -1251,29 +1239,17 @@ function apply(ctx) {
           if (reply === '' && list.length === 0 && gotEdits === 0 && gotMerges === 0 && gotDeletes === 0) {
             flash('没解析出待办，换个说法试试')
           } else {
-            // 真的产出了结果，底部块这时才升成 sheet——**由结果驱动，不由用户点按钮**。
+            // 真的产出了结果，底部块这时才升起来——**由结果驱动，不由用户点按钮**。
             // 没有结果就保持一条输入行（「记一条」失败时屏幕不该被一块空结果区占住）。
+            //
+            // **没有自动收起**（曾经有过 8 秒 / 30 秒两版，都删了）。
+            // 用户的话点破了要害：「收不收不是关键，主要是你这个界面非常清晰简洁。
+            // 那如果我读完了之后，我点下一条或者点确认也行啊，对不对？」
+            //
+            // 计时器替用户做主，本质上是在赌他读完了——而内容一长（要滚动）
+            // 这个赌注必输。**收起该是他的动作**：读完了自己点「下一条」或「确认」。
+            // 界面只要足够清晰，他本来就知道该怎么往下走，不需要谁替他决定时机。
             setAiExpanded(true)
-            // **什么时候才自己收回去**——这段逻辑比"设个 8 秒"要细，因为
-            // 用户明确抱怨过：「8 秒钟时间都看都看不完，而且那个界面还存在滚动的，
-            // 你让他怎么看嘛？」
-            //
-            // 那条抱怨点破了一个根本矛盾：**内容长到要滚动，就说明它需要时间读**，
-            // 而自动收起正好在读到一半时把它抽走。所以判据不是"过了几秒"，而是
-            // **这一轮有没有留下要用户动手的东西**：
-            //
-            //   · 有建议卡（tasks/edits/merges/deletes）→ **永不自动收**。
-            //     那些卡要逐条确认，收走了用户就得重来一遍；向导本来就停在
-            //     「第 1 / N 条」，它自己会告诉用户还没完。
-            //   · 只有纯回答（reply 而已）→ 才自动收，而且给足时间。
-            //
-            // 用户正在打字时不收（aiTextRef 非空），否则会打断他。
-            const hasCards = list.length > 0 || gotEdits > 0 || gotMerges > 0 || gotDeletes > 0
-            if (isMobile === true && hasCards !== true) {
-              window.setTimeout(() => {
-                if (aiTextRef.current === '') setAiExpanded(false)
-              }, AI_SHEET_AUTOFOLD_MS)
-            }
           }
         })
         .catch((e) => {
@@ -1940,43 +1916,66 @@ function apply(ctx) {
           aiText.trim() === '' ? null : h('span', { className: 'dsh-wb-sendlabel' }, '确认')),
       ))
 
-      // 快捷问法：把「助手能干什么」直接摆在眼前。它同时是最短的那条学习路径。
-      rows.push(h('div', { className: 'dsh-wb-quick', key: 'quick' },
-        QUICK_ASKS.map((q) => h('button', {
-          key: q,
-          className: 'dsh-wb-chip',
-          title: '问一句：' + q,
-          disabled: aiBusy === true,
-          onClick: () => runAi(q),
-        }, q)),
-        h('span', { className: 'dsh-wb-aimodel', key: 'm' }, model),
-        h('button', {
+      // 快捷问法：把「助手能干什么」直接摆在眼前，它同时是最短的那条学习路径。
+      //
+      // **但只在「手里还没有东西」时给**——这是「清晰简洁」的核心一条：
+      // 已经有问答或建议卡在屏幕上时，再摆一排「我今天该做什么 / 哪些逾期了」
+      // 就是同一屏里重复问同样的事。用户读完答案正要动手，那排问法只是噪音。
+      // 空手时给才有意义：那时他正想着「我该问点什么」，这排问法就是答案。
+      const hasContent = aiTurns.length > 0 || aiTasks.length > 0 || aiEdits.length > 0
+        || aiMerges.length > 0 || aiDeletes.length > 0 || aiBusy === true
+      if (hasContent !== true) {
+        rows.push(h('div', { className: 'dsh-wb-quick', key: 'quick' },
+          QUICK_ASKS.map((q) => h('button', {
+            key: q,
+            className: 'dsh-wb-chip',
+            title: '问一句：' + q,
+            disabled: aiBusy === true,
+            onClick: () => runAi(q),
+          }, q)),
+        ))
+      }
+
+      // 一条薄薄的工具行：模型名、清空、收起。
+      //
+      // 它们都**不是内容**，所以只在真的用得上时出现：
+      //   · 模型名 —— 只在空手时露一眼（「用的是哪个模型」是个偶尔才关心的问题，
+      //     不该在每次读完答案时都占着视线）；
+      //   · 清空 / 收起 —— 只在有东西可清、有块可收时才有意义。
+      const tools = []
+      if (hasContent !== true && model !== '') tools.push(h('span', { className: 'dsh-wb-aimodel', key: 'm' }, model))
+      if (hasContent === true) {
+        tools.push(h('button', {
           key: 'clear',
           className: 'dsh-wb-aibtn',
           title: '清空这一轮：把问答与草稿都抹掉，重新说（不写盘，它本来只在内存里）',
           onClick: aiClear,
-        }, '清空'),
-        // 手机档专属：把升起来的底部 sheet 收回成一条输入行。
-        //
-        // 桌面档不渲染它——桌面是浮球形态，收起由浮层自己的 ✕ 负责
-        // （AGENTS.md 那条「同一个动作不摆两个控件」的纪律仍然有效：
-        //  这里只有一个收起入口，不是两个）。
-        //
-        // 文案用「收起」而不是 ✕ 图标：它和「清空」并排，两个纯图标会分不清
-        // 哪个是抹掉内容、哪个只是把块收小——而这两件事的后果差别很大。
-        isMobile === true
-          ? h('button', {
-            key: 'collapse',
-            className: 'dsh-wb-aibtn',
-            title: '收起这块，回到计划树（内容都还在，随时可以再展开）',
-            onClick: () => setAiExpanded(false),
-          }, '收起')
-          : null,
-      ))
+        }, '清空'))
+      }
+      // 手机档专属：把升起来的块收回成一条输入行。
+      //
+      // 桌面档不渲染它——桌面是浮球形态，收起由浮层自己的 ✕ 负责
+      // （AGENTS.md 那条「同一个动作不摆两个控件」的纪律仍然有效）。
+      //
+      // 文案用「收起」而不是 ✕ 图标：它和「清空」并排，两个纯图标会分不清
+      // 哪个是抹掉内容、哪个只是把块收小——而这两件事的后果差别很大。
+      if (isMobile === true && aiExpanded === true) {
+        tools.push(h('button', {
+          key: 'collapse',
+          className: 'dsh-wb-aibtn',
+          title: '收起这块，回到计划树（内容都还在，随时可以再展开）',
+          onClick: () => setAiExpanded(false),
+        }, '收起'))
+      }
+      if (tools.length > 0) rows.push(h('div', { className: 'dsh-wb-quick', key: 'tools' }, tools))
 
       // 助手先说话（本地摘要，见 aiBriefing）：它排在快捷问法之后、问答之前——
       // 输入框和问法属于「我要说」，摘要是「它先说」，顺序上先听后说。
-      rows.push(aiBriefing())
+      //
+      // **同样只在空手时给**：它的数字（逾期 2 / 落后 1 / 收件箱 3）在面板的
+      // 筛选芯片上本来就写着，而且那些芯片还能点。有内容在屏幕上时再报一遍，
+      // 就是同一屏里的第二份同样数字——两份并存还会引出「以哪个为准」的疑问。
+      if (hasContent !== true) rows.push(aiBriefing())
 
       // **标题重复的，直接给一张一键合并的卡。**
       // 这就是用户说的「你现在做的是要进行一些合并删减」：不用等模型看出来，也不用
