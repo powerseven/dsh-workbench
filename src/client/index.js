@@ -94,6 +94,15 @@ const TAB_ID = 'dsh-workbench'
 const TAB_KIND = 'dsh-workbench'
 
 /**
+ * 手机档底部块展开成 sheet 后，多久自己收回去（毫秒）。
+ *
+ * 升起来是「给你看这一轮的结果」，不是「从此常驻半屏」——少了自动收起，
+ * 问过一次之后那块就永远占着，下次打开面板看到的还是上次的问答。
+ * 8 秒够读完一段 reply，又不至于让人干等着。用户正在打字时不收。
+ */
+const AI_SHEET_AUTOFOLD_MS = 8000
+
+/**
  * 「现在是不是手机档」——给**结构**用的判断（要不要渲染浮球、输入条挂哪儿）。
  *
  * 为什么需要 JS 判断而不只靠 CSS：浮球与底部输入条是**两个不同的渲染结构**，
@@ -525,15 +534,25 @@ const CSS = [
   //
   // 安全区在两种状态下都要留（安卓手势条 / iOS home indicator）。
   '.dsh-wb-dockai{flex:none;display:flex;flex-direction:column;gap:var(--wb-sp-2);overflow:hidden;padding:var(--wb-sp-3) var(--wb-sp-4) calc(var(--wb-sp-3) + env(safe-area-inset-bottom,0px));border-top:1px solid var(--wb-line);background:var(--wb-bg);}',
-  // 收起态：只显示输入行。`> *` 盖住 aiBlock() 的每一个顶层子块（快捷问法行、
-  // 简报行、问答区、图片条、清单卡、各类草稿卡…），不必逐个点名——新增内容类型
-  // 时不会漏一条规则就把它漏到收起态里。
-  '.dsh-wb-dockai > *{display:none;}',
-  '.dsh-wb-dockai > .dsh-wb-aibar{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  // 收起态：只显示输入行。
+  //
+  // **选择器必须下探到 .dsh-wb-aiwrap 里面**（第一版写成 `.dsh-wb-dockai > .dsh-wb-aibar`
+  // 是错的）：aiBlock() 返回的是**一个** .dsh-wb-aiwrap 容器，输入行是它的**孙子**而不是
+  // dock 的直接子元素。所以
+  //     `.dsh-wb-dockai > *`            → 只命中 .dsh-wb-aiwrap（整块）
+  //     `.dsh-wb-dockai > .dsh-wb-aibar` → **永远命中 0 个元素**
+  // 后果比"没生效"更糟：收起态会把整块（含输入框）一起藏掉，用户连输入框都找不到。
+  // 现在按「容器照常显示、只隐藏容器里除输入行以外的每一块」来写。
+  //
+  // 用 display:none 而不是 max-height:0：后者会让内部的输入框仍然可聚焦
+  // （Tab 键会跳进一个看不见的输入框），且仍留在无障碍树里。
+  '.dsh-wb-dockai .dsh-wb-aiwrap{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
+  '.dsh-wb-dockai .dsh-wb-aiwrap > *{display:none;}',
+  '.dsh-wb-dockai .dsh-wb-aiwrap > .dsh-wb-aibar{display:flex;align-items:center;gap:var(--wb-sp-2);}',
   // 展开态：整块放出来，升成 sheet 自己滚（此时它占的是屏幕，不是计划树的高度）。
   '.dsh-wb-dockai.on{max-height:92dvh;overflow-y:auto;overscroll-behavior:contain;}',
-  '.dsh-wb-dockai.on > *{display:block;}',
-  '.dsh-wb-dockai.on > .dsh-wb-aibar{display:flex;}',
+  '.dsh-wb-dockai.on .dsh-wb-aiwrap > *{display:block;}',
+  '.dsh-wb-dockai.on .dsh-wb-aiwrap > .dsh-wb-aibar{display:flex;}',
   '.dsh-wb-dockai .dsh-wb-aiinput{flex:1 1 auto;min-width:0;}',
   // 问答与草稿卡在底部块里不该再撑满整宽（那里比浮层窄不了多少，但要留出边距）。
   '.dsh-wb-dockai .dsh-wb-msg{max-width:92%;}',
@@ -1048,6 +1067,13 @@ function apply(ctx) {
       return () => { vv.removeEventListener('resize', onShift); vv.removeEventListener('scroll', onShift) }
     }, [])
     const [aiText, setAiText] = React.useState('')
+    // 当前输入框里的字（ref 而非 state）：自动收起要判断「用户是不是正在打字」，
+    // 而那个定时器回调拿到的必须是**最新值**——用 state 会闭包捕获旧值，
+    // 在「提交后立刻又打字」的时序下会误判成空、把用户打断。
+    const aiTextRef = React.useRef('')
+    // 单一同步点：不管 aiText 从哪条路被改（提交后清空、粘贴图片、点快捷问法），
+    // ref 都跟着走。散在各个 setAiText 调用点去手写 ref 赋值迟早漏一个。
+    React.useEffect(() => { aiTextRef.current = aiText }, [aiText])
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
     const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿（新建），逐条采纳
@@ -1159,6 +1185,19 @@ function apply(ctx) {
             // 真的产出了结果，底部块这时才升成 sheet——**由结果驱动，不由用户点按钮**。
             // 没有结果就保持一条输入行（「记一条」失败时屏幕不该被一块空结果区占住）。
             setAiExpanded(true)
+            // **看完就自己收回去**（手机档）。
+            //
+            // 为什么必须有这一步：升起来是「给你看这一轮的结果」，不是「从此常驻半屏」。
+            // 少了它，问过一次之后那块就永远占着——下次打开面板看到的还是上次的问答，
+            // 于是又变回「输入界面叠在计划树上面」那个原始抱怨。
+            //
+            // 8 秒是权衡：够读完一段 reply，又不至于让人干等着它消失。
+            // 用户正在打字时不收（aiTextRef 非空），否则会把他正写的东西打断。
+            if (isMobile === true) {
+              window.setTimeout(() => {
+                if (aiTextRef.current === '') setAiExpanded(false)
+              }, AI_SHEET_AUTOFOLD_MS)
+            }
           }
         })
         .catch((e) => {
@@ -1734,8 +1773,10 @@ function apply(ctx) {
           if (title === '') return
           addNode({ title }, () => {
             setPlainDraft('')
-            // 记完就收起浮层：这一步已经结束了，不该再让用户点一次「收起」。
+            // 记完就收起：这一步已经结束了，不该再让用户点一次「收起」。
+            // 两个都要关——桌面浮层（fabOpen）与手机底部块（aiExpanded）。
             setFabOpen(false)
+            setAiExpanded(false)
             flash('已记入收件箱')
           })
         }

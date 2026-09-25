@@ -2349,6 +2349,28 @@ test('桌面档底部块：不出现手机专属的「收起」按钮（浮层�
   }
 })
 
+test('手机档底部块的 DOM 层级：输入行是 aiwrap 的直接子元素（收起态 CSS 靠它命中）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view } = await mount()
+    const wrap = firstByClass(view, 'dsh-wb-aiwrap')
+    assert.ok(wrap !== null, '底部块里应有 aiwrap（aiBlock() 的容器）')
+
+    // **这条钉住的是一个真实踩过的坑**：收起态的 CSS 写的是
+    //     .dsh-wb-dockai .dsh-wb-aiwrap > *  { display:none }
+    //     .dsh-wb-dockai .dsh-wb-aiwrap > .dsh-wb-aibar { display:flex }
+    // 它要求输入行（.dsh-wb-aibar）是 aiwrap 的**直接子元素**。
+    // 第一版选择器写成 `.dsh-wb-dockai > .dsh-wb-aibar`（漏了 aiwrap 这一层），
+    // 于是那条规则永远命中 0 个元素——收起态会把输入框也一起藏掉。
+    // 这个 bug 单测「class 名对不对」是查不出来的，必须断言层级。
+    const directBar = (wrap.children || []).find((kid) => classesOf(kid).includes('dsh-wb-aibar'))
+    assert.ok(directBar !== undefined,
+      '输入行必须是 aiwrap 的直接子元素——否则收起态的选择器命中不到，会把输入框一起藏掉')
+  } finally {
+    restore()
+  }
+})
+
 test('侧栏页脚入口：形态满足 zen 的收割规则，点了走 openTab（而不是代点 DOM）', async () => {
   const { slotEntries } = await mount()
   // 两个插槽注册点：① 侧栏页脚入口（本用例）② 官方右栏的 tab 正文
