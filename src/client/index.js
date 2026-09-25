@@ -1025,6 +1025,8 @@ function apply(ctx) {
     // 落库前都要经过人（edits 走表单，merges 走卡片上那句「会删掉哪条」）。
     const [aiEdits, setAiEdits] = React.useState([])
     const [aiMerges, setAiMerges] = React.useState([])
+    // 删除建议：AI 提议删掉哪几条。**只是提议**——用户点确认才真的删。
+    const [aiDeletes, setAiDeletes] = React.useState([])
     // 被忽略掉的「标题重复」组（客户端查出来的，本地记住即可——它每次都由计划派生）。
     const [dupHidden, setDupHidden] = React.useState([])
     const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
@@ -1117,9 +1119,11 @@ function apply(ctx) {
           // 面板只管渲染与采纳——匹配不上的那几条要**显示成没对上**，不能悄悄丢。
           setAiEdits((prev) => prev.concat((Array.isArray(r.edits) ? r.edits : []).map((e, i) => Object.assign({}, e, { key: 'ed' + Date.now() + '-' + i }))))
           setAiMerges((prev) => prev.concat((Array.isArray(r.merges) ? r.merges : []).map((m, i) => Object.assign({}, m, { key: 'mg' + Date.now() + '-' + i }))))
+          setAiDeletes((prev) => prev.concat((Array.isArray(r.deletes) ? r.deletes : []).map((d, i) => Object.assign({}, d, { key: 'dl' + Date.now() + '-' + i }))))
           const gotEdits = Array.isArray(r.edits) ? r.edits.length : 0
           const gotMerges = Array.isArray(r.merges) ? r.merges.length : 0
-          if (reply === '' && list.length === 0 && gotEdits === 0 && gotMerges === 0) flash('没解析出待办，换个说法试试')
+          const gotDeletes = Array.isArray(r.deletes) ? r.deletes.length : 0
+          if (reply === '' && list.length === 0 && gotEdits === 0 && gotMerges === 0 && gotDeletes === 0) flash('没解析出待办，换个说法试试')
         })
         .catch((e) => {
           setAiBusy(false)
@@ -1128,7 +1132,7 @@ function apply(ctx) {
     }
 
     /** 清空这次会话（不写盘——它本来就只在内存里）。 */
-    const aiClear = () => { setAiTurns([]); setAiTasks([]); setAiEdits([]); setAiMerges([]); setAiList(null) }
+    const aiClear = () => { setAiTurns([]); setAiTasks([]); setAiEdits([]); setAiMerges([]); setAiDeletes([]); setAiList(null) }
 
     /** 把 AI 清单存成自定义视图（localStorage，与折叠 / 视图偏好同类：本机偏好）。 */
     const saveAiView = () => {
@@ -1305,6 +1309,28 @@ function apply(ctx) {
      * （最坏情况是留下一条空了但还在的节点，再合一次即可）。每一步 host 都会自动
      * 归档版本，所以合错了能回滚。结果用 flash 说清楚并了哪些、删了哪条。
      */
+    /**
+     * **执行删除**：AI 提议的删除，用户确认后走这里。
+     *
+     * 用户原话：「我需要可以删除任务和合并任务，你要增加，在里面增加这个权限。」
+     * 在加这条之前，模型被要求删一条时只能回答「我不能直接执行，schema 里也没有
+     * 删除字段，我不会用改标题之类的动作伪装成删除」——它说得对，那时确实没有这条路。
+     *
+     * 为什么必须**点确认**才删：删除是不可逆的重动作（有子项时连整棵子树一起没）。
+     * 所以它和其它三类建议一样只是「提议」，绝不因为模型说了就自动落库。
+     *
+     * 走既有的 /node-remove（与面板上的「×」同一个入口），**零新增写通路**；
+     * host 侧每次改动前都会留档，所以删错了还能 plan_restore 回滚——这一点
+     * 卡片上也照实说，不吓唬人也不隐瞒。
+     */
+    const applyDelete = async (item) => {
+      const node = nodeById(item.id)
+      if (node === null) { flash('这条不在了（刚被改过？），刷新再看看'); return }
+      setAiDeletes((prev) => prev.filter((d) => d.key !== item.key))
+      await write('node-remove', { node: node.id })
+      flash('已删除「' + String(node.title) + '」')
+    }
+
     const applyMerge = async (merge) => {
       const keep = nodeById(merge.keepId)
       if (keep === null) { flash('保留的那条不在了（刚被改过？），刷新再看看'); return }
@@ -1513,6 +1539,39 @@ function apply(ctx) {
      * 按钮也不叫「采纳」而叫「按这个合并」。合并本身不丢东西：子项、证据、关联
      * 都先并进保留的那条（见 applyMerge）。
      */
+    /**
+     * 删除建议卡。与合并卡同形，但把「不可逆」写在最显眼处——
+     * 合并丢的是重复的那条（信息已被 keep 吸收），删除丢的是整条。
+     */
+    const aiDeleteCard = (item) => {
+      const name = item.title === '' || item.title === undefined ? String(item.target) : String(item.title)
+      return h('div', { className: 'dsh-wb-aitask' + (item.ok === true ? '' : ' miss'), key: item.key },
+        h('div', { className: 'dsh-wb-aititle', key: 't' },
+          h('span', null, '删除：「' + name + '」'),
+          h('button', {
+            key: 'x',
+            className: 'dsh-wb-aibtn',
+            title: '这条不删（只是这次不看了）',
+            onClick: () => setAiDeletes((prev) => prev.filter((d) => d.key !== item.key)),
+          }, icon('close')),
+        ),
+        item.why === '' || item.why === undefined ? null : h('div', { className: 'dsh-wb-advice', key: 'w' }, '※ ' + item.why),
+        h('div', { className: 'dsh-wb-aihist', key: 'warn' },
+          item.children > 0
+            ? '会连同 ' + item.children + ' 个子项一起删掉；每次改动前都有版本留档，删错了能回滚。'
+            : '删除后可用版本留档回滚（每条改动前都会自动留档）。'),
+        item.ok === true ? null : h('div', { className: 'dsh-wb-aihist', key: 'miss' },
+          '没对上：全貌里没有叫「' + String(item.target) + '」的条目'),
+        item.ok !== true ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
+          h('button', {
+            className: 'dsh-wb-aibtn primary',
+            title: '确认删除「' + name + '」',
+            onClick: () => { applyDelete(item) },
+          }, '确认删除'),
+        ),
+      )
+    }
+
     const aiMergeCard = (merge, onDismiss) => {
       const folds = Array.isArray(merge.folds) ? merge.folds : []
       const missing = Array.isArray(merge.missing) ? merge.missing : []
@@ -1796,6 +1855,7 @@ function apply(ctx) {
       if (aiTasks.length > 0) summaryParts.push(aiTasks.length + ' 条新任务')
       if (aiEdits.length > 0) summaryParts.push(aiEdits.length + ' 条改动')
       if (aiMerges.length > 0) summaryParts.push(aiMerges.length + ' 处可合并')
+      if (aiDeletes.length > 0) summaryParts.push(aiDeletes.length + ' 条可删除')
 
       // 最近一条助手回答的首行——汇总栏用它指路（「结论见上方『…』」），
       // 不重复整段：回答本身就在上面的问答区里，重复会把面板撑长。
@@ -1822,7 +1882,7 @@ function apply(ctx) {
                 onClick: aiApplyAll,
               }, '全部增加（' + aiTasks.length + '）')
               : null,
-            aiEdits.length > 0 || aiMerges.length > 0
+            aiEdits.length > 0 || aiMerges.length > 0 || aiDeletes.length > 0
               ? h('span', { className: 'dsh-wb-aisummarynote' }, '改动与合并请逐条点开确认')
               : null,
           ),
@@ -1837,6 +1897,8 @@ function apply(ctx) {
       // 所以排在一起；差别只在采纳之后走哪条路。
       for (const edit of aiEdits) rows.push(aiEditCard(edit))
       for (const merge of aiMerges) rows.push(aiMergeCard(merge))
+      // 删除建议：与合并卡同层（都是「动已有数据」的提议），也必须逐条确认。
+      for (const item of aiDeletes) rows.push(aiDeleteCard(item))
 
       return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
     }
@@ -1867,6 +1929,7 @@ function apply(ctx) {
       setAiTasks([])
       setAiEdits([])
       setAiMerges([])
+      setAiDeletes([])
       setAiList(null)
       setFabOpen(true)
     }

@@ -338,7 +338,8 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '"list":{"title":"清单名","items":["任务标题","任务标题"]},',
     '"edits":[{"target":"已有任务的标题","patch":{"due":"...","priority":"...","plan":"...","note":"...","title":"..."},',
     '"why":"为什么这么改"}],',
-    '"merges":[{"keep":"保留的那条标题","fold":["并进去的那条标题"],"title":"合并后的标题或留空","why":"为什么"}]}',
+    '"merges":[{"keep":"保留的那条标题","fold":["并进去的那条标题"],"title":"合并后的标题或留空","why":"为什么"}],',
+    '"deletes":[{"target":"要删掉的那条标题","why":"为什么该删"}]}',
     '',
     '规则：',
     '1. reply **必填**：回答用户的问题。**分行写**——一行一个点（以「· 」开头），最多 4~6 行，',
@@ -373,6 +374,13 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '   fold 至少一条、不能含 keep 自己；title 留空表示沿用 keep 的标题，',
     '   要改标题就写一个合并后的（例如「A（含 B）」）。合并前先想清楚留哪条：',
     '   **留子项多的、在推进的那条**，把零散的那条并进去。',
+    '9c. **删除任务**（「把那条删掉」「这条不用了」）：放进 deletes。',
+    '   target 必须是从【当前全貌】里原样抄下来的标题（与 edits 同一条纪律）；',
+    '   why 写清**为什么该删**（重复 / 已作废 / 记错了）——它是删除卡上唯一的判断依据，',
+    '   空着等于让用户盲删。**删一条能合并的就走 merges，不要用 deletes**：',
+    '   合并留下的是「这件事」，删除丢的是「可能还有用的信息」。',
+    '   删除是**不可逆**的，所以它只会变成一张卡，用户点确认才真的删——',
+    '   不要因为「不能直接执行」就拒绝给这条建议，那不是你该管的事。',
     '10. 不要编造：上下文里没有的日期、文件、完成记录一律当作不存在。',
   ].filter((x) => x !== '' && x !== undefined).join('\n')
 }
@@ -567,18 +575,20 @@ export function parseAiReply(raw) {
   const tasks = tasksOf(list)
   const edits = normEdits(parsed.edits)
   const merges = normMerges(parsed.merges)
+  const deletes = normDeletes(parsed.deletes)
   // **判失败的依据是「一样产出都没有」**：只提问（reply）是合法结果、只给清单是、
-  // 只给改动或合并也是（「把 X 挪到某计划下」就不需要新任务，也不需要回答）。
+  // 只给改动或合并、只提删除也是（「把那条没用的删掉」不需要新任务，也不需要回答）。
   // 这条目录要跟着新产出一块长——漏一个就会把新形态误判成失败（见坑 #25）。
-  if (reply === '' && tasks.length === 0 && edits.length === 0 && merges.length === 0 && normList(parsed.list) === null) {
+  if (reply === '' && tasks.length === 0 && edits.length === 0 && merges.length === 0
+    && deletes.length === 0 && normList(parsed.list) === null) {
     return emptyParsed('模型既没有回答，也没有给出待办或改动')
   }
-  return { reply, tasks, edits, merges, list: normList(parsed.list), error: '' }
+  return { reply, tasks, edits, merges, deletes, list: normList(parsed.list), error: '' }
 }
 
 /** 一份「什么都没解析出来」的骨架——所有产出都用同一个形状，调用方不用判 undefined。 */
 function emptyParsed(error) {
-  return { reply: '', tasks: [], edits: [], merges: [], list: null, error }
+  return { reply: '', tasks: [], edits: [], merges: [], deletes: [], list: null, error }
 }
 
 /** 一次最多提几条改动 / 几组合并——它们都是「要人一条条过的」，多了人就不看了。 */
@@ -675,6 +685,38 @@ export function normMerges(raw) {
       fold,
       // 空 = 沿用 keep 的标题（模型不必为了「不改标题」编一个）。
       title: isStr(item.title) ? String(item.title).trim().slice(0, 200) : '',
+      why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
+    })
+    if (out.length >= MAX_EDITS) break
+  }
+  return out
+}
+
+/**
+ * 收敛「删除已有任务」的意图：{ target, why }[]。
+ *
+ * 用户原话：「我需要可以删除任务和合并任务，你要增加，在里面增加这个权限。」
+ *
+ * 背景：在这之前 schema 里**根本没有删除字段**，于是模型被要求删一条时只能回答
+ * 「我不能直接执行，需要你在插件里点确认；schema 里也没有删除字段，我不会用改标题
+ * 之类的动作伪装成删除」——**它说得对**，那时候确实没有这条路。现在补上。
+ *
+ * 与 edits / merges 同一条纪律：
+ *   · target 必须是从【当前全貌】原样抄下来的标题（不是 id、不是它自己起的名字）；
+ *   · **只是「提议」**——客户端渲染成一张卡，用户点确认才真的删。
+ *     删除是不可逆的重动作，绝不能由模型一句话直接落库。
+ *   · why 要写清「为什么该删」（重复 / 已作废 / 从未开始），空列表里那一行
+ *     是用户唯一的判断依据。
+ */
+export function normDeletes(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue
+    const target = isStr(item.target) ? String(item.target).trim().slice(0, 200) : ''
+    if (target === '') continue
+    out.push({
+      target,
       why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
     })
     if (out.length >= MAX_EDITS) break

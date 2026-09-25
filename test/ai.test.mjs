@@ -26,6 +26,7 @@ import {
   extractJson,
   historyText,
   matchPlan,
+  normDeletes,
   parseAiReply,
   planOutline,
 } from '../src/ai.js'
@@ -420,4 +421,59 @@ test('默认人设里写明了性格、专业、边界与「记住的事」', ()
   assert.match(DEFAULT_PERSONA, /## 边界/)
   assert.match(DEFAULT_PERSONA, /## 记住的事/, '持续改善要有个地方落笔')
   assert.match(DEFAULT_PERSONA, /不擅自改数据/, '只建议不改数据，这条要明确写进人设')
+})
+
+// ============================================================ 删除建议
+
+test('normDeletes：收敛删除意图，target 必填、why 可空', () => {
+  const out = normDeletes([
+    { target: '明天回家', why: '与另一条重复' },
+    { target: '  ', why: '空标题应被丢掉' },
+    { why: '没有 target 也丢掉' },
+    null,
+    '不是对象',
+    { target: '记错了的一条' },
+  ])
+  assert.equal(out.length, 2, '只留 target 非空的两条')
+  assert.equal(out[0].target, '明天回家')
+  assert.equal(out[0].why, '与另一条重复')
+  assert.equal(out[1].why, '', 'why 缺省为空串，不是 undefined')
+})
+
+test('normDeletes：非数组一律回空（不抛）', () => {
+  assert.deepEqual(normDeletes(undefined), [])
+  assert.deepEqual(normDeletes(null), [])
+  assert.deepEqual(normDeletes('删掉它'), [])
+  assert.deepEqual(normDeletes({ target: 'x' }), [], '对象不是数组，不算删除建议')
+})
+
+test('parseAiReply：只给 deletes 也算有效结果（不能误判成失败）', () => {
+  // 这条目录要跟着新产出一块长——漏一个就会把新形态误判成「模型既没有回答，
+  // 也没有给出待办或改动」，而用户只是说了句「把那条删掉」。
+  const parsed = parseAiReply(JSON.stringify({
+    reply: '',
+    deletes: [{ target: '明天回家', why: '重复了' }],
+  }))
+  assert.equal(parsed.error, '', '不应报错')
+  assert.equal(parsed.deletes.length, 1)
+  assert.equal(parsed.deletes[0].target, '明天回家')
+})
+
+test('parseAiReply：deletes 与 tasks 可以同时出现（删一条、记一条）', () => {
+  const parsed = parseAiReply(JSON.stringify({
+    reply: '· 删掉旧的，记一条新的',
+    tasks: [{ title: '新的一条' }],
+    deletes: [{ target: '旧的那条', why: '不用了' }],
+  }))
+  assert.equal(parsed.error, '')
+  assert.equal(parsed.tasks.length, 1)
+  assert.equal(parsed.deletes.length, 1)
+})
+
+test('提示词里必须写明 deletes（否则模型不会用，只会说「我不能删」）', () => {
+  const p = aiSystemPrompt({ outline: '', context: '', history: '' })
+  assert.match(p, /deletes/, '格式声明里要有 deletes')
+  assert.match(p, /删除任务/, '规则里要有「删除任务」这一条')
+  // 模型原先拒答的理由是「schema 里也没有删除字段」——那条理由必须不再成立。
+  assert.match(p, /不可逆/, '要说清删除不可逆、只作为建议呈现')
 })

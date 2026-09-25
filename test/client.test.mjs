@@ -1010,6 +1010,77 @@ test('没有内容点解析：不发请求，只提示', async () => {
   assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|贴个文件/)
 })
 
+test('删除建议：渲染成卡片，**点确认才删**——不因为模型说了就自动落库', async () => {
+  // 用户原话：「我需要可以删除任务和合并任务，你要增加，在里面增加这个权限。」
+  // 在此之前模型只能答「schema 里也没有删除字段，我不会用改标题之类的动作伪装成
+  // 删除」——这条用例守住「补上了，而且仍然要人确认」。
+  withAi()
+  aiReply = {
+    reply: '· 建议删掉重复的那条',
+    deletes: [{
+      target: '收件箱一条', why: '与另一条是同一件事',
+      id: idOf('收件箱一条'), title: '收件箱一条', children: 0, ok: true,
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '收件箱那条不用了' } })
+  const before = requests.length
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  // 解析出来只渲染卡片，**这一轮没有任何删除写入**。
+  const card = byClass(render(), 'dsh-wb-aitask')
+    .find((el) => textOf(el).indexOf('删除：') >= 0)
+  assert.ok(card !== undefined, '应渲染删除卡')
+  const writes = requests.slice(before).filter((r) => String(r.path).indexOf('node-remove') >= 0)
+  assert.equal(writes.length, 0, '解析阶段绝不能删——只是提议')
+  assert.match(textOf(card), /回滚/, '要说清可回滚，用户才敢点')
+
+  // 点确认才真的删。
+  const confirm = findAll(card, (x) => classesOf(x).includes('dsh-wb-aibtn'))
+    .find((b) => textOf(b).indexOf('确认删除') >= 0)
+  assert.ok(confirm !== undefined, '删除卡上要有明确的确认按钮')
+  const beforeClick = requests.length
+  confirm.props.onClick(ev())
+  await settle()
+  const removed = requests.slice(beforeClick).filter((r) => String(r.path).indexOf('node-remove') >= 0)
+  assert.equal(removed.length, 1, '点确认后应恰好删一次')
+  assert.equal(removed[0].body.node, idOf('收件箱一条'), '删的是那一条')
+})
+
+test('删除建议：对不上的目标不显示确认键，只说明「没对上」', async () => {
+  withAi()
+  aiReply = {
+    reply: '· 找到了要删的',
+    deletes: [{ target: '不存在的一条', why: '重复', id: null, title: '', children: 0, ok: false }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '删掉那条' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = byClass(render(), 'dsh-wb-aitask')
+    .find((el) => textOf(el).indexOf('删除：') >= 0)
+  assert.ok(card !== undefined, '对不上也要渲染出来（不能悄悄丢）')
+  assert.match(textOf(card), /没对上/, '要说明没对上')
+  const confirm = findAll(card, (x) => classesOf(x).includes('dsh-wb-aibtn'))
+    .find((b) => textOf(b).indexOf('确认删除') >= 0)
+  assert.equal(confirm, undefined, '没对上的不能有确认键（点了会删错）')
+})
+
+test('建议汇总栏会把「可删除」也算进分类里', async () => {
+  withAi()
+  aiReply = {
+    reply: '· 一条可删',
+    deletes: [{ target: '收件箱一条', why: '重复', id: idOf('收件箱一条'), title: '收件箱一条', children: 0, ok: true }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '删掉重复的' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-aisummaryhead')), /1 条可删除/)
+})
+
 test('建议汇总栏：先给分类汇总（增加/改动/可合并），再排具体卡片', async () => {
   // 用户原话：「你要有一个下面有你解读出来的工作建议，是要增加任务，还是需要修改
   // 任务，还是要总结。你要下面要有建议的，然后让我选择。」

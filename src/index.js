@@ -1225,6 +1225,9 @@ export function apply(ctx) {
         // 转出来的改动排在前面：它们对应「我刚才说的那条其实已经有了」，最该先看见。
         edits: split.moved.concat(matchEdits(plan, parsed.edits)),
         merges: matchMerges(plan, parsed.merges),
+        // **删除任务**：模型给标题，这里匹配回真实节点。只是「提议」——
+        // 客户端渲染成卡，用户点确认才真的删（删除不可逆，不由模型一句话落库）。
+        deletes: matchDeletes(plan, parsed.deletes),
         // AI 动态生成的清单：标题匹配回真实节点（匹配不上的 ok=false 带回去）。
         list: matchListTitles(plan, parsed.list),
         read: picked.map((f) => f.ref),
@@ -1370,6 +1373,32 @@ export function apply(ctx) {
           folds: fold,
           missing,
           ok: keep !== null && fold.length > 0 && missing.length === 0,
+        }
+      })
+    }
+
+    /**
+     * **删除任务**：把模型给的标题匹配回真实节点。
+     *
+     * 与 matchMerges 同一条纪律：匹配不上的记在 missing 里带回去——「哪一条没对上」
+     * 必须说出来，否则用户只会看到一张不执行的卡。
+     *
+     * 只匹配、**不执行**。真正的删除走既有的 plan_node_remove（客户端点确认后调），
+     * 所以这里不新增任何写入通路。
+     */
+    function matchDeletes(plan, deletes) {
+      if (!Array.isArray(deletes)) return []
+      const flat = collectNodes(plan, 'any')
+      return deletes.map((d) => {
+        const hit = hitByTitle(flat, d.target)
+        return {
+          target: d.target,
+          why: d.why,
+          id: hit === null ? null : String(hit.id ?? ''),
+          title: hit === null ? '' : String(hit.title ?? ''),
+          // 有子项的节点删掉会连带子树——卡片上要能说清「会一起删掉 N 个子项」。
+          children: hit === null ? 0 : collectNodes({ nodes: [hit] }, 'any').length - 1,
+          ok: hit !== null,
         }
       })
     }
