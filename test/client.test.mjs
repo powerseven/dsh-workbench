@@ -1815,6 +1815,87 @@ test('单条建议不进向导：没有「第 1 / 1 条」，也没有「跳过�
   }
 })
 
+test('总览：拿不准的条目标 ⚠ 且排在最前，主按钮不催用户跳过', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 三条里两条没日期（= 拿不准）、一条有日期（= 已填好）。
+    aiReply = {
+      reply: '读出 3 条。',
+      tasks: [
+        { title: '买牛奶', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] },
+        { title: '交电费', due: '', priority: '', note: '', plan: '', candidates: [] },
+        { title: '预约牙医', due: '', priority: '', note: '', plan: '', candidates: [] },
+      ],
+    }
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '看这张清单' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const warns = byClass(render(), 'dsh-wb-ovwarn')
+    assert.equal(warns.length, 2, '两条没日期的要标出来——它们是「需要你定」的')
+    // 有疑问的排最前：先把要动脑的解决，剩下的才好一键过。
+    const order = byClass(render(), 'dsh-wb-ovrow').map((r) => textOf(r))
+    assert.match(order[0], /交电费|预约牙医/, '有疑问的应排在最前')
+
+    // **有 ⚠ 时主按钮不该是「全部就这么定」**——那等于鼓励用户跳过自己该定的部分。
+    const txt = textOf(render())
+    assert.doesNotMatch(txt, /全部就这么定/, '还有拿不准的，不该主推一键全定')
+    assert.match(txt, /先看有疑问的 2 件/, '主按钮应是「先看有疑问的」')
+  } finally {
+    restore()
+  }
+})
+
+test('总览：全无疑问时才给「全部就这么定」', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    aiReply = {
+      reply: '读出 2 条。',
+      tasks: [
+        { title: '买牛奶', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] },
+        { title: '交电费', due: '2026-09-28', priority: '', note: '', plan: '', candidates: [] },
+      ],
+    }
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '看这张清单' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    // 都有日期 → 用户看一眼就能过，这才该给一键。
+    const txt = textOf(render())
+    assert.match(txt, /全部就这么定（2 件）/, '都填好了就该能一键过')
+  } finally {
+    restore()
+  }
+})
+
+test('总览：混了改动/合并时不给「全部就这么定」（那时按钮会撒谎）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // aiApplyAll 只新建 tasks；改动动的是已有数据，必须逐条确认。
+    // 按钮若写「全部」而实际只做了新建，就是在骗用户。
+    aiReply = {
+      reply: '一增一改。',
+      tasks: [{ title: '买牛奶', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] }],
+      edits: [{ target: '交电费', patch: { due: '2026-09-28' }, why: '你说挪到 28 号' }],
+    }
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '买牛奶，顺便把交电费挪到 28 号' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const txt = textOf(render())
+    assert.doesNotMatch(txt, /全部就这么定/, '有改动项时不该给「全部」——那会盖住要逐条确认的部分')
+    assert.match(txt, /逐条确认/, '应提示逐条确认')
+  } finally {
+    restore()
+  }
+})
+
 test('多条建议才走向导：有进度、可跳过', async () => {
   const restore = stubCoarse(true)
   try {
@@ -1835,8 +1916,12 @@ test('多条建议才走向导：有进度、可跳过', async () => {
     await flush()
 
     const txt = textOf(render())
-    assert.match(txt, /3/, '多条应有总数——有终点才叫流程')
-    assert.match(txt, /跳过/, '多条才需要「跳过」（先放着，之后还能回来）')
+    // 多条时**先进总览**（GOV.UK「先给任务清单页」）：一屏可扫读的列表，
+    // 而不是七张带徽章的大卡——这正是「8 秒看都看不完」的解法。
+    assert.match(txt, /3/, '总览要说清总共有几件')
+    assert.ok(byClass(render(), 'dsh-wb-ovlist').length > 0, '多条应先给总览列表')
+    // 总览上直接可以「逐条看」或「全部定」，所以「12 条要 12 次下一步」不成立。
+    assert.match(txt, /逐条看/, '总览应给逐条入口')
   } finally {
     restore()
   }

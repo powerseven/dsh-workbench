@@ -610,6 +610,23 @@ const CSS = [
   // （意见 + 依据 + 归位候选），不能让它把底部按钮顶出屏幕。
   '.dsh-wb-wizbody{min-height:0;}',
   '.dsh-wb-wizfoot{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
+  // ── 总览屏 ────────────────────────────────────────────────────────────
+  //
+  // 一张**可扫读**的列表：每行「编号 + 类别 + 标题 + 日期/⚠」。比七张带徽章与
+  // 按钮的大卡短得多——这正是「8 秒看都看不完、界面还在滚动」的解法：
+  // 先给一屏能一眼扫完的全局，细节留给逐条。
+  '.dsh-wb-ovlist{display:flex;flex-direction:column;gap:2px;}',
+  '.dsh-wb-ovrow{display:flex;align-items:center;gap:var(--wb-sp-2);width:100%;min-height:36px;padding:var(--wb-sp-1) var(--wb-sp-2);border:0;border-radius:var(--wb-r-2);background:transparent;color:var(--wb-fg);font:var(--wb-f2);text-align:left;cursor:pointer;}',
+  '.dsh-wb-ovrow:hover{background:var(--wb-hover);}',
+  // 编号用等宽数字：一列数字对齐了才叫列表，否则每一行的缩进都在飘。
+  '.dsh-wb-ovnum{flex:none;width:1.6em;font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  '.dsh-wb-ovkind{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);}',
+  '.dsh-wb-ovtitle{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
+  '.dsh-wb-ovmeta{flex:none;font:var(--wb-f3);color:var(--wb-fg-2);}',
+  // ⚠ 只用 accent 色而不用红：它是「需要你定」，不是「出错了」。
+  '.dsh-wb-ovwarn{flex:none;color:var(--wb-accent);font:var(--wb-f3s);}',
+  // 有疑问的行左侧加一道细线：扫列表时先看到要动脑的那几条（它们排在最前）。
+  '.dsh-wb-ovrow.dum{box-shadow:inset 2px 0 0 var(--wb-accent);}',
   '.dsh-wb-wait .dsh-wb-spin{flex:none;width:14px;height:14px;border:2px solid var(--wb-line-2);border-top-color:var(--wb-accent);border-radius:50%;animation:dsh-wb-spin .8s linear infinite;}',
   '@keyframes dsh-wb-spin{to{transform:rotate(360deg);}}',
   '.dsh-wb-wait .dsh-wb-waittxt{flex:1;min-width:0;}',
@@ -1159,6 +1176,16 @@ function apply(ctx) {
     // 桌面档不走向导（浮球里空间小、卡片本来就是一列），保持原样——
     // 两边共享同一批卡片函数，只是**排版策略**不同，不各自漂移。
     const [aiStep, setAiStep] = React.useState(0)
+    // 多条建议时，进来先给**总览屏**（还没进逐条）。
+    //
+    // 依据移动端调研：GOV.UK 的「Complete multiple tasks」模式是**先给任务清单页**
+    // （每条带状态），用户再点进去做单条；NN/g 也要求 wizard「用步骤列表表达心智
+    // 模型」——而「第 1 / 7 条」只说了进度，没说**这 7 条都是什么**。
+    //
+    // 更实际的理由：用户抱怨过「8 秒看都看不完，而且那个界面还在滚动」。一张
+    // 可扫读的总览（编号 + 标题 + 日期 + ⚠）比七张带徽章的大卡短得多，
+    // 而且它先回答了「总共有几件、都有哪些」——这正是焦虑的来源。
+    const [aiShowOverview, setAiShowOverview] = React.useState(true)
     const [aiPersona, setAiPersona] = React.useState('')
     const [aiPersonaDraft, setAiPersonaDraft] = React.useState('')
     const [aiDefault, setAiDefault] = React.useState('')
@@ -1273,6 +1300,13 @@ function apply(ctx) {
             // 这个赌注必输。**收起该是他的动作**：读完了自己点「下一条」或「确认」。
             // 界面只要足够清晰，他本来就知道该怎么往下走，不需要谁替他决定时机。
             setAiExpanded(true)
+            // 新一轮结果到达 → 回到总览、回到第 1 条。
+            //
+            // 不重置的话，上一轮停在第 5 条，这一轮新来的建议会直接从第 5 条开始
+            // 显示——用户看到的是「第 5 / 2 条」这种对不上的进度（因为新的队列
+            // 可能只有两条）。每轮建议都是**独立的一轮**，索引必须跟着重置。
+            setAiStep(0)
+            setAiShowOverview(true)
           }
         })
         .catch((e) => {
@@ -2207,8 +2241,120 @@ function apply(ctx) {
      * aiDeleteCard），不另写一套——两边对同一条建议的呈现与操作必须一致，
      * 否则「手机上能办、桌面上办不了」这种漂移迟早出现。
      */
+    /**
+     * 「不是这件事」：把一条建议从这一轮里**移除**（区别于「先放着」）。
+     *
+     * 为什么这个动作必须存在（移动端调研指出的缺口）：模型偶尔会读出不存在的
+     * 条目——OCR 把「合计 128 元」当成一条任务、把一句寒暄当成一件要做的事。
+     * 只有「跳过」的话，这类垃圾会永远留在队列里，用户每一轮都得再跳过一次，
+     * 而队列的「第 N / M 条」还把它算在内，进度因此永远对不上。
+     *
+     * 移除之后**停在原地**（不前进）：用户刚清掉一条，下一张卡自然顶上来；
+     * 如果还要他再点一次「下一条」，等于清垃圾要两步。
+     */
+    const aiDrop = (at) => {
+      if (at === null || at === undefined) return
+      if (at.kind === 'task') setAiTasks((prev) => prev.filter((t) => t.key !== at.item.key))
+      else if (at.kind === 'edit') setAiEdits((prev) => prev.filter((e) => e.key !== at.item.key))
+      else if (at.kind === 'merge') setAiMerges((prev) => prev.filter((m) => m.key !== at.item.key))
+      else setAiDeletes((prev) => prev.filter((d) => d.key !== at.item.key))
+      flash('已去掉这条')
+    }
+
+    /**
+     * 总览屏：**先让用户看清这一轮总共有几件、都是什么，再决定怎么处理**。
+     *
+     * 依据移动端调研（GOV.UK「Complete multiple tasks」先给任务清单页；NN/g 要求
+     * wizard 用步骤列表表达心智模型）。它解决两个具体问题：
+     *
+     *   ① **「12 条要点 12 次下一步」**——不是的。总览上直接可以「全部就这么定」
+     *      （GOV.UK check-answers 的「汇总 + 一次提交」），只有带 ⚠ 的那几条才需要
+     *      逐条看。图片清单里大部分条目都是明确的，「全部定」才是常见路径。
+     *   ② **「8 秒看都看不完，界面还在滚动」**——一张编号列表（每条一行：标题 +
+     *      日期/归位）比七张带徽章和按钮的大卡短得多，一屏能扫完。
+     *
+     * 每行的 ⚠ 表示「这条我拿不准，需要你定」——判据是模型没给 due 的新任务。
+     * 有疑问的排前面：先把要动脑的解决掉，剩下的一键收尾。
+     */
+    const aiOverview = (queue) => {
+      // 「拿不准」的判据：新任务没有截止日期。归位有候选的不算疑问——
+      // 模型已经选了第一个候选作为默认，用户不点头也说得过去（进收件箱/进该计划）。
+      const unsure = (it) => it.kind === 'task'
+        && (typeof it.item.due !== 'string' || it.item.due === '')
+      const rows = queue.map((q, i) => ({ q, i, dum: unsure(q) }))
+      // 稳定的两段：带 ⚠ 的在前（要用户动脑），确定的在后（可以一键过）。
+      const ordered = rows.filter((r) => r.dum).concat(rows.filter((r) => r.dum !== true))
+      const unsureCount = rows.filter((r) => r.dum).length
+      // 「全部就这么定」的两个前提（见下方按钮处的注释）：这一轮没有疑问项、
+      // 且全是新任务（aiApplyAll 只新建 tasks，混了改动/合并就不能叫「全部」）。
+      const otherKinds = queue.filter((q) => q.kind !== 'task').length
+      const canApplyAll = unsureCount === 0 && otherKinds === 0
+      const line = (r) => {
+        const isTask = r.q.kind === 'task'
+        const title = isTask ? String(r.q.item.title) : (r.q.kind === 'edit'
+          ? '改：' + String(r.q.item.target)
+          : (r.q.kind === 'merge' ? '合并 ' + String(r.q.item.keep) : '删：' + String(r.q.item.target)))
+        const meta = isTask && typeof r.q.item.due === 'string' && r.q.item.due !== ''
+          ? r.q.item.due.slice(5) : ''
+        return h('button', {
+          key: 'ov' + r.i,
+          className: 'dsh-wb-ovrow' + (r.dum ? ' dum' : ''),
+          title: '跳到第 ' + (r.i + 1) + ' 条（看细节再定）',
+          onClick: () => { setAiStep(r.i); setAiShowOverview(false) },
+        },
+          h('span', { className: 'dsh-wb-ovnum' }, String(r.i + 1)),
+          h('span', { className: 'dsh-wb-ovkind' }, KIND_LABEL[r.q.kind]),
+          h('span', { className: 'dsh-wb-ovtitle' }, title),
+          r.dum ? h('span', { className: 'dsh-wb-ovwarn', title: '这条我没把握——没说时间，需要你定' }, '⚠')
+            : h('span', { className: 'dsh-wb-ovmeta' }, meta),
+        )
+      }
+      return h('div', { className: 'dsh-wb-wiz', key: 'wiz' },
+        h('div', { className: 'dsh-wb-wizhead' }, h('span', { className: 'dsh-wb-wizstep' },
+          '我读出 ' + queue.length + ' 件')),
+        h('div', { className: 'dsh-wb-wizbody' },
+          h('div', { className: 'dsh-wb-ovlist' }, ordered.map(line)),
+        ),
+        h('div', { className: 'dsh-wb-wizfoot' },
+          // 「全部就这么定」只在**这一轮全是新任务、且没有疑问项**时才当主按钮。
+          //
+          // 两个限制都是刻意的：
+          //   · **有 ⚠** → 主按钮改成「先看有疑问的 N 件」。有疑问还主推「全部定」，
+          //     等于鼓励用户跳过自己该定的那一部分（GOV.UK 的 check-answers 也是
+          //     先逐项确认、最后才 Accept）。
+          //   · **混了改动/合并/删除** → 「全部定」**不能用**，因为 aiApplyAll 只
+          //     新建 tasks；改动与合并动的是已有数据（改错了比建错了难受得多），
+          //     必须逐条确认。按钮写「全部」而实际只做了新建，是在骗用户。
+          canApplyAll
+            ? h('button', {
+              className: 'dsh-wb-aibtn primary',
+              title: '把这 ' + queue.length + ' 件都按我填好的加进去',
+              onClick: () => aiApplyAll(),
+            }, '全部就这么定（' + queue.length + ' 件）')
+            : h('button', {
+              className: 'dsh-wb-aibtn primary',
+              title: unsureCount > 0
+                ? '先处理这 ' + unsureCount + ' 件我没把握的'
+                : '这一轮里有改动/合并/删除，那些动的是已有数据，得逐条过',
+              onClick: () => {
+                // 有疑问项就先跳第一条疑问的；否则从头逐条（因为里面有要确认的改动）。
+                setAiStep(unsureCount > 0 ? ordered[0].i : 0)
+                setAiShowOverview(false)
+              },
+            }, unsureCount > 0 ? '先看有疑问的 ' + unsureCount + ' 件' : '逐条确认这几件'),
+          h('button', {
+            className: 'dsh-wb-chip',
+            title: '一条一条过（含已确定的那些）',
+            onClick: () => { setAiStep(0); setAiShowOverview(false) },
+          }, '逐条看'),
+        ),
+      )
+    }
+
     const aiWizard = (queue) => {
       const total = queue.length
+      // 总览阶段：还没开始逐条时先给列表（见 aiOverview）。
+      if (aiShowOverview === true) return aiOverview(queue)
       // 越界（处理完最后一条之后）显示收尾，而不是空白——空白会让人以为卡住了。
       const at = aiStep >= total ? null : queue[aiStep]
       const head = h('div', { className: 'dsh-wb-wizhead', key: 'wh' },
@@ -2225,16 +2371,36 @@ function apply(ctx) {
           disabled: aiStep === 0,
           onClick: () => setAiStep((n) => Math.max(0, n - 1)),
         }, '上一条'),
+        // 回总览：NN/g 要求 wizard「让用户知道还有多少、并表达心智模型」——
+        // 逐条走到第 5 条时，用户常常想再看一眼全局（还有几件、都在哪）。
+        h('button', {
+          className: 'dsh-wb-chip',
+          title: '回到总览：看这一轮一共有几件、都到哪儿了',
+          onClick: () => setAiShowOverview(true),
+        }, '看全部'),
         h('button', {
           className: 'dsh-wb-chip',
           disabled: at === null,
-          title: '先跳过这条，之后还能回到上一步找它',
+          title: '这条先放着，之后还能用「上一条」回来找它',
           onClick: () => setAiStep((n) => Math.min(total, n + 1)),
-        }, '跳过'),
+        }, '先放着'),
+        // **区分「先放着」与「不是这件事」**（移动端调研指出的一个真缺口）。
+        //
+        // 原来只有「跳过」，于是一个被 OCR 误读出来的条目（比如把「合计 128 元」
+        // 读成了一条任务）会永远留在队列里，用户每轮都得再跳过一次。
+        //   · 「先放着」= 这件事对，但我现在不想定 → 留在队列，回总览标 ⚠；
+        //   · 「不是这件事」= 你读错了 → 从队列里**移除**，别再占位置。
+        // 两件事的后果不同，所以是两个按钮、两句文案，不是一个。
+        h('button', {
+          className: 'dsh-wb-chip',
+          disabled: at === null,
+          title: '这条我读错了（不是我要做的事）——把它从这轮建议里去掉',
+          onClick: () => aiDrop(at),
+        }, '不是这件事'),
         at === null
           ? h('button', {
             className: 'dsh-wb-chip',
-            onClick: () => setAiStep(0),
+            onClick: () => { setAiStep(0); setAiShowOverview(true) },
           }, '再看一遍')
           : null,
       )
