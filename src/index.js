@@ -61,7 +61,6 @@ import {
   blockers,
   reopenAncestors,
   removeBlockedBy,
-  setFiled,
   setStar,
   setRecur,
   spawnRecurring,
@@ -314,7 +313,10 @@ function depInputOf(args) {
   const rm = optStr(args.blockedRemove)
   if (rm !== undefined) out.blockedRemove = rm
   if (typeof args.star === 'boolean') out.star = args.star
-  if (typeof args.filed === 'boolean') out.filed = args.filed
+  // `filed` **不进来**：顶层不再分「收件箱 / 工作计划」两栏，这个字段已废弃。
+  // 单独处理它不为「应用」，而是为了在「只传了 filed」时给一句**说清楚的**提示
+  // （见下面的 no-change 分支）——否则 agent 会收到「没有要改的属性」，
+  // 而它明明传了一个参数，那是最难查的一类反馈。
   const recur = optStr(args.recur)
   if (recur !== undefined) out.recur = recur
   return Object.keys(out).length > 0 ? out : undefined
@@ -336,10 +338,11 @@ function applyDeps(plan, node, dep) {
     setStar(node, dep.star)
     reasons.push(dep.star ? 'star' : 'unstar')
   }
-  if (dep.filed !== undefined) {
-    setFiled(node, dep.filed)
-    reasons.push(dep.filed ? 'file' : 'unfile')
-  }
+  // `filed` 已废弃：顶层不再分「收件箱 / 工作计划」两栏，这个字段不再影响任何判断。
+  //
+  // 这里**接受但忽略**，而不是拒绝：agent 可能还按老习惯传它（提示词与工具
+  // 描述里刚去掉），为这个报错等于把一个已经无意义的历史参数变成硬失败。
+  // 传了不生效、也不留痕——磁盘上不会长出这个键（见 store.js 的 normalize）。
   if (dep.recur !== undefined) {
     setRecur(node, dep.recur)
     reasons.push('recur')
@@ -1578,7 +1581,12 @@ export function apply(ctx) {
       const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
       if (spawned !== null) reasons.push('recur-spawn')
       if (reasons.length === 0) {
-        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef / blockedAdd / blockedRemove / star / recur / filed')
+        // 只传了已废弃的 filed 时，给一句说明而不是「没有要改的属性」——
+        // 后者会让 agent 以为自己参数名写错了，然后反复试。
+        if (body !== null && body !== undefined && typeof body.filed === 'boolean') {
+          throw new Error('filed 已废弃并忽略：顶层现在不分「收件箱 / 工作计划」两栏，待办与计划平铺在一起。想让一条待办变成计划，直接给它加子项（plan_node_add 带 parent）')
+        }
+        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef / blockedAdd / blockedRemove / star / recur')
       }
       await store.save(plan, { reason: reasons.join('+') })
       json(res, {

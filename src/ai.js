@@ -326,7 +326,7 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
       : '【当前全貌】\n' + context,
     '',
     outline === ''
-      ? '【可归入的计划】目前没有任何计划（新建的待办会先进收件箱）。'
+      ? '【可归入的计划】目前没有任何计划（新建的待办就先待在顶层，之后可以给它加子项、变成计划）。'
       : '【可归入的计划】（「父计划 / 子计划」表示层级，plan 字段要原样抄其中一个标题）\n' + outline,
     history === '' ? '' : '\n【历史相似任务】（判断这次要多久、能不能排得动）\n' + history + '\n',
     '',
@@ -352,7 +352,7 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '3. due 只有**明确说了时间**才填（「下周三」「9月20日前」都要换算成具体日期）；没说就留空。',
     '4. priority 只有明确说了「重要/紧急/必须」才填 high，「有空再做」才填 low，其余留空。',
     '5. plan 从上面【可归入的计划】里**原样抄一个标题**；都不合适就填一个新计划名；',
-    '   判断不了就留空（进收件箱）。',
+    '   判断不了就留空（先待在顶层，之后可以再归位）。',
     '6. advice：**以计划专家的身份**给一条意见，必须引用【当前全貌】或【历史相似任务】里的',
     '   具体名字（例如「与手上的「补台账」几乎重复」「历史上「台区排查」从开工到完成用了 12 天」）。',
     '   没有依据就留空——不要写正确的废话。',
@@ -671,9 +671,9 @@ export function normEdits(raw) {
     // 一个字段都没落到 patch 上 = 这条改动没有内容，丢掉（免得渲染出一张空卡）。
     if (Object.keys(patch).length === 0) continue
     // 可选项：同一件事有几种合理做法时（「改到周五」还是「挪到下周一」），
-    // 模型给 2–3 个 label + patch，面板渲染成芯片让人挑——与草稿卡的 options 同构。
+    // 模型给 2–3 个 label + patch，面板渲染成按钮让人挑——与草稿卡的 options 同构。
     // 注意：options 挂在**这条改动**上，不是挂在 patch 里（`src` 是 patch）——
-    // 我第一版写成 src.options，结果永远读到 undefined，芯片一个都不出。
+    // 我第一版写成 src.options，结果永远读到 undefined，按钮一个都不出。
     const options = []
     if (Array.isArray(item.options)) {
       for (const o of item.options) {
@@ -876,7 +876,9 @@ export function attachSuggestions(plan, tasks, today = todayStr()) {
       seen.add(String(s.id))
       candidates.push({ kind: 'plan', id: String(s.id), title: String(s.title ?? ''), why: s.why })
     }
-    candidates.push({ kind: 'inbox', title: '收件箱', why: '先记下来，之后再归位' })
+    // 「放着」而不是「收件箱」：顶层不再分栏，这个候选的含义是「先放顶层，
+    // 之后再归位」——kind 名保留（面板与测试用它做判别），title 是给人看的。
+    candidates.push({ kind: 'inbox', title: '先放着', why: '先放顶层，之后再归位' })
     // ④ 模型点名了但对不上任何现有计划 → 它想说的是「新建一个」。
     //    没点名也给这个候选（名字留空），因为「新建计划」是用户明确要的选项，
     //    不能因为模型没说就不给。

@@ -1558,25 +1558,25 @@ test('叶子计划可以手动完成（面板勾选走的就是这条通路）',
   assert.equal(dig((await readPlan()).nodes, made.node.id).status, 'done')
 })
 
-test('「纳入工作计划」：工具与 HTTP 面共用同一条写入，filed 随 payload 下发', async () => {
+test('filed 已废弃：老调用被安全忽略，不报错、不生效、不落盘', async () => {
+  // 顶层不再分「收件箱 / 工作计划」两栏，「纳入工作计划」这个动作随字段一起删除。
+  // 但 agent 可能还按老习惯传 filed——所以这条测试钉住**兼容行为**：
+  // 传了不报错（不会把一个已无意义的历史参数变成硬失败），也不改变任何东西。
   const made = await call('plan_node_add', { title: '独立事项' })
   const id = made.node.id
   const before = (await call('plan_show')).plan.counts
-  const inbox0 = before.inbox
 
-  // agent 侧：plan_node_set 的 filed 走 DEP_PARAMS，与 star / recur 同一条通道。
+  // agent 侧：plan_node_set 带 filed —— 应被忽略。
   await call('plan_node_set', { node: id, filed: true })
   const after = (await call('plan_show')).plan
-  assert.equal(after.counts.inbox, inbox0 - 1, '纳入后退出收件箱')
-  assert.equal(after.counts.filed, (before.filed ?? 0) + 1)
-  assert.equal(after.nodes.find((n) => n.id === id).filed, true, 'filed 随 payload 下发')
-  // 归位建议只给**还在收件箱**的待办算——纳入过的不再需要建议。
-  assert.deepEqual(after.nodes.find((n) => n.id === id).parentSuggestions, [])
+  assert.equal(after.counts.inbox, before.inbox, 'filed 不再改变任何计数')
+  assert.equal('filed' in after.nodes.find((n) => n.id === id), false,
+    '磁盘/payload 上都不该长出这个键')
 
-  // 面板侧：同一条通路（/node-set），退回收件箱。
+  // 面板侧：同一条通路（/node-set）单传 filed 会得到**说清楚的**提示，
+  // 而不是「没有要改的属性」——后者会让 agent 以为自己参数名写错了然后反复试。
   const { payload } = await post('/node-set', { sessionId: SESSION_ID, node: id, filed: false })
-  assert.equal(payload.ok, true)
-  const back = (await post('/get', { sessionId: SESSION_ID })).payload.plan.counts
-  assert.equal(back.inbox, inbox0, '退回后回到收件箱')
-  assert.equal(back.filed, before.filed ?? 0)
+  assert.equal(payload.ok, false)
+  assert.match(String(payload.error), /filed 已废弃/, '要明说这个字段废弃了')
+  assert.match(String(payload.error), /加子项/, '并告诉它现在该怎么做（加子项）')
 })

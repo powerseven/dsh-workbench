@@ -284,15 +284,15 @@ const CSS = [
   '.dsh-wb-bar-fill{height:100%;background:var(--wb-accent);transition:width var(--wb-dur) var(--wb-ease);}',
   // ── 筛选条 ──────────────────────────────────────────────────────────────
   '.dsh-wb-filters{display:flex;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-5);flex-wrap:wrap;flex:none;border-bottom:1px solid var(--wb-line);}',
-  // 芯片的横向内边距只给 6px。这 6 个筛选芯片在窄宽（≈420px 的侧栏）下总宽 383px，
+  // 按钮的横向内边距只给 6px。这 6 个筛选按钮在窄宽（≈420px 的侧栏）下总宽 383px，
   // 加上 5 个 4px 间隙是 403px——筛选行可用宽只要低于这个数就会折成两行，而第二行
-  // 只挂一个孤零零的芯片，整块高度还会从 37px 涨到 49px。用 sp-4(8px) 时 6 个芯片
+  // 只挂一个孤零零的按钮，整块高度还会从 37px 涨到 49px。用 sp-4(8px) 时 6 个按钮
   // 各宽 4px，实测就会折行。纵向补回 2px 是为了让 11px 的字有正常行高，不与折行冲突。
   '.dsh-wb-chip{border:1px solid var(--wb-line-2);background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);padding:var(--wb-sp-1) var(--wb-sp-3);font:var(--wb-f3);cursor:pointer;white-space:nowrap;max-width:14em;overflow:hidden;text-overflow:ellipsis;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-chip:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 选中态用「填充 + 描边 + 加粗」三重区分，不靠颜色单独表意。
   '.dsh-wb-chip.on{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);font-weight:600;}',
-  // 建议芯片：和「用户自己挑的目标」区分开——它是系统推断的。沿用强调色，
+  // 建议按钮：和「用户自己挑的目标」区分开——它是系统推断的。沿用强调色，
   // 但**位置在前 + 文案带「建议」**才是主要区分手段，颜色只是辅助（不靠颜色单独表意）。
   '.dsh-wb-chip.sug{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);}',
   // ── 主体 ────────────────────────────────────────────────────────────────
@@ -323,7 +323,7 @@ const CSS = [
   '.dsh-wb-cardpath{font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
   '.dsh-wb-cardmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--wb-sp-2);}',
   // ── 视图切换（树 / 看板）───────────────────────────────────────────────
-  // 段控：和筛选芯片同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
+  // 段控：和筛选按钮同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
   '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
   '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
   '.dsh-wb-vbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
@@ -720,7 +720,7 @@ const CSS = [
   '.dsh-wb-aiinput:focus{border-color:var(--wb-accent);}',
   '.dsh-wb-aiinput::placeholder{color:var(--wb-fg-2);}',
   '.dsh-wb-quick{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
-  // 打开浮层时助手先说一句「现在什么情况」——一行芯片，点一下就跳到面板对应的筛选。
+  // 打开浮层时助手先说一句「现在什么情况」——一行按钮，点一下就跳到面板对应的筛选。
   // 数字全部来自面板同一份派生量（summarize().filters），所以两边永远对得上。
   '.dsh-wb-aibrief{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
   '.dsh-wb-aibrieflabel{font:var(--wb-f3);color:var(--wb-fg-2);}',
@@ -794,7 +794,7 @@ function injectStyles(css) {
  */
 /**
  * 快捷问法。**最多三条**——这条限制是量出来的，不是审美：浮层在手机上宽
- * `min(520px, 100vw − 24px)`，390px 的手机里只剩约 350px 内容宽，四个芯片
+ * `min(520px, 100vw − 24px)`，390px 的手机里只剩约 350px 内容宽，四个按钮
  * （每个 5–7 个汉字 + 内边距）加上右边的「清空 / 收起」就会折成两行，
  * 而这一行折行会直接把浮层顶高一行（真机反馈：「3 条就好了，4 条就变成两行了」）。
  * 想加第四条，先回去量一遍宽度。
@@ -1382,7 +1382,7 @@ function apply(ctx) {
      */
     const aiApply = async (task, choice) => {
       let parent = ''
-      let where = '收件箱'
+      let where = '顶层'
       if (choice.kind === 'plan') {
         parent = choice.id
         where = choice.title
@@ -1414,10 +1414,10 @@ function apply(ctx) {
      * **一条草稿，直接落库**——AI 的首选建议 + 人的一次点击 = 一次写入。
      *
      * 为什么要有这条路（用户原话：「你反馈出来的东西没有可以让我选择确定，然后确定
-     * 之后你就帮我做」）：原来三条路都要过表单——芯片把你送进详情页，你还得再点保存。
+     * 之后你就帮我做」）：原来三条路都要过表单——按钮把你送进详情页，你还得再点保存。
      * 「AI 草稿必经表单」那条纪律的本意是「AI 不替你决定」，而**点这一下就是你的决定**；
      * 卡片上已经写着标题、截止、归入哪条，按下去就是它写的那个意思。
-     * 想改一改再存的人走芯片那条路（进表单），两条路并存。
+     * 想改一改再存的人走按钮那条路（进表单），两条路并存。
      *
      * 去重/顺序说明：选「新建计划」时先建计划（要拿它的 id 当 parent），再建待办——
      * 与表单那条路完全一样，只是不经过人眼。
@@ -1426,13 +1426,13 @@ function apply(ctx) {
       const pick = Array.isArray(task.candidates) && task.candidates.length > 0
         ? task.candidates[0] : { kind: 'inbox' }
       let parent = ''
-      let where = '收件箱'
+      let where = '顶层'
       if (pick.kind === 'plan') {
         parent = String(pick.id)
         where = String(pick.title)
       } else if (pick.kind === 'new') {
         const title = String(pick.title === undefined ? '' : pick.title).trim()
-        if (title === '') { flash('这条要新建计划，但还没有名字——点下面的芯片进去填'); return false }
+        if (title === '') { flash('这条要新建计划，但还没有名字——点下面的按钮进去填'); return false }
         const made = await write('node-add', { title, type: 'plan' })
         if (made === null || made === undefined || made.node === null || made.node === undefined) return false
         parent = String(made.node.id)
@@ -1454,7 +1454,7 @@ function apply(ctx) {
      * **全部按首选建议加入**——真的全部落库，不再逐条开表单。
      *
      * 它原来的名字这么写、行为却是「打开第一条的表单，让你逐条过」，名不副实（用户就是
-     * 被这个坑住的）。想逐条改的人有的是入口：每张卡上的芯片会把你送进表单。
+     * 被这个坑住的）。想逐条改的人有的是入口：每张卡上的按钮会把你送进表单。
      * 逐条 await：建计划那一步要拿回 id 才能挂下一条。
      */
     const aiApplyAll = async () => {
@@ -1832,7 +1832,7 @@ function apply(ctx) {
     /**
      * **打开浮层时，助手先说话**（用户原话：「我点开它，你就应该要给我所有的一些建议」）。
      *
-     * 这一版是**本地算的**：数字来自 summarize() 里那份和面板筛选芯片同源的派生量，
+     * 这一版是**本地算的**：数字来自 summarize() 里那份和面板筛选按钮同源的派生量，
      * 所以零模型成本、离线也在、而且**永远和面板上的数字一致**（重算就会出现
      * 「浮层说 2 条、面板说 3 条」而没人知道哪个对——见「派生量不重算」那条纪律）。
      *
@@ -1906,7 +1906,9 @@ function apply(ctx) {
       if (f.behind > 0) items.push({ id: 'behind', label: '落后', n: f.behind })
       if (f.unverified > 0) items.push({ id: 'unverified', label: '待核验', n: f.unverified })
       if (f.delegated > 0) items.push({ id: 'delegated', label: '委派', n: f.delegated })
-      if (sum.inboxOpen > 0) items.push({ id: 'inbox', label: '收件箱', n: sum.inboxOpen })
+      // 「顶层」而不是「收件箱」：两栏已合并，这个数是「还没往下拆的顶层待办」。
+      // 筛选 id 仍是 inbox（filterCounts 的键，改名会牵动 logic.cjs 与测试）。
+      if (sum.inboxOpen > 0) items.push({ id: 'inbox', label: '顶层', n: sum.inboxOpen })
       // 标题重复的组数也报出来：它是最该动手的一类（见 duplicateGroupsOf）。
       // 点它只是把浮层留在这儿不动——卡片就在下面，点那张卡才是动作。
       const dups = duplicateGroupsOf(plan).length
@@ -1920,12 +1922,12 @@ function apply(ctx) {
         items.map((it) => h('button', {
           key: it.id,
           className: 'dsh-wb-chip',
-          // 收件箱没有对应的筛选芯片，点了就只是收起浮层让人看面板——title 里说清差别。
+          // 收件箱没有对应的筛选按钮，点了就只是收起浮层让人看面板——title 里说清差别。
           title: it.id === 'inbox'
             ? '收件箱里有 ' + it.n + ' 条还没归位（在面板最上面）'
             : '点一下：面板切到筛选「' + it.label + '」',
           onClick: () => {
-            // 重复没有对应的筛选芯片，点了只是把卡片留在眼前（卡片就在这一行下面）。
+            // 重复没有对应的筛选按钮，点了只是把卡片留在眼前（卡片就在这一行下面）。
             if (it.id === 'dup') { flash('下面的卡片可以一键合并'); return }
             if (it.id !== 'inbox') store.set({ filter: it.id })
             setFabOpen(false)
@@ -1949,7 +1951,7 @@ function apply(ctx) {
             // 两个都要关——桌面浮层（fabOpen）与手机底部块（aiExpanded）。
             setFabOpen(false)
             setAiExpanded(false)
-            flash('已记入收件箱')
+            flash('已记下')
           })
         }
         return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' },
@@ -1966,7 +1968,7 @@ function apply(ctx) {
             micButton(setPlainDraft, 'mic'),
             h('button', {
               className: 'dsh-wb-iconbtn',
-              title: '确认：记入收件箱（回车同样有效）',
+              title: '确认：记下这一条（回车同样有效）',
               disabled: plainDraft.trim() === '',
               onClick: submitPlain,
             }, icon('plus'),
@@ -2065,7 +2067,7 @@ function apply(ctx) {
       // 输入框和问法属于「我要说」，摘要是「它先说」，顺序上先听后说。
       //
       // **同样只在空手时给**：它的数字（逾期 2 / 落后 1 / 收件箱 3）在面板的
-      // 筛选芯片上本来就写着，而且那些芯片还能点。有内容在屏幕上时再报一遍，
+      // 筛选按钮上本来就写着，而且那些按钮还能点。有内容在屏幕上时再报一遍，
       // 就是同一屏里的第二份同样数字——两份并存还会引出「以哪个为准」的疑问。
       if (hasContent !== true) rows.push(aiBriefing())
 
@@ -2523,20 +2525,20 @@ function apply(ctx) {
             + (x.evidence > 0 ? '，附 ' + x.evidence + ' 条证据' : '') + '）')))
         : null,
       // **主动作**：按首选建议**直接加入**，不经过表单。
-      // 位置在芯片**之前**——它是这张卡最该被点的那一个；下面的芯片是「我想改改」的次要路径。
+      // 位置在按钮**之前**——它是这张卡最该被点的那一个；下面的按钮是「我想改改」的次要路径。
       (() => {
         const pick = Array.isArray(task.candidates) && task.candidates.length > 0
           ? task.candidates[0] : { kind: 'inbox' }
         const where = pick.kind === 'plan' ? '归入「' + String(pick.title) + '」'
           : (pick.kind === 'new'
             ? '新建计划「' + String(pick.title === undefined ? '' : pick.title) + '」'
-            : '进收件箱')
+            : '放顶层')
         return h('div', { className: 'dsh-wb-movepick', key: 'now' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
             title: '就这么办：直接建这条待办（' + where + '，'
               + String(task.due === undefined || task.due === '' ? '无截止' : task.due)
-              + '）。想先改再存，点下面的芯片进表单',
+              + '）。想先改再存，点下面的按钮进表单',
             onClick: () => { aiAddNow(task); if (typeof onDone === 'function') onDone() },
           }, '就这么办：' + where))
       })(),
@@ -2567,7 +2569,7 @@ function apply(ctx) {
               className: 'dsh-wb-chip',
               title: c.why,
               onClick: () => aiApply(task, c),
-            }, '收件箱')
+            }, '顶层')
           }
           // 新建计划：输入框 + 按钮一组。它跟其它候选**平级**，
           // 所以放在同一行里，而不是另起一块表单。
@@ -2809,16 +2811,9 @@ function apply(ctx) {
     // 三个都是「列表式」改动，与证据 / 关联一样**即时生效**，不等「保存」——
     // 攒到保存按钮里反而要算 diff，而这三样天生一次一条。
     const setStarOn = (node, on) => write('node-set', { node: node.id, star: on === true })
-    /**
-     * 纳入 / 退出「工作计划」。纳入 = 它不再待在收件箱，而是以独立条目出现在
-     * 下面的工作计划栏（不作为谁的子项）；退出 = 回到收件箱。写的是同一个
-     * `/node-set`，不新增任何通路。
-     */
-    const setFiledOn = (node, on) => write(
-      'node-set',
-      { node: node.id, filed: on === true },
-      () => flash(on === true ? '已纳入工作计划' : '已退回收件箱'),
-    )
+    // 这里原本有 setFiledOn（纳入 / 退出「工作计划」）。
+    // 该动作已随 `filed` 字段一起废弃——顶层不再分栏，没有「纳入」这回事了。
+    // 一条待办记下来就在那儿，要往下拆就加子项（它会自动变成计划）。
     const setRecurOn = (node, kind) => write('node-set', { node: node.id, recur: kind })
     // 收尾复盘：把没做完的顺延到明天 / 下周（写 due），或清掉 due 退回收件箱。
     // 复用 /node-set，不加工具不加路由。清空走 `clear: ['due']`（空串在 applyFields 里等同不动）。
@@ -3288,16 +3283,8 @@ function apply(ctx) {
             className: 'dsh-wb-taskdue',
             title: '被挡住：等 ' + node.blocked.join('、'),
           }, icon('lock', 12)) : null,
-        // 「纳入工作计划」只在**收件箱那一层**（depth 0）出现，而且做得常显而不是
-        // 悬停才出：它的意义就是催人把收件箱清空，藏起来等于不做。措辞用「纳入计划」
-        // 而不是「提升为计划」——它并不改变节点的形态，只是不再待在收件箱。
-        depth === 0 && !filedOf(node)
-          ? h('button', {
-            className: 'dsh-wb-adopt',
-            title: '纳入工作计划：它不再待在收件箱，而是作为独立条目出现在下面的工作计划栏',
-            onClick: (e) => { e.stopPropagation(); setFiledOn(node, true) },
-          }, '纳入计划')
-          : null,
+        // 「纳入计划」按钮已删——顶层不再分栏，没有「纳不纳入」这个中间态。
+        // 一行上少一颗常显按钮之后，待办行也更清爽（它原本每行都占一格）。
         h('button', {
           className: 'dsh-wb-act star' + (node.starred === true ? ' on' : ''),
           title: node.starred === true ? '取消星标' : '星标：接下来做（执行清单置顶）',
@@ -3412,14 +3399,7 @@ function apply(ctx) {
           // 看起来就像「加了但没加上」。
           onClick: (e) => { e.stopPropagation(); expand(node.id); setNodeDraft(''); store.set({ adding: state.adding === node.id ? null : node.id }) },
         }, icon('plus')),
-        // 只有「已纳入工作计划的叶子」才有这一手：把它退回收件箱。纳入不该是单向门。
-        filedOf(node)
-          ? h('button', {
-            className: 'dsh-wb-act',
-            title: '退回收件箱（它不再是工作计划栏里的独立条目）',
-            onClick: (e) => { e.stopPropagation(); setFiledOn(node, false) },
-          }, icon('move'))
-          : null,
+        // 「退回收件箱」按钮也已删（同一条线：顶层不再分栏）。
         ),
       )
 
@@ -4110,7 +4090,7 @@ function apply(ctx) {
     }
     if (sum.hasPlan) rows.push(h('div', { className: 'dsh-wb-filters', key: 'filters' }, chips))
 
-    // 自定义视图（AI 清单存下来的）：和筛选芯片同一行语义——点了切换「看什么」。
+    // 自定义视图（AI 清单存下来的）：和筛选按钮同一行语义——点了切换「看什么」。
     const savedViews = loadViews()
     if (savedViews.length > 0) {
       rows.push(h('div', { className: 'dsh-wb-filters', key: 'views' },
@@ -4246,18 +4226,32 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    const inboxRows = []
-    // 分栏标题前**不放图标**：下面「工作计划」那一段没有图标，两段标题只差一个
-    // 图标会显得一段比另一段「更重要」，而它们本来是并列的两段。层级交给字重与
-    // 留白，与面板里其它地方一致（见「文字只留两级」）。
-    inboxRows.push(h('div', { className: 'dsh-wb-inboxhead', key: 'ih' },
-      h('span', { className: 'dsh-wb-inboxtitle' }, '收件箱'),
-      h('span', { className: 'dsh-wb-count' }, inbox.length > 0
-        ? inbox.length + ' 条' + (sum.inboxOpen > 0 ? '（未完成 ' + sum.inboxOpen + '）' : '')
-        : '空'),
-    ))
-    for (const todo of sortNodes(inbox)) inboxRows.push(renderTodo(todo, 0))
-    body.push(h('div', { className: 'dsh-wb-inbox', key: 'inbox' }, inboxRows))
+    // ── 顶层：一条平铺的列表，**不再分「收件箱」与「工作计划」两栏** ──────
+    //
+    // 用户原话：「不要分收件箱和工作计划了，那是直接全部变成了这个工作计划。」
+    //
+    // 合并是对的：那个区分制造了一个**用户并不关心的中间态**——刚记下的一条待办
+    // 既不属于哪个计划、又还不算「工作计划」，于是界面要分两栏、每行还要挂一颗
+    // 「纳入计划」催他决定。真正该回答的只有一个问题：**它是什么、要不要往下拆**，
+    // 而这个由结构派生（有子项=计划、没有=待办）已经答了（见 nodeType）。
+    //
+    // 所以现在读作：**待办与计划平铺在一起**，勾选框、徽章、动作都按各自的类型来。
+    // 一条待办想往下拆，直接给它加子项——它自己就变成计划了，不需要先「纳入」什么。
+    // 顺序仍走 sortNodes（未完成在前、已完成沉底），与过去一致。
+    const tops = sortNodes(planNodes(plan))
+    // 标题栏保留一行：它现在只报数量，起「这里是你全部的顶层条目」的作用。
+    // 没有它，一屏待办会不知道自己在看什么层级。
+    if (tops.length > 0) {
+      body.push(h('div', { className: 'dsh-wb-secthead', key: 'sh' },
+        h('span', { className: 'dsh-wb-secttitle' }, '全部'),
+        h('span', { className: 'dsh-wb-count' }, tops.length + ' 项'),
+      ))
+    }
+    for (const node of tops) {
+      // 类型决定用哪个渲染器——这正是「类型由结构派生」在界面上的落点：
+      // 有子项的走 renderPlan（带进度条与折叠），没有的走 renderTodo。
+      body.push(nodeType(node) === 'plan' ? renderPlan(node, 0) : renderTodo(node, 0))
+    }
 
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
@@ -4272,15 +4266,7 @@ function apply(ctx) {
       ))
     }
 
-    // 「工作计划」栏：顶层计划 + 已纳入工作计划的顶层待办。它与收件箱**互补**——
-    // 一个顶层节点要么还在收件箱、要么已经在这里，不会两边都出现。
-    // 分栏标题是必要的：没有它，就分不清下面这些和上面收件箱的区别。
-    const works = workPlans(plan)
-    body.push(h('div', { className: 'dsh-wb-secthead', key: 'wh' },
-      h('span', { className: 'dsh-wb-secttitle' }, '工作计划'),
-      h('span', { className: 'dsh-wb-count' }, works.length > 0 ? works.length + ' 项' : '空'),
-    ))
-    for (const node of works) body.push(renderPlan(node, 0))
+    // （原来的「工作计划」独立一栏已合并进上面的顶层平铺列表。）
 
     // vault / AI 人设配置统一收进右上角「设置」，不再在各视图里平铺。
     // 落在空白处 = 移回顶层（收件箱）。与 ↳ 选择器并存：选择器适合跨很远的目标，

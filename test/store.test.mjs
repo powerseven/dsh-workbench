@@ -306,41 +306,50 @@ test('inboxOf 只取顶层待办；topPlans 只取顶层计划', () => {
   assert.deepEqual(topPlans(plan).map((n) => n.id), ['g1'])
 })
 
-test('「纳入工作计划」：filed 的顶层待办退出收件箱，改与计划并列在工作计划栏', () => {
+test('顶层不再分栏：待办与计划都在同一份顶层列表里', () => {
   const plan = samplePlan()
   const t = { id: 't9', type: 'todo', title: '游离', status: 'todo' }
   plan.nodes.push(t)
-  assert.deepEqual(inboxOf(plan).map((n) => n.id), ['t9'])
-  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1'])
 
+  // 用户要求合并两栏：「不要分收件箱和工作计划了，那是直接全部变成了这个工作计划。」
+  // 现在这两个函数返回的是同一份东西——顶层待办 / 顶层节点。
+  assert.deepEqual(inboxOf(plan).map((n) => n.id), ['t9'], '顶层待办')
+  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1', 't9'], '顶层节点=计划+待办')
+
+  // 「纳入计划」这个动作已删除，setFiled 是空实现（保留名字作为「字段不存在」的落点）。
   setFiled(t, true)
-  assert.equal(filedOf(t), true)
-  assert.deepEqual(inboxOf(plan).map((n) => n.id), [], '纳入之后它就不在收件箱了')
-  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1', 't9'], '它与计划并列在工作计划栏')
+  assert.equal(filedOf(t), false, 'filed 已废弃，恒为 false')
+  assert.equal('filed' in t, false, 'setFiled 不再写盘——磁盘上不会长出这个键')
+  // 分栏也不受它影响：这条待办本来就在顶层列表里。
+  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1', 't9'])
 
   const c = todoCounts(plan)
-  assert.equal(c.inbox, 0)
-  assert.equal(c.filed, 1)
-
-  // 关掉就删键：磁盘上不留 filed:false 的噪音（与 starred 同一条约定）。
-  setFiled(t, false)
-  assert.equal('filed' in t, false)
-  assert.deepEqual(inboxOf(plan).map((n) => n.id), ['t9'])
+  assert.equal(c.inbox, 1, '顶层待办计数（字段名沿用历史，语义是「顶层待办」）')
+  assert.equal(c.inboxOpen, 1)
 })
 
-test('挪进某个计划下就丢掉 filed——否则挪回顶层会凭空回到工作计划栏', () => {
+test('老数据里的 filed 在读盘归一时被清掉（字段废弃，磁盘上不长回来）', () => {
+  // 顶层残留。
   const plan = samplePlan()
-  const t = { id: 't9', type: 'todo', title: '游离', status: 'todo', filed: true }
-  plan.nodes.push(t)
-  appendChild(plan, t, 'g1')
-  assert.equal('filed' in t, false, '挂到别人下面就不再是工作计划栏的独立条目')
-  assert.deepEqual(workPlans(plan).map((n) => n.id), ['g1'])
+  plan.nodes.push({ id: 't9', type: 'todo', title: '游离', status: 'todo', filed: true })
+  normalizePlan(plan)
+  assert.equal('filed' in plan.nodes[plan.nodes.length - 1], false, '顶层残留要清掉')
 
-  // 老数据 / 外部写入留下的非顶层 filed，在读盘归一时被清掉。
+  // 非顶层的残留（历史上它只在顶层有意义，但外部手改可能留下别的形态）。
   const dirty = samplePlan()
   dirty.nodes[0].children.push({ id: 'z1', type: 'todo', title: '脏', status: 'todo', filed: true })
   normalizePlan(dirty)
-  assert.equal('filed' in dirty.nodes[0].children[0], false)
+  assert.equal('filed' in dirty.nodes[0].children[0], false, '任意层级的残留都要清掉')
+})
+
+test('挂到别人下面仍然清 filed（老数据路径）', () => {
+  const plan = samplePlan()
+  const t = { id: 't9', type: 'todo', title: '游离', status: 'todo', filed: true }
+  plan.nodes.push(t)
+  // appendChild 是「附加到父的 children」语义，不负责把它从顶层摘掉
+  // （那是调用方的事）——所以这里只断言 filed 这一件事。
+  appendChild(plan, t, 'g1')
+  assert.equal('filed' in t, false, '挂到别人下面时不留这个废弃字段')
 })
 
 test('childrenOf 对脏数据返回空数组', () => {
@@ -639,7 +648,9 @@ test('renderMarkdown 渲染收件箱，并标注重要度与委派', () => {
   const plan = emptyPlan('测试计划')
   plan.nodes.push({ id: 'n1', type: 'todo', title: '找张三要数据', status: 'todo', priority: 'high', due: '2026-09-18' })
   const md = renderMarkdown(plan)
-  assert.match(md, /## 收件箱 · 未归类待办  1 条/)
+  // 标题随分栏合并一起改了：顶层不再叫「收件箱 · 未归类待办」，
+  // 它们就是顶层待办（与计划平铺在同一栏）。
+  assert.match(md, /## 顶层待办  1 条/)
   assert.match(md, /- \[ \] n1 · 找张三要数据/)
   assert.match(md, /重要度高/)
   assert.match(md, /截止 2026-09-18/)

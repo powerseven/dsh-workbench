@@ -444,18 +444,21 @@ test('未完成数挂在页脚入口的 data-count 上（官方右栏无 tab bad
   assert.equal(el.props['data-count'], '3', '三条待办都还没完成')
 })
 
-test('两个分栏标题结构一致：只有「标题 + 计数」，都不带图标', async () => {
+test('顶层只有一栏：不再有「收件箱」与「工作计划」两段标题', async () => {
   const { view } = await mount()
-  // 这两段（收件箱 / 工作计划）是并列的，只差一个图标会显得一段比另一段更重要。
-  // 层级交给字重与留白——这条断言就是那个决定的护栏。
-  const inbox = firstByClass(view, 'dsh-wb-inboxhead')
+  // 用户要求合并：「不要分收件箱和工作计划了，那是直接全部变成了这个工作计划。」
+  //
+  // 那个区分制造了一个用户并不关心的中间态：刚记下的待办既不属于哪个计划、
+  // 又还不算「工作计划」。现在顶层就是一条平铺列表。
+  assert.equal(byClass(view, 'dsh-wb-inboxhead').length, 0, '不该再有「收件箱」段标题')
+  // 保留的唯一标题是「全部」——它现在只报数量，表明「这里是全部顶层条目」。
   const sect = firstByClass(view, 'dsh-wb-secthead')
-  assert.ok(inbox !== null && sect !== null)
-  for (const [name, head] of [['收件箱', inbox], ['工作计划', sect]]) {
-    assert.equal(findAll(head, (el) => el.type === 'svg').length, 0, name + ' 标题前不该有图标')
-    const kids = (head.children || []).filter((c) => c !== null && c !== undefined)
-    assert.equal(kids.length, 2, name + ' 标题段只有「标题 + 计数」两个元素')
-  }
+  assert.ok(sect !== null, '应有一条顶层标题（全部）')
+  assert.match(textOf(sect), /全部/, '标题读作「全部」')
+  // 结构护栏不变：标题段只有「标题 + 计数」两个元素、不带图标。
+  assert.equal(findAll(sect, (el) => el.type === 'svg').length, 0, '标题前不该有图标')
+  assert.equal((sect.children || []).filter((c) => c !== null && c !== undefined).length, 2,
+    '标题段只有「标题 + 计数」两个元素')
 })
 
 test('空工作区也能记下第一件事（入口在浮球里；它就是第一个节点）', async () => {
@@ -1158,7 +1161,7 @@ test('解析结果渲染成草稿；点建议**不直接落库**，而是填进�
   const drafted = render()
   const chipTexts = chipsOf(drafted, 0).map((c) => textOf(c))
   assert.equal(chipTexts[0], '建议 ↳ 子计划', '模型点名的排最前，且标出「建议」')
-  assert.ok(chipTexts.includes('收件箱'), '收件箱永远是备选')
+  assert.ok(chipTexts.includes('顶层'), '「先放着」永远是备选（顶层两栏合并后的叫法）')
   assert.match(chipTexts[chipTexts.length - 1], /建计划/)
 
   requests = []
@@ -1203,7 +1206,7 @@ test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', a
   await settle()
 
   requests = []
-  chipsOf(render(), 0).find((c) => textOf(c) === '收件箱').props.onClick(ev())
+  chipsOf(render(), 0).find((c) => textOf(c) === '顶层').props.onClick(ev())
   await settle()
 
   const place = firstByClass(render(), 'dsh-wb-fadd')
@@ -2188,58 +2191,50 @@ test('详情页：有未完成子项的计划，「已完成」按钮禁用并�
   assert.match(String(doneBtn.props.title), /自动完成/)
 })
 
-// ---------------------------------------------------------------- 纳入工作计划
+// ------------------------------------------------- 顶层平铺（原「纳入工作计划」）
 
-test('收件箱行有常显的「纳入计划」按钮，点了写 node-set(filed:true)', async () => {
+test('顶层待办与计划平铺在同一栏，不再需要「纳入计划」这一步', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
+  // 一条顶层待办 + 一个顶层计划，同时摆在顶层。
   planPayload.nodes.push({ id: 'w1', type: 'todo', title: '独立事项', status: 'todo' })
   try {
     const { view } = await mount()
-    const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('独立事项'))[0]
-    assert.ok(row !== undefined, '应有这条收件箱行')
-    const btn = byClass(row, 'dsh-wb-adopt')[0]
-    assert.ok(btn !== undefined, '收件箱行应有「纳入计划」按钮')
-    assert.equal(textOf(btn), '纳入计划')
-    requests = []
-    btn.props.onClick(ev())
-    await settle()
-    const req = requests.find((r) => r.path === '/api/workbench/node-set')
-    assert.ok(req !== undefined, '应走 /node-set（不新增通路）')
-    assert.equal(req.body.node, 'w1')
-    assert.equal(req.body.filed, true)
+    const page = view
+
+    // 两栏已合并：不该再有「收件箱」段，也不该再有「工作计划」段。
+    assert.equal(byClass(page, 'dsh-wb-inboxhead').length, 0, '不该再有收件箱分栏')
+    assert.ok(!byClass(page, 'dsh-wb-secttitle').map(textOf).includes('工作计划'),
+      '不该再有独立的工作计划分栏')
+
+    // 但那条顶层待办**照常显示**——它不需要先被「纳入」什么。
+    const row = findAll(page, (el) => classesOf(el).includes('dsh-wb-todowrap')
+      && textOf(el).includes('独立事项'))[0]
+    assert.ok(row !== undefined, '顶层待办应直接出现在列表里')
+
+    // 「纳入计划」按钮已删——没有这个中间态了。
+    assert.equal(byClass(page, 'dsh-wb-adopt').length, 0, '不该再有「纳入计划」按钮')
+
+    // 顶层待办要有勾选框（完成语义与形态脱钩）。
+    const box = byClass(row, 'dsh-wb-check')[0] || byClass(row, 'dsh-wb-todobox')[0]
+      || findAll(row, (el) => el.type === 'input')[0]
+    assert.ok(box !== undefined, '顶层待办应有勾选框')
   } finally {
     planPayload = keep
   }
 })
 
-test('已纳入工作计划的叶子：进工作计划栏、有勾选框、可退回，且不再留在收件箱', async () => {
+test('老数据里的 filed 键不再影响分栏（顶层一律平等）', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
-  planPayload.nodes.push({ id: 'w2', type: 'todo', title: '已纳入的事', status: 'todo', filed: true })
+  // 历史上 filed:true 的待办会跳到「工作计划」栏；现在它只是普通顶层条目。
+  planPayload.nodes.push({ id: 'w2', type: 'todo', title: '带着老标记的事', status: 'todo', filed: true })
   try {
-    const { render } = await mount()
-    const page = render()
-    assert.ok(byClass(page, 'dsh-wb-secttitle').map(textOf).includes('工作计划'),
-      '收件箱下方应有「工作计划」分栏标题')
-
-    const inbox = byClass(page, 'dsh-wb-inbox')[0]
-    assert.ok(!textOf(inbox).includes('已纳入的事'), '纳入之后就不该再留在收件箱')
-
-    const planRow = findAll(page, (el) => classesOf(el).includes('dsh-wb-plan') && textOf(el).includes('已纳入的事'))[0]
-    assert.ok(planRow !== undefined, '应以独立条目出现在工作计划栏')
-    // 它是叶子，所以必须还能勾完成（完成语义与形态脱钩）。
-    assert.ok(byClass(planRow, 'dsh-wb-plantitle')[0] !== undefined)
-
-    const back = byClass(planRow, 'dsh-wb-act')
-      .find((b) => String(b.props.title || '').includes('退回收件箱'))
-    assert.ok(back !== undefined, '纳入不该是单向门：要有退回入口')
-    requests = []
-    back.props.onClick(ev())
-    await settle()
-    const req = requests.find((r) => r.path === '/api/workbench/node-set')
-    assert.equal(req.body.filed, false)
-    assert.equal(req.body.node, 'w2')
+    const { view } = await mount()
+    // 它照常显示，位置由它在 nodes[] 里的次序决定，而不是由 filed 决定。
+    const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap')
+      && textOf(el).includes('带着老标记的事'))[0]
+    assert.ok(row !== undefined, '带 filed 的老数据仍要正常显示（不因字段废弃而消失）')
   } finally {
     planPayload = keep
   }
@@ -2659,11 +2654,11 @@ test('点开浮层助手先说一句「现在什么情况」——本地算的�
   const brief = firstByClass(view, 'dsh-wb-aibrief')
   assert.ok(brief !== null, '浮层里应该有一行现状')
   assert.match(textOf(brief), /现在：|眼下没有/, '要么给数字，要么明说没什么')
-  // fixture 里有一条顶层待办（收件箱一条），所以应该给出「收件箱 1」
-  assert.match(textOf(brief), /收件箱 1/)
+  // fixture 里有一条顶层待办，所以应该给出「顶层 1」（两栏合并后的叫法）。
+  assert.match(textOf(brief), /顶层 1/)
 
-  // 点它：收起浮层（收件箱没有对应的筛选芯片，所以只是把人送回面板）
-  const chip = byClass(brief, 'dsh-wb-chip').find((b) => textOf(b).includes('收件箱'))
+  // 点它：收起浮层（「顶层」没有对应的筛选按钮，所以只是把人送回面板）
+  const chip = byClass(brief, 'dsh-wb-chip').find((b) => textOf(b).includes('顶层'))
   assert.ok(chip !== undefined)
   chip.props.onClick(ev())
   assert.equal(firstByClass(render(), 'dsh-wb-fabsheet'), null, '点完应该收起浮层')
@@ -2861,6 +2856,6 @@ test('纯输入框（宿主没模型）提交后自动收起——不用再点�
   const after = ctx.render()
   assert.ok(firstByClass(after, 'dsh-wb-fabball') !== null, '记完就该回到浮球')
   assert.equal(firstByClass(after, 'dsh-wb-fabsheet'), null, '浮层已经收起')
-  assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /已记入收件箱/)
+  assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /已记下/)
 })
 
