@@ -2019,7 +2019,7 @@ test('手机档没有浮球、改用底部常驻输入条；桌面档仍是浮�
     const touchMount = await mount()
     assert.equal(byClass(touchMount.view, 'dsh-wb-fabball').length, 0,
       '手机档不应再有浮球（改为底部常驻输入条）')
-    assert.ok(byClass(touchMount.view, 'dsh-wb-bottombar').length > 0,
+    assert.ok(byClass(touchMount.view, 'dsh-wb-dockai').length > 0,
       '手机档应有底部常驻输入条')
   } finally {
     restore()
@@ -2031,58 +2031,132 @@ test('手机档没有浮球、改用底部常驻输入条；桌面档仍是浮�
     const deskMount = await mount()
     assert.ok(byClass(deskMount.view, 'dsh-wb-fabball').length > 0,
       '桌面档仍要有浮球——它是那里唯一的 AI 入口')
-    assert.equal(byClass(deskMount.view, 'dsh-wb-bottombar').length, 0,
+    assert.equal(byClass(deskMount.view, 'dsh-wb-dockai').length, 0,
       '桌面档不应有底部输入条（那是手机形态）')
   } finally {
     restore()
   }
 })
 
-test('手机档「记一条」：预填进宿主输入框，**不代发**（用户自己按发送）', async () => {
+test('手机档「记一条」：回车**直接落库**进收件箱，不绕对话、不等确认', async () => {
   const restore = stubCoarse(true)
   try {
     const { view, render } = await mount()
 
-    const bar = byClass(view, 'dsh-wb-bottombar')[0]
+    const bar = byClass(view, 'dsh-wb-dockai')[0]
     assert.ok(bar !== undefined, '手机档应有底部常驻输入条')
 
-    // 输入条里的输入框：与宿主 placeholder 同语气、走回车确认。
     const input = firstByClass(view, 'dsh-wb-aiinput')
     assert.ok(input !== null, '底部条里应有输入框')
     input.props.onChange({ target: { value: '台区 A 改造' } })
 
-    // 回车 = 填进去（与那条输入条的既有习惯一致）。
+    const before = requests.length
     const afterTyping = firstByClass(render(), 'dsh-wb-aiinput')
     afterTyping.props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+    await flush()
 
-    assert.equal(draftWrites.length, 1, '应恰好写一次宿主草稿')
-    assert.match(draftWrites[0], /台区 A 改造/, '要带上用户敲的原话')
-    assert.match(draftWrites[0], /工作计划/, '要说明记到哪儿——主 agent 据此调 plan_node_add')
+    // **一次动作就落库**：直接调 /node-add 写进 plan.json。
+    // 用户原话：「输入之后它填进去的就不会自动生成任务，反而要回套到你这个原生的
+    // 对话框里面…然后我要再等确认，它才能记录进去。这个是不行的。」
+    const addCall = requests.slice(before).filter((r) => String(r.path).indexOf('/node-add') >= 0).pop()
+    assert.ok(addCall !== undefined, '回车应直接落库（/node-add）')
+    assert.match(JSON.stringify(addCall.body), /台区 A 改造/, '要带上用户敲的原话')
 
-    // **只预填、不代发**：代发等于替用户做了决定，而预填后那一按就是他的确认。
-    assert.equal(submitCalls, 0, '不许代用户提交')
+    // **不许碰宿主输入框**：那会把待办伪装成一条发给 agent 的消息，
+    // 于是必然带出「谁来处理、要不要确认」这一整套对话流程。
+    assert.equal(draftWrites.length, 0, '不应把待办填进宿主输入框')
+    assert.equal(submitCalls, 0, '不应替用户发消息')
   } finally {
     restore()
   }
 })
 
-test('手机档「记一条」：拿不到宿主输入框时退回收件箱，不静默丢掉用户敲的字', async () => {
+test('手机档「记一条」：点击「记下」与回车同一条路（都直接落库）', async () => {
   const restore = stubCoarse(true)
   try {
-    // 老宿主 / composer 未挂载：inputActions 为 undefined。
-    const { view, render } = await mount({ noInputActions: true })
+    const { view, render } = await mount()
 
     const input = firstByClass(view, 'dsh-wb-aiinput')
-    input.props.onChange({ target: { value: '收件箱兜底一条' } })
-    firstByClass(render(), 'dsh-wb-aiinput').props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+    input.props.onChange({ target: { value: '按按钮记一条' } })
 
-    // 退回 /node-add 进收件箱——用户敲的字必须落地，不能因为拿不到输入框就消失。
-    const addCall = requests.filter((r) => String(r.path).indexOf('/node-add') >= 0).pop()
-    assert.ok(addCall !== undefined, '应退回 node-add 把这条记进收件箱')
-    assert.match(JSON.stringify(addCall.body), /收件箱兜底一条/)
+    // 「记下」那颗按钮：有字可确认时才显出来（与发送键同一条纪律）。
+    const btn = byClass(render(), 'dsh-wb-iconbtn').filter((b) => b.props.disabled !== true).pop()
+    assert.ok(btn !== undefined, '有字时应有一可点的确认按钮')
+    const before = requests.length
+    btn.props.onClick(ev())
+    await flush()
+
+    const addCall = requests.slice(before).filter((r) => String(r.path).indexOf('/node-add') >= 0).pop()
+    assert.ok(addCall !== undefined, '点「记下」也应直接落库')
+    assert.match(JSON.stringify(addCall.body), /按按钮记一条/)
   } finally {
-    // **必须 finally**：中途断言失败时若不恢复 matchMedia，后续用例会全部
-    // 误落入手机档，失败会像雪球一样滚到几十条上（真实踩过一次）。
+    restore()
+  }
+})
+
+test('手机档「记一条」：空输入什么都不做（不白写一次盘）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view, render } = await mount()
+    const before = requests.length
+    firstByClass(render(), 'dsh-wb-aiinput').props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+    await flush()
+    assert.equal(requests.length, before, '空输入不应产生任何请求')
+    assert.ok(view !== null)
+  } finally {
+    restore()
+  }
+})
+
+test('手机档 + 有模型：底部是完整 composer（输入框 + 图片 + 确认），不是纯输入框', async () => {
+  // 这是用户要的核心形态：「在插件里面复刻一下这个类似的专用框，就包括[附件]啊，
+  // 还有一个就是可以输入确认的按钮啊…因为我还是需要输入图片，然后让它识别，
+  // 然后做成任务。」
+  const restore = stubCoarse(true)
+  withAi()
+  try {
+    const { view } = await mount()
+
+    const dock = byClass(view, 'dsh-wb-dockai')[0]
+    assert.ok(dock !== undefined, '手机档底部应有常驻 composer 块')
+    assert.ok(firstByClass(view, 'dsh-wb-aiinput') !== null, '应有输入框')
+
+    // 图片入口（label + 隐藏的 file input）：拍照/选图 → /ai-parse 让模型识别成任务。
+    const pic = firstByClass(view, 'dsh-wb-pic')
+    assert.ok(pic !== null, '应有图片/附件入口')
+
+    // 确认按钮：走 /ai-parse。
+    //
+    // 注意它**不按空输入禁用**——空输入由 runAi 自己挡（这是 aiBlock 原有设计，
+    // 桌面浮球与手机档共用同一份逻辑，所以行为一致）。这条断言因此只钉「有按钮」，
+    // 空输入不写盘由下面「空输入什么都不做」那条用例覆盖。
+    const send = firstByClass(view, 'dsh-wb-send')
+    assert.ok(send !== null, '应有确认（发送）按钮')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档 + 有模型：贴图后确认键可点，提交走 /ai-parse（图片识别成任务那条路）', async () => {
+  const restore = stubCoarse(true)
+  withAi()
+  try {
+    const { view, render } = await mount()
+
+    // 只有图片、没有文字时，确认键也必须可点——拍照记任务正是「一个字都不打」。
+    // 这里直接走输入框那条（贴图路径由 /ai-parse 的 images 字段覆盖，见 host 测试）。
+    const input = firstByClass(view, 'dsh-wb-aiinput')
+    input.props.onChange({ target: { value: '把这张清单拆成任务' } })
+    const send = firstByClass(render(), 'dsh-wb-send')
+    assert.equal(send.props.disabled, false, '有内容时确认键应可点')
+
+    const before = requests.length
+    send.props.onClick(ev())
+    await flush()
+
+    const parseCall = requests.slice(before).filter((r) => String(r.path).indexOf('/ai-parse') >= 0).pop()
+    assert.ok(parseCall !== undefined, '确认应走 /ai-parse 让模型拆成任务')
+  } finally {
     restore()
   }
 })

@@ -504,10 +504,13 @@ const CSS = [
   //
   // flex:none 必须写：body 是 flex:1，这一条若也被拉伸就会跟着长高。
   // 底部留出安全区（安卓手势条 / iOS home indicator），否则最后一行贴着屏底。
-  '.dsh-wb-bottombar{flex:none;display:flex;align-items:center;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-4) calc(var(--wb-sp-3) + env(safe-area-inset-bottom,0px));border-top:1px solid var(--wb-line);background:var(--wb-bg);}',
-  // 输入框吃掉中间全部宽度，两个按钮保持各自宽度（不参与伸缩）。
-  '.dsh-wb-bottombar .dsh-wb-aiinput{flex:1 1 auto;min-width:0;}',
-  '.dsh-wb-bottombar .dsh-wb-iconbtn{flex:none;}',
+  '.dsh-wb-dockai{flex:none;display:flex;flex-direction:column;gap:var(--wb-sp-2);max-height:60%;overflow-y:auto;overscroll-behavior:contain;padding:var(--wb-sp-3) var(--wb-sp-4) calc(var(--wb-sp-3) + env(safe-area-inset-bottom,0px));border-top:1px solid var(--wb-line);background:var(--wb-bg);}',
+  // 底部这块里的输入行：与面板其它行分开排，输入框吃掉中间宽度。
+  '.dsh-wb-dockai .dsh-wb-aibar{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  '.dsh-wb-dockai .dsh-wb-aiinput{flex:1 1 auto;min-width:0;}',
+  // 问答与草稿卡在底部块里不该再撑满整宽（那里比浮层窄不了多少，但要留出边距）。
+  '.dsh-wb-dockai .dsh-wb-msg{max-width:92%;}',
+  '.dsh-wb-dockai .dsh-wb-aipics{display:flex;flex-wrap:wrap;gap:var(--wb-sp-2);}',
   // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
   // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
@@ -770,8 +773,6 @@ function apply(ctx) {
   function WorkbenchPanel(props) {
     const state = useSnapshot()
     const sessionId = props.sessionId
-    // 手机档：宿主 composer 的公开操作面（setDraft / submit），由 WorkbenchTabBody 传入。
-    const inputActions = props.inputActions
     // 手机档还是桌面档——决定「记一条」的入口形态（见 bottomComposerBar 与 fab）。
     const isMobile = useIsMobile()
     // 输入框用组件本地状态：不放进 store，否则每敲一个字都要重渲整棵计划树。
@@ -1815,70 +1816,6 @@ function apply(ctx) {
       setAiList(null)
       setFabOpen(true)
     }
-
-    /**
-     * 手机档的「记一条」：**借宿主自己的输入框**，不再要一颗浮球。
-     *
-     * 用户原话：「在手机版上不需要浮球了，直接用现在的输入框就行」。
-     * 手机上浮球要「先点球、再打字、再发送」三步，而屏底那块输入框本来就在
-     * 拇指够得着的地方——把话**预填**进去，用户直接按发送，少两步。
-     *
-     * 走的是官方公开契约 `InputActions.setDraft()`（SessionStandardProps 提供），
-     * 不是去代填 DOM——后者会随宿主改结构静默失效（PITFALLS 坑 #30 正是这个形态）。
-     *
-     * **只预填、不代发**（setDraft 之后不调 submit）：这句话是发给**主 agent** 的，
-     * 让它去调 plan_node_add 落库。代发等于替用户做了决定，而预填后那一按
-     * 就是他的确认。这也是「面板上能做的，说一句也能做」那条既有约定的延续——
-     * 两边最终都走同一套工具、同一份数据。
-     *
-     * 明确**不调用** ai-parse（浮球那条路）：那条路是插件的 host 端口、不产生
-     * 对话消息；既然用户要的是「用现在的输入框」，消息就该是正常的对话消息。
-     */
-    const rememberViaComposer = () => {
-      const text = nodeDraft.trim()
-      if (text === '') return
-      if (inputActions === undefined || inputActions === null || typeof inputActions.setDraft !== 'function') {
-        // 拿不到输入框（老宿主/未挂载）：退回「在某条计划下加子项」那条既有路径，
-        // 把话记进收件箱，而不是静默丢掉用户敲的字。
-        addNode({ title: text }, () => {
-          setNodeDraft('')
-          flash('已记入收件箱')
-        })
-        return
-      }
-      try {
-        inputActions.setDraft('帮我把这条记进工作计划：' + text)
-        setNodeDraft('')
-        flash('已填进输入框，按发送即可')
-      } catch (e) {
-        console.error('[dsh-workbench] 预填输入框失败', e)
-      }
-    }
-
-    /**
-     * 手机档的常驻输入条（贴在面板底部）。
-     *
-     * 形态刻意**贴着宿主的输入框**：同一个 placeholder 语气、同一套「回车确认」，
-     * 让用户感觉它是那块输入框的一部分，而不是又一个外来控件。
-     * 它自己**不显示 AI 问答**（那是浮球/桌面档的事），只做「记一条」这一件事。
-     */
-    const bottomComposerBar = () => h('div', { className: 'dsh-wb-bottombar', key: 'bottombar' },
-      h('input', {
-        className: 'dsh-wb-aiinput',
-        placeholder: '记一条待办，回车填进输入框…',
-        value: nodeDraft,
-        onChange: (e) => setNodeDraft(e.target.value),
-        onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); rememberViaComposer() } },
-      }),
-      micButton(setNodeDraft, 'mic-mobile'),
-      h('button', {
-        className: 'dsh-wb-iconbtn',
-        title: '把这条填进宿主的输入框（回车同样有效），由你按发送',
-        disabled: nodeDraft.trim() === '',
-        onClick: rememberViaComposer,
-      }, icon('send'),
-        nodeDraft.trim() === '' ? null : h('span', { className: 'dsh-wb-sendlabel' }, '填进去')),
-    )
 
     const fab = () => {
       if (fabOpen !== true) {
@@ -3740,7 +3677,19 @@ function apply(ctx) {
     //
     // 两者是**互斥**的结构（不是同一元素的两套样式）：留着浮球会和常驻输入条
     // 抢同一份 nodeDraft，出现「在下面打字、浮球里也跟着变」这种怪状。
-    return h('div', { className: 'dsh-wb-wrap' }, rows, isMobile ? bottomComposerBar() : fab())
+    // 手机档：**插件自己的小 composer 常驻面板底部**——输入框 + 图片 + 语音 + 确认，
+    // 有模型时走 /ai-parse 把文字/图片拆成任务草稿（这是用户要的「输入图片，让它
+    // 识别，然后做成任务」），没模型时直接落库。不要浮球。
+    //
+    // 直接复用 aiBlock()（浮球里的那块内容块）：它已经把问答、草稿卡、清单卡、
+    // 图片预览全都处理好了，**换的只是容器**——从「浮球浮层」变成「面板底部常驻」。
+    // 这样手机档与桌面档共享同一份 AI 逻辑，不会两条路各自漂移。
+    //
+    // 包一层 dsh-wb-dockai：它给这块内容限高 + 自己滚，否则草稿卡一多会把
+    // 上面的计划树挤没（面板是 flex 列，body 是 flex:1）。
+    const mobileDock = () => h('div', { className: 'dsh-wb-dockai', key: 'dockai' }, aiBlock())
+
+    return h('div', { className: 'dsh-wb-wrap' }, rows, isMobile ? mobileDock() : fab())
   }
 
   /**
@@ -3858,11 +3807,7 @@ function apply(ctx) {
     if (typeof sp.useSessions === 'function') {
       sessionId = sp.useSessions((state) => (state === undefined || state === null ? undefined : state.current))
     }
-    // inputActions：**宿主 composer 的公开操作面**（SessionStandardProps 提供）。
-    // 手机档的「记一条」借宿主的输入框：把话预填进去（setDraft），由用户自己按发送
-    // ——见 panel 里 bottomComposerBar() 那段注释。桌面档不用它（仍走浮球）。
-    const inputActions = sp.inputActions
-    return h(WorkbenchPanel, { sessionId, visible, inputActions })
+    return h(WorkbenchPanel, { sessionId, visible })
   }
 }
 
