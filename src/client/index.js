@@ -96,11 +96,23 @@ const TAB_KIND = 'dsh-workbench'
 /**
  * 手机档底部块展开成 sheet 后，多久自己收回去（毫秒）。
  *
- * 升起来是「给你看这一轮的结果」，不是「从此常驻半屏」——少了自动收起，
- * 问过一次之后那块就永远占着，下次打开面板看到的还是上次的问答。
- * 8 秒够读完一段 reply，又不至于让人干等着。用户正在打字时不收。
+ * **只在「这一轮只有纯回答、没有留下要动手的东西」时才会用到它**（见 runAi）：
+ * 有建议卡时永不自动收——那些卡要逐条确认，收走了用户还得重来。
+ *
+ * 30 秒而不是 8 秒：用户原话「8 秒钟时间都看都看不完，而且那个界面还存在滚动的，
+ * 你让他怎么看嘛」。一段 reply 有 4~6 行、可能还要滚，8 秒只够扫一眼开头；
+ * 给 30 秒才算「读得完」。反正真有卡要处理时它根本不会走这条路。
  */
-const AI_SHEET_AUTOFOLD_MS = 8000
+const AI_SHEET_AUTOFOLD_MS = 30000
+
+/**
+ * 建议向导里那一行「分类」的中文名。
+ *
+ * 为什么要标出来：用户看到「改动已有」就该知道这条动的是**已有数据**，
+ * 而「新任务」是新建——两类建议的风险完全不同（改错了比建错了难受得多），
+ * 所以类别必须在标题行里看得见，不能只靠卡片长什么样去猜。
+ */
+const KIND_LABEL = { task: '新任务', edit: '改动已有', merge: '合并', delete: '删除' }
 
 /**
  * 「现在是不是手机档」——给**结构**用的判断（要不要渲染浮球、输入条挂哪儿）。
@@ -587,6 +599,37 @@ const CSS = [
   + '}',
   // 尊重系统的「减少动态效果」。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wrap *,.dsh-wb-wrap *:before,.dsh-wb-wrap *:after{transition-duration:.01ms !important;animation-duration:.01ms !important;}}',
+  // ── 「正在算」的等待块 ─────────────────────────────────────────────────
+  //
+  // 用户原话：「模型在计算的时候时间还是很长，然后那个空白的框一直在那里，
+  // 人家不知道你干嘛。」——所以这里要说清**三件事**：在转（看得见活着）、
+  // 在干什么（阶段文字）、多久了（秒数）。
+  //
+  // 为什么秒数重要：模型跑十几秒时，一个静止的「…」和卡死没有区别；把已用
+  // 时间摆出来，用户才知道「它在跑，只是慢」，而不是「是不是坏了」。
+  '.dsh-wb-wait{display:flex;align-items:center;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-3);border:1px solid var(--wb-line-2);border-radius:var(--wb-r-3);background:var(--wb-bg);color:var(--wb-fg-2);font:var(--wb-f2);}',
+  // ── 建议向导（手机档：一次一张，逐步下一步）──────────────────────────
+  //
+  // 用户原话：「能不能一个建议一个框，然后不停地下一步下一步，这样子更好。」
+  //
+  // 头部的进度是**这个形态成立的关键**：一次只给一张卡，如果没有「第 2 / 5 条」，
+  // 用户永远不知道还剩多少、该不该继续点——有终点才叫流程，否则像在无底洞里走。
+  '.dsh-wb-wiz{display:flex;flex-direction:column;gap:var(--wb-sp-3);}',
+  '.dsh-wb-wizhead{display:flex;align-items:baseline;gap:var(--wb-sp-2);}',
+  '.dsh-wb-wizstep{font:var(--wb-f2s);color:var(--wb-fg);}',
+  '.dsh-wb-wizkind{font:var(--wb-f3);color:var(--wb-fg-2);}',
+  // 正文限高 + 自己滚：图片清单那种一轮十几条时，单张卡本身也可能很长
+  // （意见 + 依据 + 归位候选），不能让它把底部按钮顶出屏幕。
+  '.dsh-wb-wizbody{min-height:0;}',
+  '.dsh-wb-wizfoot{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;}',
+  '.dsh-wb-wait .dsh-wb-spin{flex:none;width:14px;height:14px;border:2px solid var(--wb-line-2);border-top-color:var(--wb-accent);border-radius:50%;animation:dsh-wb-spin .8s linear infinite;}',
+  '@keyframes dsh-wb-spin{to{transform:rotate(360deg);}}',
+  '.dsh-wb-wait .dsh-wb-waittxt{flex:1;min-width:0;}',
+  // 秒数是等宽数字：否则每次跳动都会让整行宽度变一下，看着像在抖。
+  '.dsh-wb-wait .dsh-wb-waittime{flex:none;font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  // 尊重「减少动态效果」：转圈换成一圈静止的环，但**文字照常**——
+  // 状态信息不该因为动效偏好而消失。
+  '@media (prefers-reduced-motion:reduce){.dsh-wb-wait .dsh-wb-spin{animation:none;border-top-color:var(--wb-line-2);}}',
   // ── 文件库关联（Obsidian）─────────────────────────────────────────────
   // 节点上的「做这件事要看的资料」。与证据（⎘）刻意区分：资料是文件夹也能挂的
   // 开放式清单，不进「无证据完成项」那条审查线。
@@ -1076,6 +1119,10 @@ function apply(ctx) {
     React.useEffect(() => { aiTextRef.current = aiText }, [aiText])
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
+    // 模型已经跑了多久（秒）。用户抱怨「模型在计算的时候时间还是很长，然后那个
+    // 空白的框一直在那里，人家不知道你干嘛」——一个静止的「…」和卡死没有区别，
+    // 把秒数摆出来，用户才知道「它在跑，只是慢」。
+    const [aiWaited, setAiWaited] = React.useState(0)
     const [aiTasks, setAiTasks] = React.useState([])  // 解析出的草稿（新建），逐条采纳
     // 对**已有**任务的产出：edits 改字段、merges 合并。与 tasks 一样是建议，
     // 落库前都要经过人（edits 走表单，merges 走卡片上那句「会删掉哪条」）。
@@ -1086,8 +1133,30 @@ function apply(ctx) {
     // 被忽略掉的「标题重复」组（客户端查出来的，本地记住即可——它每次都由计划派生）。
     const [dupHidden, setDupHidden] = React.useState([])
     const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
+    // 计时：只在忙的时候走，闲下来归零（下次提问从 0 重新数，而不是接着上次）。
+    React.useEffect(() => {
+      if (aiBusy !== true) { setAiWaited(0); return undefined }
+      const started = Date.now()
+      const timer = window.setInterval(() => setAiWaited(Math.floor((Date.now() - started) / 1000)), 1000)
+      return () => window.clearInterval(timer)
+    }, [aiBusy])
     // AI 动态生成的清单卡（「明天在家能做的」）。它不是数据——是一个**视图建议**。
     const [aiList, setAiList] = React.useState(null)
+    // ── 手机档的建议向导：**一次只给一张卡，逐步下一步** ──────────────────
+    //
+    // 用户原话：「那个输入之后的那对话框跟这个建议就在一起，能不能一个建议一个框，
+    // 然后不停地下一步下一步，这样子更好。」
+    //
+    // 原来四类卡片（新任务 / 改动 / 合并 / 删除）**一次性全铺出来**，一次提问可能
+    // 生成七八张卡，手机上就是一列长长的东西，既看不出「总共有几条待办」，
+    // 也不知道「我处理到第几个了」。改成向导后：
+    //   · 头部显示进度「第 2 / 5 条」——有终点才叫流程，否则永远不知道还剩多少；
+    //   · 一次只渲染当前那张卡——它的选项因此有整屏可用，不再被挤成一条缝；
+    //   · 「就这么办」采纳后自动前进到下一条，处理完给出「都处理完了」的收尾。
+    //
+    // 桌面档不走向导（浮球里空间小、卡片本来就是一列），保持原样——
+    // 两边共享同一批卡片函数，只是**排版策略**不同，不各自漂移。
+    const [aiStep, setAiStep] = React.useState(0)
     const [aiPersona, setAiPersona] = React.useState('')
     const [aiPersonaDraft, setAiPersonaDraft] = React.useState('')
     const [aiDefault, setAiDefault] = React.useState('')
@@ -1185,15 +1254,22 @@ function apply(ctx) {
             // 真的产出了结果，底部块这时才升成 sheet——**由结果驱动，不由用户点按钮**。
             // 没有结果就保持一条输入行（「记一条」失败时屏幕不该被一块空结果区占住）。
             setAiExpanded(true)
-            // **看完就自己收回去**（手机档）。
+            // **什么时候才自己收回去**——这段逻辑比"设个 8 秒"要细，因为
+            // 用户明确抱怨过：「8 秒钟时间都看都看不完，而且那个界面还存在滚动的，
+            // 你让他怎么看嘛？」
             //
-            // 为什么必须有这一步：升起来是「给你看这一轮的结果」，不是「从此常驻半屏」。
-            // 少了它，问过一次之后那块就永远占着——下次打开面板看到的还是上次的问答，
-            // 于是又变回「输入界面叠在计划树上面」那个原始抱怨。
+            // 那条抱怨点破了一个根本矛盾：**内容长到要滚动，就说明它需要时间读**，
+            // 而自动收起正好在读到一半时把它抽走。所以判据不是"过了几秒"，而是
+            // **这一轮有没有留下要用户动手的东西**：
             //
-            // 8 秒是权衡：够读完一段 reply，又不至于让人干等着它消失。
-            // 用户正在打字时不收（aiTextRef 非空），否则会把他正写的东西打断。
-            if (isMobile === true) {
+            //   · 有建议卡（tasks/edits/merges/deletes）→ **永不自动收**。
+            //     那些卡要逐条确认，收走了用户就得重来一遍；向导本来就停在
+            //     「第 1 / N 条」，它自己会告诉用户还没完。
+            //   · 只有纯回答（reply 而已）→ 才自动收，而且给足时间。
+            //
+            // 用户正在打字时不收（aiTextRef 非空），否则会打断他。
+            const hasCards = list.length > 0 || gotEdits > 0 || gotMerges > 0 || gotDeletes > 0
+            if (isMobile === true && hasCards !== true) {
               window.setTimeout(() => {
                 if (aiTextRef.current === '') setAiExpanded(false)
               }, AI_SHEET_AUTOFOLD_MS)
@@ -1548,7 +1624,7 @@ function apply(ctx) {
      * 让用户看见**从什么变成什么**，而不是只说「要改这条」——改了截止 / 重要程度这种，
      * 光看新值没法判断该不该点。对不上的那条（ok=false）压暗并列出来，不隐藏。
      */
-    const aiEditCard = (edit) => {
+    const aiEditCard = (edit, onDone) => {
       const node = edit.ok === true && edit.id !== null ? nodeById(edit.id) : null
       const p = edit.patch === null || edit.patch === undefined ? {} : edit.patch
       const rows = []
@@ -1586,7 +1662,7 @@ function apply(ctx) {
             h('button', {
               className: 'dsh-wb-aibtn primary',
               title: '就这么办：直接写入（' + editSummary(edit) + '）。想先改再存，点「按这个改」进表单',
-              onClick: () => { aiEditNow(edit) },
+              onClick: () => { aiEditNow(edit); if (typeof onDone === 'function') onDone() },
             }, '就这么办：' + editSummary(edit))),
         Array.isArray(edit.options) && edit.options.length > 0
           ? h('div', { className: 'dsh-wb-movepick', key: 'opts' },
@@ -1595,7 +1671,7 @@ function apply(ctx) {
               key: 'o' + i,
               className: 'dsh-wb-chip' + (i === 0 ? ' sug' : ''),
               title: o.why === '' ? '按这个来' : o.why,
-              onClick: () => aiEditOption(edit, o),
+              onClick: () => { aiEditOption(edit, o); if (typeof onDone === 'function') onDone() },
             }, o.label)))
           : null,
         node === null ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
@@ -1618,7 +1694,7 @@ function apply(ctx) {
      * 删除建议卡。与合并卡同形，但把「不可逆」写在最显眼处——
      * 合并丢的是重复的那条（信息已被 keep 吸收），删除丢的是整条。
      */
-    const aiDeleteCard = (item) => {
+    const aiDeleteCard = (item, onDone) => {
       const name = item.title === '' || item.title === undefined ? String(item.target) : String(item.title)
       return h('div', { className: 'dsh-wb-aitask' + (item.ok === true ? '' : ' miss'), key: item.key },
         h('div', { className: 'dsh-wb-aititle', key: 't' },
@@ -1641,13 +1717,13 @@ function apply(ctx) {
           h('button', {
             className: 'dsh-wb-aibtn primary',
             title: '确认删除「' + name + '」',
-            onClick: () => { applyDelete(item) },
+            onClick: () => { applyDelete(item); if (typeof onDone === 'function') onDone() },
           }, '确认删除'),
         ),
       )
     }
 
-    const aiMergeCard = (merge, onDismiss) => {
+    const aiMergeCard = (merge, onDismiss, onDone) => {
       const folds = Array.isArray(merge.folds) ? merge.folds : []
       const missing = Array.isArray(merge.missing) ? merge.missing : []
       const keepName = '「' + (merge.keepTitle === '' || merge.keepTitle === undefined ? String(merge.keep) : String(merge.keepTitle)) + '」'
@@ -1677,7 +1753,7 @@ function apply(ctx) {
           h('button', {
             className: 'dsh-wb-aibtn primary',
             title: '按这个合并；上面列出的条目会被删掉（每一步都有版本留档，合错了能回滚）',
-            onClick: () => { applyMerge(merge) },
+            onClick: () => { applyMerge(merge); if (typeof onDone === 'function') onDone() },
           }, '按这个合并')),
       )
     }
@@ -1726,6 +1802,34 @@ function apply(ctx) {
      * 一行为限：浮层在手机上就 366px 宽、还压着键盘，多一行就少一条输入的空间。
      * 没什么可说的时候也要说一句「眼下没有…」，否则「点开就有建议」这件事会时灵时不灵。
      */
+    /**
+     * 「正在算」的等待块。
+     *
+     * 用户原话：「你这样子输入的时候可以点确认，确认完了之后，你在模型在计算的时候，
+     * 时间还是很长。然后那个空白的框一直在那里，人家不知道你干嘛。」
+     *
+     * 所以这里要说清三件事，缺一件都会让人以为卡死：
+     *   ① **在转**（转圈）——证明它活着，不是一个渲染坏掉的空框；
+     *   ② **在干什么**（文案）——「正在理解你说的…」比「加载中」有用得多；
+     *   ③ **多久了**（秒数）——模型跑十几秒时，这一条是「慢」与「坏了」的唯一区别。
+     *      到 15 秒再加一句宽慰，因为那时用户多半已经开始怀疑了。
+     *
+     * 文案随耗时**演进**而不是一成不变：一开始说「正在理解」，超过 8 秒说
+     * 「在对照你已有的计划」——后者才是真正花时间的那一步（要把上下文读完）。
+     * 这比从头到尾一句「加载中」诚实，也更像一个人在干活时该说的话。
+     */
+    const aiWaiting = () => {
+      const text = aiWaited < 3 ? '正在理解你说的…'
+        : aiWaited < 8 ? '正在对照你已有的计划…'
+          : aiWaited < 15 ? '还在算，内容有点多，稍等…'
+            : '它在跑，只是慢——超过半分钟还没回来，可以点上面的 ✕ 重来'
+      return h('div', { className: 'dsh-wb-wait', key: 'wait' },
+        h('span', { className: 'dsh-wb-spin' }),
+        h('span', { className: 'dsh-wb-waittxt' }, text),
+        h('span', { className: 'dsh-wb-waittime' }, aiWaited + ' 秒'),
+      )
+    }
+
     const aiBriefing = () => {
       const sum = summarize(plan)
       const f = sum.filters === undefined ? {} : sum.filters
@@ -1891,7 +1995,7 @@ function apply(ctx) {
             key: 'm' + i,
             className: 'dsh-wb-msg ' + (t.role === 'assistant' ? 'ai' : 'me'),
           }, t.text)),
-          aiBusy === true ? h('div', { className: 'dsh-wb-msg ai', key: 'wait' }, '…') : null,
+          aiBusy === true ? aiWaiting() : null,
         ))
       }
 
@@ -1982,18 +2086,93 @@ function apply(ctx) {
         ))
       }
 
-      if (aiTasks.length > 0) {
+      // ── 建议卡：手机档一次一张，桌面档保持一列 ──────────────────────────
+      //
+      // 把四类建议汇成**一条队列**，两类形态读的是同一份队列——所以「第几条」
+      // 在两边指的都是同一件事，不会出现手机说 2/5、桌面另算一套。
+      const queue = []
+      for (const t of aiTasks) queue.push({ kind: 'task', item: t })
+      for (const e of aiEdits) queue.push({ kind: 'edit', item: e })
+      for (const m of aiMerges) queue.push({ kind: 'merge', item: m })
+      for (const d of aiDeletes) queue.push({ kind: 'delete', item: d })
+
+      if (isMobile === true && queue.length > 0) {
+        rows.push(aiWizard(queue))
+      } else {
         for (const task of aiTasks) rows.push(aiTaskCard(task))
+        // 「改已有的」与「合并」的卡片。它们和草稿卡是同一层东西（都是**建议**），
+        // 所以排在一起；差别只在采纳之后走哪条路。
+        for (const edit of aiEdits) rows.push(aiEditCard(edit))
+        for (const merge of aiMerges) rows.push(aiMergeCard(merge))
+        // 删除建议：与合并卡同层（都是「动已有数据」的提议），也必须逐条确认。
+        for (const item of aiDeletes) rows.push(aiDeleteCard(item))
       }
 
-      // 「改已有的」与「合并」的卡片。它们和草稿卡是同一层东西（都是**建议**），
-      // 所以排在一起；差别只在采纳之后走哪条路。
-      for (const edit of aiEdits) rows.push(aiEditCard(edit))
-      for (const merge of aiMerges) rows.push(aiMergeCard(merge))
-      // 删除建议：与合并卡同层（都是「动已有数据」的提议），也必须逐条确认。
-      for (const item of aiDeletes) rows.push(aiDeleteCard(item))
-
       return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
+    }
+
+    /**
+     * 建议向导（手机档）：**一次一张卡，逐步下一步**。
+     *
+     * 为什么不是一列卡片（原来的做法）：一次提问常常拆出好几条建议，
+     * 全铺出来在手机上就是一整屏的卡片瀑布——没有进度、没有终点、
+     * 每张卡的选项还被挤成窄窄一条。
+     *
+     * 现在：头部一条进度 + 当前那一张卡 + 底部的步进按钮。
+     * 处理完（采纳或跳过）自动前进；到末尾给一句收尾，让人知道「没有漏的」。
+     *
+     * 卡片本体**复用桌面档那几个函数**（aiTaskCard / aiEditCard / aiMergeCard /
+     * aiDeleteCard），不另写一套——两边对同一条建议的呈现与操作必须一致，
+     * 否则「手机上能办、桌面上办不了」这种漂移迟早出现。
+     */
+    const aiWizard = (queue) => {
+      const total = queue.length
+      // 越界（处理完最后一条之后）显示收尾，而不是空白——空白会让人以为卡住了。
+      const at = aiStep >= total ? null : queue[aiStep]
+      const head = h('div', { className: 'dsh-wb-wizhead', key: 'wh' },
+        h('span', { className: 'dsh-wb-wizstep' },
+          at === null ? '都处理完了' : '第 ' + (aiStep + 1) + ' / ' + total + ' 条'),
+        // 分类说明：用户看到「改动」两个字就知道这条动的是已有数据，
+        // 而不是又新建一条——两类建议的风险完全不同。
+        at === null ? null : h('span', { className: 'dsh-wb-wizkind' }, KIND_LABEL[at.kind]),
+      )
+      const foot = h('div', { className: 'dsh-wb-wizfoot', key: 'wf' },
+        // 上一步：允许回头改主意（采纳过的不会撤销，只改「看哪一条」）。
+        h('button', {
+          className: 'dsh-wb-chip',
+          disabled: aiStep === 0,
+          onClick: () => setAiStep((n) => Math.max(0, n - 1)),
+        }, '上一条'),
+        h('button', {
+          className: 'dsh-wb-chip',
+          disabled: at === null,
+          title: '先跳过这条，之后还能回到上一步找它',
+          onClick: () => setAiStep((n) => Math.min(total, n + 1)),
+        }, '跳过'),
+        at === null
+          ? h('button', {
+            className: 'dsh-wb-chip',
+            onClick: () => setAiStep(0),
+          }, '再看一遍')
+          : null,
+      )
+      if (at === null) {
+        return h('div', { className: 'dsh-wb-wiz', key: 'wiz' },
+          head,
+          h('div', { className: 'dsh-wb-wizbody' },
+            h('div', { className: 'dsh-wb-msg ai' }, '这一轮的 ' + total + ' 条都过了一遍。没有落库的都被跳过了，随时可以用「上一条」回去找。')),
+          foot,
+        )
+      }
+      // 采纳后自动前进：这正是「下一步」的那一步，不必再多点一次按钮。
+      const advance = () => setAiStep((n) => n + 1)
+      // 合并卡的第二个参数是 onDismiss（忽略这条），第三个才是 onDone（采纳后前进）——
+      // 它比别的卡多一个口子，所以这里显式传 undefined 占住第二位。
+      const body = at.kind === 'task' ? aiTaskCard(at.item, advance)
+        : at.kind === 'edit' ? aiEditCard(at.item, advance)
+          : at.kind === 'merge' ? aiMergeCard(at.item, undefined, advance)
+            : aiDeleteCard(at.item, advance)
+      return h('div', { className: 'dsh-wb-wiz', key: 'wiz' }, head, h('div', { className: 'dsh-wb-wizbody' }, body), foot)
     }
 
     /**
@@ -2070,7 +2249,9 @@ function apply(ctx) {
      * ——两者都给，是因为模型的意见是自然语言（说不清就别说），
      * 而历史是算出来的（有几条、花了几天，可以核对）。
      */
-    const aiTaskCard = (task) => h('div', { className: 'dsh-wb-aitask', key: task.key },
+    // onDone：向导里采纳一条之后**自动前进到下一条**——「就这么办」点下去，
+    // 这一步就已经结束了，不该再让用户点一次「下一步」。桌面档不传（那边是一列）。
+    const aiTaskCard = (task, onDone) => h('div', { className: 'dsh-wb-aitask', key: task.key },
       h('div', { className: 'dsh-wb-aititle', key: 't' },
         h('span', null, task.title),
         typeof task.due === 'string' && task.due !== ''
@@ -2108,7 +2289,7 @@ function apply(ctx) {
             title: '就这么办：直接建这条待办（' + where + '，'
               + String(task.due === undefined || task.due === '' ? '无截止' : task.due)
               + '）。想先改再存，点下面的芯片进表单',
-            onClick: () => { aiAddNow(task) },
+            onClick: () => { aiAddNow(task); if (typeof onDone === 'function') onDone() },
           }, '就这么办：' + where))
       })(),
       Array.isArray(task.options) && task.options.length > 0
