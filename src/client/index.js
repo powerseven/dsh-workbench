@@ -507,15 +507,33 @@ const CSS = [
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;}',
-  // 手机档的底部常驻输入条。它是面板的**最后一行**（`.dsh-wb-wrap` 是 flex 列，
-  // 上面是 flex:1 的滚动 body，所以它自然贴底），不浮在内容之上——浮起来会盖住
-  // 最后几条待办，而它本来就是常驻的，没有「要盖住什么」的理由。
+  // ── 手机档底部块：收起一条输入行，展开才是一整块 AI 内容 ──────────────────
   //
-  // flex:none 必须写：body 是 flex:1，这一条若也被拉伸就会跟着长高。
-  // 底部留出安全区（安卓手势条 / iOS home indicator），否则最后一行贴着屏底。
-  '.dsh-wb-dockai{flex:none;display:flex;flex-direction:column;gap:var(--wb-sp-2);max-height:60%;overflow-y:auto;overscroll-behavior:contain;padding:var(--wb-sp-3) var(--wb-sp-4) calc(var(--wb-sp-3) + env(safe-area-inset-bottom,0px));border-top:1px solid var(--wb-line);background:var(--wb-bg);}',
-  // 底部这块里的输入行：与面板其它行分开排，输入框吃掉中间宽度。
-  '.dsh-wb-dockai .dsh-wb-aibar{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  // **收起的意义**（这是对「常驻」的修正）：常驻的只该是输入条本身。
+  // 390×780 的手机上，原来那块常驻内容一上来就吃掉 60% 屏（≈470px），
+  // 计划树只剩不到 180px（两三条待办），而且它自己 overflow-y:auto、
+  // 和上面的 .dsh-wb-body 形成**两个滚动容器争手势**——面板里出现两条
+  // 互不相干的滚动条，这才是用户说的「叠在一起」。
+  //
+  // 收起态：只留 .dsh-wb-aibar（输入行）可见，其余子块全部 display:none。
+  //   · 用 display:none 而不是 max-height:0——后者会让内部的输入框仍然
+  //     可聚焦（Tab 键会跳进一个看不见的输入框），且仍在无障碍树里。
+  //   · overflow 在收起态是 hidden：防止任何溢出的东西把 56px 撑破。
+  // 展开态（.on）：升到 92dvh——它此时是**独立的 sheet**（盖住面板，
+  //   而不是继续挤计划树），这样「看答案 / 做选择」有整屏可用，
+  //   收起后计划树的滚动位置、展开态、筛选一处都不丢。
+  //
+  // 安全区在两种状态下都要留（安卓手势条 / iOS home indicator）。
+  '.dsh-wb-dockai{flex:none;display:flex;flex-direction:column;gap:var(--wb-sp-2);overflow:hidden;padding:var(--wb-sp-3) var(--wb-sp-4) calc(var(--wb-sp-3) + env(safe-area-inset-bottom,0px));border-top:1px solid var(--wb-line);background:var(--wb-bg);}',
+  // 收起态：只显示输入行。`> *` 盖住 aiBlock() 的每一个顶层子块（快捷问法行、
+  // 简报行、问答区、图片条、清单卡、各类草稿卡…），不必逐个点名——新增内容类型
+  // 时不会漏一条规则就把它漏到收起态里。
+  '.dsh-wb-dockai > *{display:none;}',
+  '.dsh-wb-dockai > .dsh-wb-aibar{display:flex;align-items:center;gap:var(--wb-sp-2);}',
+  // 展开态：整块放出来，升成 sheet 自己滚（此时它占的是屏幕，不是计划树的高度）。
+  '.dsh-wb-dockai.on{max-height:92dvh;overflow-y:auto;overscroll-behavior:contain;}',
+  '.dsh-wb-dockai.on > *{display:block;}',
+  '.dsh-wb-dockai.on > .dsh-wb-aibar{display:flex;}',
   '.dsh-wb-dockai .dsh-wb-aiinput{flex:1 1 auto;min-width:0;}',
   // 问答与草稿卡在底部块里不该再撑满整宽（那里比浮层窄不了多少，但要留出边距）。
   '.dsh-wb-dockai .dsh-wb-msg{max-width:92%;}',
@@ -984,6 +1002,13 @@ function apply(ctx) {
     //   ② **草稿先进表单**——AI 给的是草稿不是决定；
     //   ③ **对话只活在这次会话**——它是「接着聊」用的，不是档案（不进 plan.json）。
     const [fabOpen, setFabOpen] = React.useState(false)
+    // 手机档底部块的展开态：**只有真的产生了结果才升起来**。
+    //
+    // 与 fabOpen 分开是刻意的：fabOpen 是桌面浮层的开关（用户手动点开/收起），
+    // 而这个是「底部输入条要不要变成 sheet」——它由提交结果驱动（见 runAi /
+    // submitPlain 的落点），用户不直接控制它，所以不能共用一个状态，
+    // 否则桌面浮球的开合会莫名其妙地影响手机 dock 的高度。
+    const [aiExpanded, setAiExpanded] = React.useState(false)
     const [fabGap, setFabGap] = React.useState(0)     // 键盘占掉的高度
     // 浮球点开就把焦点交给输入行——**这是「语音」在手机上的正道**。
     //
@@ -1005,9 +1030,14 @@ function apply(ctx) {
       const el = aiInputRef.current
       if (el !== null && typeof el.focus === 'function') el.focus()
     }, [fabOpen])
-    // 输入浮层跟着键盘走：键盘一弹就把浮层抬那么高，别再被输入法盖住。
+    // 输入浮层 / 底部块跟着键盘走：键盘一弹就抬那么高，别再被输入法盖住。
     // 放在面板自己身上（而不是浮球子组件）：面板本来就常驻，多一个 effect
     // 比多一个只为拿键盘高度而存在的子组件便宜。
+    //
+    // **依赖数组是 `[]`，不是 `[fabOpen]`**——这是原来的一半病根：
+    // 监听只在桌面浮球打开时才挂上，手机档的底部块从头到尾**零避让**，
+    // 键盘一弹就把输入框盖住（用户抱怨「键盘弹出很挤」有一半来自这里）。
+    // 面板本来就是常驻的，监听也没有理由只在某一种形态下存在。
     React.useEffect(() => {
       const vv = typeof window === 'undefined' ? undefined : window.visualViewport
       if (vv === undefined || vv === null) return undefined
@@ -1016,7 +1046,7 @@ function apply(ctx) {
       vv.addEventListener('scroll', onShift)
       onShift()
       return () => { vv.removeEventListener('resize', onShift); vv.removeEventListener('scroll', onShift) }
-    }, [fabOpen])
+    }, [])
     const [aiText, setAiText] = React.useState('')
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
@@ -1123,7 +1153,13 @@ function apply(ctx) {
           const gotEdits = Array.isArray(r.edits) ? r.edits.length : 0
           const gotMerges = Array.isArray(r.merges) ? r.merges.length : 0
           const gotDeletes = Array.isArray(r.deletes) ? r.deletes.length : 0
-          if (reply === '' && list.length === 0 && gotEdits === 0 && gotMerges === 0 && gotDeletes === 0) flash('没解析出待办，换个说法试试')
+          if (reply === '' && list.length === 0 && gotEdits === 0 && gotMerges === 0 && gotDeletes === 0) {
+            flash('没解析出待办，换个说法试试')
+          } else {
+            // 真的产出了结果，底部块这时才升成 sheet——**由结果驱动，不由用户点按钮**。
+            // 没有结果就保持一条输入行（「记一条」失败时屏幕不该被一块空结果区占住）。
+            setAiExpanded(true)
+          }
         })
         .catch((e) => {
           setAiBusy(false)
@@ -1775,6 +1811,22 @@ function apply(ctx) {
           title: '清空这一轮：把问答与草稿都抹掉，重新说（不写盘，它本来只在内存里）',
           onClick: aiClear,
         }, '清空'),
+        // 手机档专属：把升起来的底部 sheet 收回成一条输入行。
+        //
+        // 桌面档不渲染它——桌面是浮球形态，收起由浮层自己的 ✕ 负责
+        // （AGENTS.md 那条「同一个动作不摆两个控件」的纪律仍然有效：
+        //  这里只有一个收起入口，不是两个）。
+        //
+        // 文案用「收起」而不是 ✕ 图标：它和「清空」并排，两个纯图标会分不清
+        // 哪个是抹掉内容、哪个只是把块收小——而这两件事的后果差别很大。
+        isMobile === true
+          ? h('button', {
+            key: 'collapse',
+            className: 'dsh-wb-aibtn',
+            title: '收起这块，回到计划树（内容都还在，随时可以再展开）',
+            onClick: () => setAiExpanded(false),
+          }, '收起')
+          : null,
       ))
 
       // 助手先说话（本地摘要，见 aiBriefing）：它排在快捷问法之后、问答之前——
@@ -3739,7 +3791,10 @@ function apply(ctx) {
 
     if (!sum.hasPlan) {
       body.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
-        h('div', null, '点右下角那颗浮球，跟 AI 说一句就行——'),
+        // 文案跟着入口走：手机档的入口是底部输入条，桌面档是浮球。
+        // （原来无条件写「点右下角那颗浮球」，而浮球在手机档已经没有了——
+        //   用户会照着找一颗根本不存在的球。）
+        h('div', null, isMobile ? '在下面的输入条说一句就行——' : '点右下角那颗浮球，跟 AI 说一句就行——'),
         h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
           '「帮我把这个季度的工作拆成计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } },
@@ -3798,13 +3853,37 @@ function apply(ctx) {
     // 有模型时走 /ai-parse 把文字/图片拆成任务草稿（这是用户要的「输入图片，让它
     // 识别，然后做成任务」），没模型时直接落库。不要浮球。
     //
-    // 直接复用 aiBlock()（浮球里的那块内容块）：它已经把问答、草稿卡、清单卡、
-    // 图片预览全都处理好了，**换的只是容器**——从「浮球浮层」变成「面板底部常驻」。
-    // 这样手机档与桌面档共享同一份 AI 逻辑，不会两条路各自漂移。
+    // 手机档的底部常驻块：**收起时只有一条输入行，展开时才是那一整块 AI 内容**。
     //
-    // 包一层 dsh-wb-dockai：它给这块内容限高 + 自己滚，否则草稿卡一多会把
-    // 上面的计划树挤没（面板是 flex 列，body 是 flex:1）。
-    const mobileDock = () => h('div', { className: 'dsh-wb-dockai', key: 'dockai' }, aiBlock())
+    // 这是对「常驻」的修正（设计结论）：常驻的应该是**输入条本身**，不是
+    // 「输入条 + 结果区」。原来的实现把 aiBlock() 整块（问答、草稿卡、清单卡、
+    // 建议汇总栏…）一次性常驻在底部，于是：
+    //   · 提交前就占满 60% 屏高（390×780 的屏上约 470px）；
+    //   · 和上面的计划树形成**两个 overflow-y:auto 容器争手势**，面板里
+    //     出现两条互不相干的滚动条；
+    //   · 计划树实际可见不足 180px，只剩两三条待办。
+    //
+    // 现在按 `aiExpanded` 分两态：
+    //   · 收起（默认）：只渲染输入行，56px 一条，不预渲染任何结果；
+    //   · 展开：把 aiBlock() 整块放出来（用户按了发送/问了问题之后才需要它）。
+    // 判定「该不该展开」不交给用户点按钮——由提交结果决定（见 runAi / submitPlain）：
+    // 只有 reply 或草稿卡真的产生了，才升起来。这样「记一条」这种高频动作提完即落库，
+    // 屏幕不会被一块没人看的结果区长期占住。
+    //
+    // 仍然复用 aiBlock()：手机与桌面共享同一份 AI 逻辑，不各自漂移。
+    const mobileDock = () => h('div', {
+      className: 'dsh-wb-dockai' + (aiExpanded === true ? ' on' : ''),
+      key: 'dockai',
+      // 键盘避让：键盘弹起时把它整体抬 fabGap 那么高。
+      //
+      // 这里用 margin-bottom 而不是像浮层那样改 `bottom`：dock 是**文档流里的
+      // 最后一行**（flex 列），不是 fixed 定位——给它 bottom 是不生效的，
+      // 而 margin 会把这个盒子往上推，同时 flex 的 body 自动让出高度，
+      // 视觉上就是「整块连同上面的计划树一起抬高」。
+      //
+      // 展开时（sheet）再加一点额外间距，免得贴着键盘顶边太局促。
+      style: fabGap > 0 ? { marginBottom: 'calc(' + fabGap + 'px + var(--wb-sp-2))' } : undefined,
+    }, aiBlock())
 
     return h('div', { className: 'dsh-wb-wrap' }, rows, isMobile ? mobileDock() : fab())
   }

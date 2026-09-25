@@ -2285,6 +2285,70 @@ test('手机档 + 有模型：贴图后确认键可点，提交走 /ai-parse（�
   }
 })
 
+test('手机档底部块：收起时只有一条输入行，出结果才升成 sheet', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 有内容可答：让 ai-parse 回一段 reply，才会触发展开。
+    aiReply = { reply: '今天有三件事值得动。', tasks: [{ title: '补台账', due: '', priority: '', note: '', plan: '', candidates: [] }] }
+
+    const { view, render } = await mount()
+    const dock = byClass(view, 'dsh-wb-dockai')[0]
+    assert.ok(dock !== undefined, '手机档应有底部块')
+    // **收起态**：class 里没有 on。
+    // 这一条是本次改动的核心——常驻的只该是输入条本身，不是「输入条 + 结果区」。
+    assert.doesNotMatch(String(dock.props.className), /\bon\b/,
+      '默认应是收起态（只有一条输入行）')
+
+    // 提交一次，产出结果后应升成 sheet。
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '今天做什么' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const after = byClass(render(), 'dsh-wb-dockai')[0]
+    assert.match(String(after.props.className), /\bon\b/,
+      '出结果后应升成 sheet（展开态）')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档底部块：展开后有且只有一个收起入口', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    aiReply = { reply: '有结果。', tasks: [] }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '问一句' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    // 展开后要能收回去，否则升起来就回不到计划树了。
+    const collapse = byClass(render(), 'dsh-wb-aibtn').filter((b) => b.props.title !== undefined
+      && String(b.props.title).indexOf('收起这块') >= 0)
+    assert.equal(collapse.length, 1, '恰好一个收起入口（同一个动作不摆两个控件）')
+
+    collapse[0].props.onClick(ev())
+    const folded = byClass(render(), 'dsh-wb-dockai')[0]
+    assert.doesNotMatch(String(folded.props.className), /\bon\b/, '点了收起应回到收起态')
+  } finally {
+    restore()
+  }
+})
+
+test('桌面档底部块：不出现手机专属的「收起」按钮（浮层有自己的 ✕）', async () => {
+  const restore = stubCoarse(false)
+  try {
+    const { view } = await mount()
+    const collapse = byClass(view, 'dsh-wb-aibtn').filter((b) => b.props.title !== undefined
+      && String(b.props.title).indexOf('收起这块') >= 0)
+    assert.equal(collapse.length, 0, '桌面档不应有手机专属的收起按钮')
+  } finally {
+    restore()
+  }
+})
+
 test('侧栏页脚入口：形态满足 zen 的收割规则，点了走 openTab（而不是代点 DOM）', async () => {
   const { slotEntries } = await mount()
   // 两个插槽注册点：① 侧栏页脚入口（本用例）② 官方右栏的 tab 正文
