@@ -194,8 +194,14 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 let dir = ''
 
-/** 每次挂载记录一次 betterSidebar.openTab 调用（页脚入口的用例要断言它）。 */
+/** 每次挂载记录一次官方 sidebarRight.openTab 调用（页脚入口的用例要断言它）。 */
 let openTabCalls = []
+
+/** 手机档「记一条」预填进宿主 composer 的文本（每次挂载重置）。 */
+let draftWrites = []
+
+/** 同一路径上对宿主 composer 的 submit 次数——用来钉住「只预填、不代发」。 */
+let submitCalls = 0
 
 /** 用**真 host 半身**建一份计划，并调 plan_show 拿真 payload。 */
 async function buildRealPlan(root) {
@@ -255,19 +261,33 @@ beforeEach(() => {
  * 挂载面板并等首屏数据到位。每次都用新的 Cordis 上下文调一次 apply，
  * 于是 store 与交互态都是干净的（apply 内部才 createStore，复用会串场）。
  */
-async function mount() {
-  let tab = null
+async function mount(options) {
+  const opts = options === undefined || options === null ? {} : options
+  let tabType = null
+  let tabBody = null
   openTabCalls = []
+  // 手机档「记一条」借宿主输入框：记录它对宿主 composer 的写入与提交。
+  // submit 单独计数，用来断言**只预填、不代发**。
+  draftWrites = []
+  submitCalls = 0
   const slotEntries = []
   const slots = {
     inject: (key, cb) => { cb(); return () => {} },
-    register: (options, component) => { slotEntries.push({ options, component }); return () => {} },
+    register: (options, component) => {
+      slotEntries.push({ options, component })
+      // 官方右栏的正文走 keyed slot：name='sidebar.right.pane.tab' + key=<注册的 id>
+      if (options.name === 'sidebar.right.pane.tab') tabBody = component
+      return () => {}
+    },
   }
   wbModule.apply({
-    get: (name) => (name === 'slots' ? slots : name === 'betterSidebar'
-      ? { registerTab: (def) => { tab = def; return () => {} },
-          openTab: (seed, scope) => { openTabCalls.push({ seed, scope }); return () => {} } }
-      : undefined),
+    get: (name) => (name === 'slots' ? slots
+      // 官方两个服务（替代 better-sidebar 的单一 betterSidebar 服务）
+      : name === 'sidebarRightTabs'
+        ? { register: (def) => { tabType = def; return () => {} } }
+        : name === 'sidebarRight'
+          ? { openTab: (kind, options) => { openTabCalls.push({ kind, options }); return () => {} } }
+          : undefined),
     // Cordis 里 `ctx.slots` 是注入后的服务属性，替身必须也把它摆出来——只给 get()
     // 的话 `ctx.slots.inject` 会直接抛（真实运行时有，测试里没有，就会假失败）。
     slots,
@@ -276,9 +296,22 @@ async function mount() {
     // 一个 tab」，看不出是替身的错。
     effect: (fn) => { fn() },
   })
-  assert.ok(tab !== null, '面板应注册成一个 tab')
+  assert.ok(tabType !== null, '面板应注册成一个 tab 类型')
+  assert.ok(tabBody !== null, '面板应注册一个 tab 正文')
 
-  const holder = tab.component({ scope: { sessionId: SESSION_ID } })
+  // 正文组件经标准 session prop 读 visible（useTabInfo）与当前会话（useSessions），
+  // 替身按官方形状喂给它——真实运行时这两个钩子由 slot 框架注入。
+  // inputActions 是宿主 composer 的公开操作面（SessionStandardProps 提供），
+  // 手机档的「记一条」靠它把话预填进宿主输入框。
+  const holder = tabBody({
+    useTabInfo: () => ({ tab: { visible: true } }),
+    useSessions: (sel) => sel({ current: SESSION_ID }),
+    // noInputActions：模拟「老宿主 / composer 未挂载」，用来钉住兜底路径。
+    inputActions: opts.noInputActions === true ? undefined : {
+      setDraft: (text) => { draftWrites.push(text) },
+      submit: () => { submitCalls++ },
+    },
+  })
   const Panel = holder.type
   const props = holder.props
 
@@ -291,7 +324,9 @@ async function mount() {
   }
   render()
   await flush()
-  return { render, view: render(), badge: () => tab.badge(), slotEntries }
+  // 官方右栏没有 tab badge API（better-sidebar 的 badge 是它自己的扩展），
+  // 未完成数由「页脚入口按钮」的 data-count + CSS 伪元素承载——见页脚入口用例。
+  return { render, view: render(), tabType, slotEntries }
 }
 
 /**
@@ -397,9 +432,16 @@ test('面板渲染出计划树、收件箱与设置入口（不白屏）', async
   assert.ok(headBtn(view, '设置') !== null, '应有「设置」入口')
 })
 
-test('tab 角标显示未完成数', async () => {
-  const { badge } = await mount()
-  assert.equal(badge(), 3, '三条待办都还没完成')
+// better-sidebar 有 tab badge API（`badge: () => number`），官方右侧栏**没有**。
+// 但「未完成数」这个能力没有丢：它挂在页脚入口按钮的 `data-count` 上（那里本来
+// 就因为手机 chip 的 textContent 约束而这么做了）。这个用例因此改成断言入口按钮
+// 的 data-count——**能力等价，载体换了**。
+test('未完成数挂在页脚入口的 data-count 上（官方右栏无 tab badge API）', async () => {
+  const { slotEntries } = await mount()
+  const entry = slotEntries.find((e) => e.options.id === 'dsh-workbench-entry')
+  assert.ok(entry !== undefined, '应注册页脚入口')
+  const el = entry.component()
+  assert.equal(el.props['data-count'], '3', '三条待办都还没完成')
 })
 
 test('两个分栏标题结构一致：只有「标题 + 计数」，都不带图标', async () => {
@@ -1969,27 +2011,92 @@ function stubCoarse(matches) {
   return () => { globalThis.window.matchMedia = old }
 }
 
-test('浮球长在面板树里，且**所有设备**都出现（它不再只是手机形态）', async () => {
+test('手机档没有浮球、改用底部常驻输入条；桌面档仍是浮球', async () => {
+  // 手机档：底部常驻输入条（借宿主输入框预填），**没有浮球**。
+  // 用户明确要求：「在手机版上不需要浮球了，直接用现在的输入框就行」。
   let restore = stubCoarse(true)
-  const touchMount = await mount()
-  assert.ok(byClass(touchMount.view, 'dsh-wb-fabball').length > 0, '触摸设备上面板里应有浮球')
-  // 浮球本身是面板树的一部分（打开计划面板才存在），不是注册到宿主的框架级浮层。
-  // 唯一注册到宿主插槽的是**侧栏页脚入口**——见下一条用例；这里只确认浮球不是那么来的。
-  assert.ok(byClass(touchMount.view, 'dsh-wb-fabball').length > 0, '浮球来自面板树，不是插槽')
-  restore()
+  try {
+    const touchMount = await mount()
+    assert.equal(byClass(touchMount.view, 'dsh-wb-fabball').length, 0,
+      '手机档不应再有浮球（改为底部常驻输入条）')
+    assert.ok(byClass(touchMount.view, 'dsh-wb-bottombar').length > 0,
+      '手机档应有底部常驻输入条')
+  } finally {
+    restore()
+  }
 
+  // 桌面档：浮球保持原样——面板住在一个又宽又矮的地方，常驻一行会每屏少一条任务。
   restore = stubCoarse(false)
-  const deskMount = await mount()
-  assert.ok(byClass(deskMount.view, 'dsh-wb-fabball').length > 0,
-    '桌面端也要有浮球——面板顶部那行 AI 输入已经撤掉，这是唯一入口')
-  restore()
+  try {
+    const deskMount = await mount()
+    assert.ok(byClass(deskMount.view, 'dsh-wb-fabball').length > 0,
+      '桌面档仍要有浮球——它是那里唯一的 AI 入口')
+    assert.equal(byClass(deskMount.view, 'dsh-wb-bottombar').length, 0,
+      '桌面档不应有底部输入条（那是手机形态）')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档「记一条」：预填进宿主输入框，**不代发**（用户自己按发送）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view, render } = await mount()
+
+    const bar = byClass(view, 'dsh-wb-bottombar')[0]
+    assert.ok(bar !== undefined, '手机档应有底部常驻输入条')
+
+    // 输入条里的输入框：与宿主 placeholder 同语气、走回车确认。
+    const input = firstByClass(view, 'dsh-wb-aiinput')
+    assert.ok(input !== null, '底部条里应有输入框')
+    input.props.onChange({ target: { value: '台区 A 改造' } })
+
+    // 回车 = 填进去（与那条输入条的既有习惯一致）。
+    const afterTyping = firstByClass(render(), 'dsh-wb-aiinput')
+    afterTyping.props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+
+    assert.equal(draftWrites.length, 1, '应恰好写一次宿主草稿')
+    assert.match(draftWrites[0], /台区 A 改造/, '要带上用户敲的原话')
+    assert.match(draftWrites[0], /工作计划/, '要说明记到哪儿——主 agent 据此调 plan_node_add')
+
+    // **只预填、不代发**：代发等于替用户做了决定，而预填后那一按就是他的确认。
+    assert.equal(submitCalls, 0, '不许代用户提交')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档「记一条」：拿不到宿主输入框时退回收件箱，不静默丢掉用户敲的字', async () => {
+  const restore = stubCoarse(true)
+  try {
+    // 老宿主 / composer 未挂载：inputActions 为 undefined。
+    const { view, render } = await mount({ noInputActions: true })
+
+    const input = firstByClass(view, 'dsh-wb-aiinput')
+    input.props.onChange({ target: { value: '收件箱兜底一条' } })
+    firstByClass(render(), 'dsh-wb-aiinput').props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+
+    // 退回 /node-add 进收件箱——用户敲的字必须落地，不能因为拿不到输入框就消失。
+    const addCall = requests.filter((r) => String(r.path).indexOf('/node-add') >= 0).pop()
+    assert.ok(addCall !== undefined, '应退回 node-add 把这条记进收件箱')
+    assert.match(JSON.stringify(addCall.body), /收件箱兜底一条/)
+  } finally {
+    // **必须 finally**：中途断言失败时若不恢复 matchMedia，后续用例会全部
+    // 误落入手机档，失败会像雪球一样滚到几十条上（真实踩过一次）。
+    restore()
+  }
 })
 
 test('侧栏页脚入口：形态满足 zen 的收割规则，点了走 openTab（而不是代点 DOM）', async () => {
   const { slotEntries } = await mount()
-  assert.equal(slotEntries.length, 1, '只注册一个插槽：侧栏页脚入口')
-  assert.equal(slotEntries[0].options.name, 'sidebar.footer.action')
-  assert.equal(slotEntries[0].options.id, 'dsh-workbench-entry')
+  // 两个插槽注册点：① 侧栏页脚入口（本用例）② 官方右栏的 tab 正文
+  // （'sidebar.right.pane.tab'，由 tab 注册用例覆盖）。
+  assert.equal(slotEntries.length, 2, '侧栏页脚入口 + 官方右栏 tab 正文')
+  const entrySlot = slotEntries.find((e) => e.options.name === 'sidebar.footer.action')
+  assert.ok(entrySlot !== undefined, '应有侧栏页脚入口')
+  assert.equal(entrySlot.options.id, 'dsh-workbench-entry')
+  assert.equal(slotEntries.filter((e) => e.options.name === 'sidebar.right.pane.tab').length, 1,
+    '应恰好注册一个官方右栏 tab 正文')
 
   // 手机外壳插件 dsh-zen-remote 的 scanHarvest 会把这个插槽的**每个直接子节点**
   // 收成主屏的一颗 chip，规则很具体——所以这里逐条钉住，免得哪天改坏了没发现：
@@ -2017,16 +2124,13 @@ test('侧栏页脚入口：形态满足 zen 的收割规则，点了走 openTab�
   assert.equal(findAll(el, (x) => classesOf(x).includes('dsh-wb-entrycount')).length, 0,
     '计数不能是真实节点')
 
-  // 点击走 better-sidebar 的**服务**，而不是代点某个 DOM 按钮——后者会随宿主的
-  // 类名散列失效，这正是 zen 1.1.15 现在的病（它的 header 按钮转发到
+  // 点击走官方右侧栏的**服务**，而不是代点某个 DOM 按钮——后者会随宿主的
+  // 类名散列失效，这正是 zen 1.1.15 的病（它的 header 按钮转发到
   // `[data-dsh-better-sidebar] button[class$="_toggleButton"]`，实测命中 0）。
   el.props.onClick({ stopPropagation: () => {} })
   assert.equal(openTabCalls.length, 1, '点一次 = 调一次 openTab')
-  assert.equal(openTabCalls[0].seed.type, 'dsh-workbench:plan', '要打开的是自己的 tab')
-  // **不能**写 target:'bottom'：openTab 里 `seed.target !== 'bottom'` 才是
-  // 「走 surface（官方右侧栏）」那条分支，写了 bottom 会被塞进底部工作台。
-  assert.equal(openTabCalls[0].seed.target, undefined,
-    '要开右侧栏：不传 target 才走 surface 分支')
+  // 官方 openTab 只收 kind 字符串，不收 better-sidebar 的 `{ type }` 对象。
+  assert.equal(openTabCalls[0].kind, 'dsh-workbench', '要打开的是自己的 tab kind')
 })
 
 test('浮球点开就是一个输入框：说一句统一走 /ai-parse，由模型判断是记录还是回答', async () => {

@@ -37,9 +37,12 @@ test('client bundle 用正确的插件 id 包装成 C6 模块', () => {
 })
 
 test('client 无条件导出 name/inject/apply（否则面板静默不注册）', () => {
-  assert.match(client, /module\.exports = \{ name: 'dsh-workbench-client'/)
-  assert.match(client, /inject: \['slots', 'betterSidebar'\]/)
-  assert.match(client, /apply: apply \}/)
+  // 导出可以是单行或多行形式，所以按字段分别匹配，不钉整段字面量。
+  assert.match(client, /module\.exports = \{[\s\S]{0,200}?name: 'dsh-workbench-client'/)
+  // 官方右侧栏的两个服务必须声明：不声明时 apply 开头 ctx.get 拿到 undefined
+  // 就静默 return，面板不注册（PITFALLS 坑 #472 的形态）。
+  assert.match(client, /inject: \['slots', 'sidebarRight', 'sidebarRightTabs'\]/)
+  assert.match(client, /apply: apply/)
   // 导出语句前面不能有 window 守卫
   assert.doesNotMatch(client, /if \(typeof window === 'undefined'[\s\S]{0,200}module\.exports = \{ name:/)
 })

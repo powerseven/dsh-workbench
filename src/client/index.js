@@ -74,6 +74,65 @@ const icon = (name, size) => h('svg', {
   'aria-hidden': 'true',
 }, h('path', { d: ICONS[name] }))
 
+/**
+ * 官方右侧栏的引导页胶囊要的是**组件类型**（`ComponentType<IconProps>`），
+ * 不是 icon() 返回的元素，所以这里包一个。
+ *
+ * IconProps 的 size 是可选数字；宿主不传时退回 16（与页脚入口同档）。
+ */
+const TargetIcon = (props) => {
+  const size = props !== null && props !== undefined && props.size !== undefined ? props.size : 16
+  return icon('target', size)
+}
+
+// 官方右侧栏的 tab 身份。**id 与 kind 分开**是官方契约要求的：
+//   · id   —— 这个实现在 tab 系统里的身份，全局唯一，也是正文 slot 的 key；
+//   · kind —— 类型判别符，openTab 用它按名字打开。
+// 两者都取 'dsh-workbench'：本插件只注册一个类型，没有「extension 接管 builtin」
+// 那种 id 与 kind 需要分家的场景。
+const TAB_ID = 'dsh-workbench'
+const TAB_KIND = 'dsh-workbench'
+
+/**
+ * 「现在是不是手机档」——给**结构**用的判断（要不要渲染浮球、输入条挂哪儿）。
+ *
+ * 为什么需要 JS 判断而不只靠 CSS：浮球与底部输入条是**两个不同的渲染结构**，
+ * 不是一个元素的两种样式——CSS 藏不掉「浮球点了会 setFabOpen」这件事，留着它
+ * 就会和常驻输入条抢同一个输入状态。
+ *
+ * 判定与 dsh-web-mobile 的 MOBILE_QUERY 保持同一个口径（宽度 < 1024 且触摸优先），
+ * 这样两边的「手机档」永远指同一批设备，不会出现它当你是手机、我不当的错位。
+ * matchMedia 不可用时（测试替身/老环境）按**桌面**处理：桌面是浮球形态，
+ * 而测试断言的正是那个形态。
+ */
+const MOBILE_QUERY = '(max-width: 1023px) and (pointer: coarse)'
+
+function useIsMobile() {
+  const [mobile, setMobile] = React.useState(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return false
+    try { return window.matchMedia(MOBILE_QUERY).matches === true } catch (e) { return false }
+  })
+  React.useEffect(() => {
+    if (typeof window === 'undefined' || typeof window.matchMedia !== 'function') return undefined
+    let mq
+    try { mq = window.matchMedia(MOBILE_QUERY) } catch (e) { return undefined }
+    if (mq === undefined || mq === null) return undefined
+    const onChange = () => setMobile(mq.matches === true)
+    onChange()
+    // 老 Safari 只有 addListener；两个都试一下，都没有就算了（下次渲染仍会重算）。
+    if (typeof mq.addEventListener === 'function') {
+      mq.addEventListener('change', onChange)
+      return () => mq.removeEventListener('change', onChange)
+    }
+    if (typeof mq.addListener === 'function') {
+      mq.addListener(onChange)
+      return () => mq.removeListener(onChange)
+    }
+    return undefined
+  }, [])
+  return mobile
+}
+
 
 const CSS = [
   // ── 别名层 ──────────────────────────────────────────────────────────────
@@ -439,6 +498,16 @@ const CSS = [
   '.dsh-wb-err{margin:var(--wb-sp-4) var(--wb-sp-5);padding:var(--wb-sp-4) var(--wb-sp-5);border-radius:var(--wb-r-2);background:var(--wb-danger-soft);color:var(--wb-danger);line-height:1.6;word-break:break-word;}',
   '.dsh-wb-footer{padding:var(--wb-sp-3) var(--wb-sp-5);border-top:1px solid var(--wb-line);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;}',
   '.dsh-wb-flash{padding:var(--wb-sp-2) var(--wb-sp-5);font:var(--wb-f3);color:var(--wb-fg-2);flex:none;}',
+  // 手机档的底部常驻输入条。它是面板的**最后一行**（`.dsh-wb-wrap` 是 flex 列，
+  // 上面是 flex:1 的滚动 body，所以它自然贴底），不浮在内容之上——浮起来会盖住
+  // 最后几条待办，而它本来就是常驻的，没有「要盖住什么」的理由。
+  //
+  // flex:none 必须写：body 是 flex:1，这一条若也被拉伸就会跟着长高。
+  // 底部留出安全区（安卓手势条 / iOS home indicator），否则最后一行贴着屏底。
+  '.dsh-wb-bottombar{flex:none;display:flex;align-items:center;gap:var(--wb-sp-2);padding:var(--wb-sp-3) var(--wb-sp-4) calc(var(--wb-sp-3) + env(safe-area-inset-bottom,0px));border-top:1px solid var(--wb-line);background:var(--wb-bg);}',
+  // 输入框吃掉中间全部宽度，两个按钮保持各自宽度（不参与伸缩）。
+  '.dsh-wb-bottombar .dsh-wb-aiinput{flex:1 1 auto;min-width:0;}',
+  '.dsh-wb-bottombar .dsh-wb-iconbtn{flex:none;}',
   // 触屏没有 hover：行内动作按钮必须常驻，否则永远够不到；同时把为密度压到 2px 的
   // 行内边距放回 6px，让触摸目标重新够大。鼠标要密、手指要好点中，两者诉求相反，
   // 所以按输入方式分开配，而不是取一个两边都不满意的中间值。
@@ -660,8 +729,14 @@ function createStore() {
 function apply(ctx) {
   const slots = ctx.get('slots')
   if (slots === undefined) return
-  const betterSidebar = ctx.get('betterSidebar')
-  if (betterSidebar === undefined) return
+  // DSH 官方右侧栏的两个服务（0.1.5-rc.2 起自带，不再依赖 dsh-better-sidebar）：
+  //   · sidebarRightTabs —— tab 类型注册表（阶段一：静态声明这个类型是什么）
+  //   · sidebarRight     —— 导航控制器（openTab / close / focus …）
+  // 正文（阶段二）走 slots 的 'sidebar.right.pane.tab' keyed slot，key 用注册的 id。
+  const sidebarRightTabs = ctx.get('sidebarRightTabs')
+  if (sidebarRightTabs === undefined) return
+  const sidebarRight = ctx.get('sidebarRight')
+  if (sidebarRight === undefined) return
 
   const store = createStore()
   ctx.effect(() => injectStyles(CSS))
@@ -695,6 +770,10 @@ function apply(ctx) {
   function WorkbenchPanel(props) {
     const state = useSnapshot()
     const sessionId = props.sessionId
+    // 手机档：宿主 composer 的公开操作面（setDraft / submit），由 WorkbenchTabBody 传入。
+    const inputActions = props.inputActions
+    // 手机档还是桌面档——决定「记一条」的入口形态（见 bottomComposerBar 与 fab）。
+    const isMobile = useIsMobile()
     // 输入框用组件本地状态：不放进 store，否则每敲一个字都要重渲整棵计划树。
     // 现在只剩「按需」那一个（在某条计划下加子项），一次只会有它一个——
     // 收件箱那个常驻输入框已经删掉，录入只有浮球那一个入口（见 fab()）。
@@ -1736,6 +1815,70 @@ function apply(ctx) {
       setAiList(null)
       setFabOpen(true)
     }
+
+    /**
+     * 手机档的「记一条」：**借宿主自己的输入框**，不再要一颗浮球。
+     *
+     * 用户原话：「在手机版上不需要浮球了，直接用现在的输入框就行」。
+     * 手机上浮球要「先点球、再打字、再发送」三步，而屏底那块输入框本来就在
+     * 拇指够得着的地方——把话**预填**进去，用户直接按发送，少两步。
+     *
+     * 走的是官方公开契约 `InputActions.setDraft()`（SessionStandardProps 提供），
+     * 不是去代填 DOM——后者会随宿主改结构静默失效（PITFALLS 坑 #30 正是这个形态）。
+     *
+     * **只预填、不代发**（setDraft 之后不调 submit）：这句话是发给**主 agent** 的，
+     * 让它去调 plan_node_add 落库。代发等于替用户做了决定，而预填后那一按
+     * 就是他的确认。这也是「面板上能做的，说一句也能做」那条既有约定的延续——
+     * 两边最终都走同一套工具、同一份数据。
+     *
+     * 明确**不调用** ai-parse（浮球那条路）：那条路是插件的 host 端口、不产生
+     * 对话消息；既然用户要的是「用现在的输入框」，消息就该是正常的对话消息。
+     */
+    const rememberViaComposer = () => {
+      const text = nodeDraft.trim()
+      if (text === '') return
+      if (inputActions === undefined || inputActions === null || typeof inputActions.setDraft !== 'function') {
+        // 拿不到输入框（老宿主/未挂载）：退回「在某条计划下加子项」那条既有路径，
+        // 把话记进收件箱，而不是静默丢掉用户敲的字。
+        addNode({ title: text }, () => {
+          setNodeDraft('')
+          flash('已记入收件箱')
+        })
+        return
+      }
+      try {
+        inputActions.setDraft('帮我把这条记进工作计划：' + text)
+        setNodeDraft('')
+        flash('已填进输入框，按发送即可')
+      } catch (e) {
+        console.error('[dsh-workbench] 预填输入框失败', e)
+      }
+    }
+
+    /**
+     * 手机档的常驻输入条（贴在面板底部）。
+     *
+     * 形态刻意**贴着宿主的输入框**：同一个 placeholder 语气、同一套「回车确认」，
+     * 让用户感觉它是那块输入框的一部分，而不是又一个外来控件。
+     * 它自己**不显示 AI 问答**（那是浮球/桌面档的事），只做「记一条」这一件事。
+     */
+    const bottomComposerBar = () => h('div', { className: 'dsh-wb-bottombar', key: 'bottombar' },
+      h('input', {
+        className: 'dsh-wb-aiinput',
+        placeholder: '记一条待办，回车填进输入框…',
+        value: nodeDraft,
+        onChange: (e) => setNodeDraft(e.target.value),
+        onKeyDown: (e) => { if (e.key === 'Enter') { e.preventDefault(); rememberViaComposer() } },
+      }),
+      micButton(setNodeDraft, 'mic-mobile'),
+      h('button', {
+        className: 'dsh-wb-iconbtn',
+        title: '把这条填进宿主的输入框（回车同样有效），由你按发送',
+        disabled: nodeDraft.trim() === '',
+        onClick: rememberViaComposer,
+      }, icon('send'),
+        nodeDraft.trim() === '' ? null : h('span', { className: 'dsh-wb-sendlabel' }, '填进去')),
+    )
 
     const fab = () => {
       if (fabOpen !== true) {
@@ -3591,7 +3734,13 @@ function apply(ctx) {
     }, body))
     if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
 
-    return h('div', { className: 'dsh-wb-wrap' }, rows, fab())
+    // 手机档：底部常驻输入条（借宿主输入框预填），**不要浮球**——用户明确要求
+    // 「手机版不需要浮球，直接用现在的输入框」。桌面档保持原样（浮球是那里唯一的
+    // AI 入口，面板住在一个又宽又矮的地方，常驻一行会每屏少一条任务）。
+    //
+    // 两者是**互斥**的结构（不是同一元素的两套样式）：留着浮球会和常驻输入条
+    // 抢同一份 nodeDraft，出现「在下面打字、浮球里也跟着变」这种怪状。
+    return h('div', { className: 'dsh-wb-wrap' }, rows, isMobile ? bottomComposerBar() : fab())
   }
 
   /**
@@ -3625,14 +3774,14 @@ function apply(ctx) {
       // 未完成数走 data-* + 伪元素，不进 textContent（否则会变成手机 chip 的名字）。
       'data-count': sum.open > 0 ? String(sum.open) : undefined,
       onClick: () => {
-        // 走 better-sidebar 自己的服务，而不是去代点某个按钮。
+        // 走官方右侧栏的**服务**，而不是去代点某个按钮。
         //
-        // **不要传 `target: 'bottom'`**：openTab 里 `seed.target !== 'bottom'` 是
-        // 「走 surface（官方右侧栏）」那条分支，写了 bottom 就会被塞进底部工作台。
-        // 面板本来就该在右侧栏里长出来（真机反馈：「要触发右侧栏，不是下栏」）。
-        // 不传 scope —— openTab 会退回当前会话。
+        // 官方 openTab **只收 kind 字符串**，不收 better-sidebar 那种 `{ type }` 对象；
+        // 也没有底部工作台，所以 better-sidebar 时代那条「不传 target:'bottom'」
+        // 的分叉纪律在这里不存在——`ctx.sidebarRight.openTab(kind)` 就是打开右栏。
+        // 类型未注册时它会 throw（官方契约：那是接线错误，不是用户错误）。
         try {
-          betterSidebar.openTab({ type: 'dsh-workbench:plan' })
+          sidebarRight.openTab(TAB_KIND)
         } catch (e) {
           console.error('[dsh-workbench] 打开工作面板失败', e)
         }
@@ -3646,23 +3795,75 @@ function apply(ctx) {
     id: 'dsh-workbench-entry',
   }, WorkbenchEntry)), 'dsh-workbench: sidebar footer entry')
 
-  ctx.effect(() => betterSidebar.registerTab({
-    id: 'dsh-workbench:plan',
-    title: '工作计划',
-    icon: (size) => icon('target', Math.max(14, Number(size) || 16)),
-    order: 40,
-    single: true,
-    badge: () => {
-      const st = store.get()
-      const sum = summarize(st.plan)
-      return sum.open > 0 ? sum.open : null
-    },
-    component: (tabProps) => {
-      const scope = tabProps === null || tabProps === undefined ? undefined : tabProps.scope
-      const sessionId = scope === null || scope === undefined ? undefined : scope.sessionId
-      return h(WorkbenchPanel, { sessionId, visible: tabProps === undefined ? undefined : tabProps.visible })
-    },
-  }), 'dsh-workbench: side-card tab')
+  // ── 官方右侧栏的 tab 类型：两阶段注册 ─────────────────────────────────
+  //
+  // 阶段一（静态声明）：这个类型**是什么**——id 是它在 tab 系统里的身份（也是阶段二
+  // 注册正文时的 key），kind 是类型判别符（openTab 用它），guide 决定新面板引导页上
+  // 的入口胶囊。本插件是**页面类型**（不是文件预览器），所以不给 patterns。
+  //
+  // 官方 title 的签名是 `(address: string) => string`（better-sidebar 是
+  // `string | (() => string)`）——它接受一个参数，这里忽略即可。
+  ctx.effect(() => sidebarRightTabs.register({
+    id: TAB_ID,
+    kind: TAB_KIND,
+    title: () => '工作计划',
+    guide: [{
+      order: 40,
+      title: () => '工作计划',
+      // 引导页只在**条目 ≤ 4** 时渲染 description（上游 MAX_DESCRIBED_ENTRIES=4，
+      // 且宿主的终端条目也占一行），所以这行是锦上添花，关键信息不写这里。
+      description: () => '计划树 · 进度跟踪 · 委派回执',
+      icon: TargetIcon,
+    }],
+  }), 'dsh-workbench: tab type')
+
+  // 阶段二（正文）：把面板挂到该类型的每个 tab 实例上。
+  //
+  // `key` 必须是阶段一注册的 `id`（不是 kind）。正文里能通过 useTabInfo() 读到
+  // `{ sidebar, panel, tab }`——本插件只用 `tab.visible`（面板收起或非激活 tab 时为
+  // false，用来暂停轮询/重算）。
+  //
+  // **sessionId 不再由宿主给**：better-sidebar 的 tabProps.scope.sessionId 在官方
+  // 正文里没有对应物。而 WorkbenchPanel 的 sessionId 本来就是可选 prop，host 半的
+  // resolveCwd 在缺省时有自己的兜底，所以这里不传、让 host 走兜底路径。
+  ctx.effect(() => slots.inject('sidebar.right.pane.tab', () => slots.register({
+    name: 'sidebar.right.pane.tab',
+    key: TAB_ID,
+  }, WorkbenchTabBody)), 'dsh-workbench: tab body')
+
+  /**
+   * 官方右侧栏 tab 正文。
+   *
+   * 与 better-sidebar 时代唯一的差别是状态来源：那时 `visible` 由 tabProps 传进来，
+   * 现在从 useTabInfo() 读。数据面（/api/workbench/*）与 WorkbenchPanel 本身不变。
+   *
+   * useTabInfo 由 slot 框架经 hookContext 注入（官方契约：正文组件收到它），本组件
+   * 只在**已注册的 seat 内**渲染，所以能安全调用——不要在组件里手写订阅。
+   *
+   * 定义在 apply 内部是**必须的**：WorkbenchPanel 是 apply 里的闭包组件，
+   * 放到外面拿不到（会 ReferenceError）。
+   */
+  function WorkbenchTabBody(seatProps) {
+    const sp = seatProps === undefined || seatProps === null ? {} : seatProps
+    // visible：面板收起或本 tab 非激活时为 false（官方契约），用来暂停轮询/重算。
+    const info = typeof sp.useTabInfo === 'function' ? sp.useTabInfo() : undefined
+    const visible = info === undefined || info === null ? undefined : info.tab.visible
+    // sessionId：**官方右栏不像 better-sidebar 那样把 scope.sessionId 交给正文**，
+    // 而数据面要靠它定位工作区（host 侧 resolveCwd）。这里从宿主标准 session prop
+    // `useSessions` 取当前会话——与 dsh-web-mobile 的 MobileDrawerFooter 同一读法
+    // （`useSessions((state) => state.current)`），是官方认可的取法。
+    //
+    // 取不到时传 undefined：面板会显示「拿不到当前会话 id」，而不是静默空转。
+    let sessionId
+    if (typeof sp.useSessions === 'function') {
+      sessionId = sp.useSessions((state) => (state === undefined || state === null ? undefined : state.current))
+    }
+    // inputActions：**宿主 composer 的公开操作面**（SessionStandardProps 提供）。
+    // 手机档的「记一条」借宿主的输入框：把话预填进去（setDraft），由用户自己按发送
+    // ——见 panel 里 bottomComposerBar() 那段注释。桌面档不用它（仍走浮球）。
+    const inputActions = sp.inputActions
+    return h(WorkbenchPanel, { sessionId, visible, inputActions })
+  }
 }
 
 // 客户端模块必须无条件导出，并声明 name / inject：
@@ -3670,6 +3871,13 @@ function apply(ctx) {
 //     若写成 `typeof window === 'undefined'` 守卫，浏览器里条件为假，
 //     apply 永远不会被导出，面板会静默不注册（logic.cjs 那种守卫只适用于
 //     纯逻辑文件——它的函数由同闭包的 UI 代码直接引用，不依赖导出）。
-//   - inject：Cordis 会等这些服务就绪后再调 apply，避免 betterSidebar 尚未
-//     挂载时 ctx.get 拿到 undefined 而静默跳过注册。
-module.exports = { name: 'dsh-workbench-client', inject: ['slots', 'betterSidebar'], apply: apply }
+//   - inject：Cordis 会等这些服务就绪后再调 apply。**必须声明官方右侧栏的两个
+//     服务**（sidebarRight / sidebarRightTabs）——不声明时它们可能尚未挂载，
+//     ctx.get 拿到 undefined，apply 会在开头静默 return，面板静默不注册。
+//     （这正是 docs/PITFALLS.md 坑 #472 记的形态，只是宿主从 better-sidebar
+//     换成了官方右栏。）
+module.exports = {
+  name: 'dsh-workbench-client',
+  inject: ['slots', 'sidebarRight', 'sidebarRightTabs'],
+  apply: apply,
+}
