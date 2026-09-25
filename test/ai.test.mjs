@@ -16,6 +16,8 @@ import assert from 'node:assert/strict'
 import {
   CONTEXT_LIMIT,
   DEFAULT_PERSONA,
+  MAX_EDITS,
+  MAX_FOLD_CHILDREN,
   MAX_OPTIONS,
   MAX_TASKS,
   aiContext,
@@ -181,6 +183,48 @@ test('合并任务：keep 不能并进自己，fold 空了整条丢掉', () => {
   assert.deepEqual(r.merges[0].fold, ['旧清单'], 'keep 自己与空白项都要剔掉')
   assert.equal(r.merges[0].title, '数据梳理（含旧清单）')
   assert.equal(r.merges[0].why, '是一件事')
+  assert.equal(r.merges[0].mode, 'merge', '不给 mode 时默认「并进去删掉」——判错的方向不一样，见 normMergeMode')
+})
+
+test('合并的两种 mode：保留为子任务（children）认得出来，认不出的一律当 merge', () => {
+  // 用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」
+  // 在有 mode 之前，模型看到 schema 里只写「fold 会被删掉」，就只能回答「不支持」。
+  const r = parseAiReply(JSON.stringify({
+    reply: '归到一个计划下面',
+    merges: [
+      { keep: '学科调研', fold: ['学情分析', '辅导闭环'], mode: 'children', title: '高中物理学科调研', why: '都是这次调研的一部分' },
+      { keep: 'A', fold: ['B'], mode: '子任务' },
+      { keep: 'C', fold: ['D'], mode: 'as-children' },
+      { keep: 'E', fold: ['F'], mode: '随便写的' },
+    ],
+  }))
+  assert.equal(r.merges.length, 4)
+  assert.equal(r.merges[0].mode, 'children')
+  assert.equal(r.merges[0].title, '高中物理学科调研', 'children 模式照样能改那一条的标题（当总标题用）')
+  assert.equal(r.merges[1].mode, 'children', '中文写法也认')
+  assert.equal(r.merges[2].mode, 'children')
+  assert.equal(r.merges[3].mode, 'merge', '认不出来的宁可当 merge：多留几条只是麻烦，误删是事故')
+})
+
+test('children 模式的 fold 上限更高：用户是把一批任务归到一个计划下面', () => {
+  // 真机上是十来条（见 AGENTS.md 的移动端反馈）。用 merge 的上限（10）会把用户
+  // 明说的那批任务悄悄截断——他看到卡上少了一半，以为自己漏说了。
+  const many = []
+  for (let i = 0; i < MAX_FOLD_CHILDREN + 8; i++) many.push('任务' + i)
+  const asGroup = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many, mode: 'children' }] }))
+  assert.equal(asGroup.merges[0].fold.length, MAX_FOLD_CHILDREN, 'children 模式按 MAX_FOLD_CHILDREN 截')
+  const asMerge = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many }] }))
+  assert.equal(asMerge.merges[0].fold.length, MAX_EDITS, 'merge 模式仍按 MAX_EDITS（那是「一条条过」的数量，不是这批事的规模）')
+})
+
+test('提示词把两种 mode 都讲清楚，并明说不要反过来要用户列全清单', () => {
+  // 这两条是同一个故障的两半：schema 里没有 children，模型就只能答「不支持、
+  // 请补上完整列表」；两半都要钉住，否则模型退回老行为时没有测试会红。
+  const p = aiSystemPrompt('学科调研', '2026-09-25', { context: '…' })
+  assert.match(p, /mode="children"/, '提示词必须写清 children 模式')
+  assert.match(p, /一条都不删/, '要写明 children 不删东西——这是它与 merge 的唯一区别')
+  assert.match(p, /作为它的子计划/, '要覆盖用户的原话，那种说法必须被认出来')
+  assert.match(p, /不要因为「你只能给标题」就反过来要用户把完整清单列出来/, '要禁止「请补上完整列表」这种把活推回去的回应')
 })
 
 test('只有改动或只有合并，也算一次成功的解析（不能判成失败）', () => {

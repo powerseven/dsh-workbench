@@ -952,6 +952,53 @@ test('/ai-parse 的改动与合并：标题匹配回真实节点，对不上的�
   assert.equal(after.versions, before.versions, '也不该留版本快照')
 })
 
+test('/ai-parse 的归组合并：mode=children 原样下发，挪不动的剔出来并说清原因', async () => {
+  // 用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」
+  // 这一组测的是 host 这一层的三件事：mode 透传、成环的剔掉、已经在下面的不重复挪。
+  // 剔的时候必须把原因带回去（skipped）——静默丢一条，用户回头看计划只会以为
+  // 是自己记错了，而真正的原因（挪进去会成环）没人知道。
+  await call('plan_node_add', { title: '归组用总任务' })
+  await call('plan_node_add', { title: '归组用甲' })
+  await call('plan_node_add', { title: '归组用乙' })
+  await call('plan_node_add', { title: '归组用上级' })
+  await call('plan_node_add', { title: '归组用下级', parent: '归组用上级' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '归到一个计划下面',
+    merges: [
+      { keep: '归组用总任务', fold: ['归组用甲', '归组用乙'], mode: 'children', title: '归组用总计划', why: '都是同一批调研' },
+      // keep 在 fold 底下：把上级挪进自己的子孙 = 成环，store 会直接拒绝。
+      { keep: '归组用下级', fold: ['归组用上级'], mode: 'children' },
+      // 已经是 keep 的直接子项：不用再挪一次。
+      { keep: '归组用上级', fold: ['归组用下级'], mode: 'children' },
+    ],
+  }))
+
+  const before = await snapshotOfAiFixture()
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把这几条合并成一个计划，其他的作为子任务' })
+  const after = await snapshotOfAiFixture()
+
+  assert.equal(r.status, 200)
+  assert.equal(r.payload.merges.length, 3)
+  const [group, cycle, already] = r.payload.merges
+  assert.equal(group.mode, 'children')
+  assert.equal(group.ok, true)
+  assert.deepEqual(group.folds.map((f) => f.title), ['归组用甲', '归组用乙'], '两条都要保留为子任务')
+  assert.equal(group.title, '归组用总计划', 'keep 那一版可以改成总标题')
+  assert.equal(group.keepKids, 0, '卡片上要能说出它下面现在有 0 个子项')
+
+  assert.equal(cycle.ok, false, '唯一一条 fold 被剔掉后整组不能执行')
+  assert.equal(cycle.folds.length, 0)
+  assert.equal(cycle.skipped[0].title, '归组用上级')
+  assert.match(cycle.skipped[0].why, /成环/)
+
+  assert.equal(already.ok, false, '本来就在下面的那条不必再挪，整组因此无需执行')
+  assert.match(already.skipped[0].why, /已经在/)
+
+  assert.equal(after.plan, before.plan, '解析仍然只读——一个字节都不该写进计划')
+  assert.equal(after.versions, before.versions, '也不该留版本快照')
+})
+
 test('/ai-parse 把「同名草稿」转成改动，不当新建下发（否则一点就多一条重复的）', async () => {
   // 用户原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
   // 而不是说让我确认再加任务」。模型经常一边在 reply 里写「这两条本来就在手上，

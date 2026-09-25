@@ -52,6 +52,7 @@ import {
   fileWarnings,
   filesOf,
   inboxOf,
+  isDescendantOf,
   isDueWithin,
   clearFields,
   collectNodes,
@@ -1343,38 +1344,67 @@ export function apply(ctx) {
     }
 
     /**
-     * **合并任务**：keep 保留、fold 并进去（会被删掉）。两边都要匹配上才算 ok。
+     * **合并任务**：keep 留下、fold 并进去。两种 mode：
+     *   · `merge`（默认）——fold 的子项/证据/关联并进 keep，**然后删掉 fold**（重复条目）。
+     *   · `children`——**每一条 fold 都挪到 keep 下面当子项，一条都不删**
+     *     （用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」）
      *
-     * 额外剔两种无意义项：fold 里混进了 keep 自己（按 id 判，标题写得不完全一样时
-     * 也能认出来）、同一个节点被 fold 两次。剩下的对不上就记在 missing 里带回去——
-     * 「哪一条没对上」必须说出来，否则用户只会看到一条不执行的卡片。
+     * 两种 mode 都要 keep 与全部 fold 匹配上才算 ok。
+     *
+     * 剔掉三种无意义项，剔的时候把原因记进 `skipped`（卡片上照实说，不静默丢）：
+     *   ① fold 里混进了 keep 自己（按 id 判，标题写得不完全一样时也能认出来）；
+     *   ② 同一条被 fold 两次；
+     *   ③ children 模式下**挪了会成环**——keep 就在这条 fold 底下（把上级挪进自己的子孙，
+     *      store 的 moveNode 会直接拒绝，面板点下去只会报错）；已经在 keep 底下的也别再挪一次。
+     * 剩下的对不上就记在 `missing` 里带回去——「哪一条没对上」必须说出来，
+     * 否则用户只会看到一条不执行的卡片。
      */
     function matchMerges(plan, merges) {
       if (!Array.isArray(merges)) return []
       const flat = collectNodes(plan, 'any')
+      // 父节点要按 id 回查：判断「这条是不是已经在 keep 底下」用得到。
+      const byId = new Map(flat.map((x) => [String(x.node.id ?? ''), x]))
       return merges.map((m) => {
+        const mode = m.mode === 'children' ? 'children' : 'merge'
         const keep = hitByTitle(flat, m.keep)
         const keepId = keep === null ? null : String(keep.id ?? '')
         const missing = []
+        const skipped = []
         const fold = []
         const seen = new Set(keepId === null ? [] : [keepId])
         for (const t of (Array.isArray(m.fold) ? m.fold : [])) {
           const hit = hitByTitle(flat, t)
           if (hit === null) { missing.push(String(t)); continue }
           const id = String(hit.id ?? '')
-          if (seen.has(id)) continue
+          if (seen.has(id)) { skipped.push({ title: String(hit.title ?? ''), why: '重复列了同一条' }); continue }
           seen.add(id)
+          if (mode === 'children' && keep !== null) {
+            // keep 在这条底下 → 挪过去成环；这条本来就在 keep 底下 → 不用挪。
+            if (isDescendantOf(plan, keep, hit)) {
+              skipped.push({ title: String(hit.title ?? ''), why: '它是「' + String(keep.title ?? '') + '」的上级，挪进去会成环' })
+              continue
+            }
+            const here = byId.get(id)
+            if (here !== undefined && here.parent !== null && String(here.parent.id ?? '') === keepId) {
+              skipped.push({ title: String(hit.title ?? ''), why: '已经在「' + String(keep.title ?? '') + '」下面了' })
+              continue
+            }
+          }
           fold.push({ id, title: String(hit.title ?? '') })
         }
         return {
           keep: m.keep,
           fold: m.fold,
+          mode,
           title: m.title,
           why: m.why,
           keepId,
           keepTitle: keep === null ? '' : String(keep.title ?? ''),
           folds: fold,
           missing,
+          skipped,
+          // keep 下面已经有子项时，它本来就（即将）是计划——卡片上要能说清会多出几个子项。
+          keepKids: keep === null ? 0 : childrenOf(keep).length,
           ok: keep !== null && fold.length > 0 && missing.length === 0,
         }
       })

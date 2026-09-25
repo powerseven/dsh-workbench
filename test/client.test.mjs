@@ -2812,6 +2812,53 @@ test('合并卡：明写会删掉哪条；采纳后依次走既有的写入口�
   assert.equal(requests.find((r) => String(r.path).endsWith('/node-remove')).body.node, idOf('深层待办'))
 })
 
+test('归组卡（mode=children）：明写「不会删任何条目」；采纳后只挪位置，一条都不删', async () => {
+  // 用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」
+  // 之前这套 schema 只能把 fold 删掉，于是模型只能回答「不支持、请补上完整列表」。
+  // 现在归组是一个**独立模式**，卡上要写清它的代价（挪位置）与它的边界（不删东西），
+  // 采纳后走的仍然是 /node-move——**零新增写通路**。
+  withAi()
+  aiReply = {
+    reply: '归到一个计划下面',
+    merges: [{
+      keep: '表层待办',
+      keepId: idOf('表层待办'),
+      keepTitle: '表层待办',
+      keepKids: 0,
+      fold: ['收件箱一条', '深层待办'],
+      folds: [{ id: idOf('收件箱一条'), title: '收件箱一条' }, { id: idOf('深层待办'), title: '深层待办' }],
+      mode: 'children',
+      title: '归组用总计划',
+      missing: [],
+      skipped: [],
+      ok: true,
+      why: '都是同一批调研',
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把这几条合并成一个计划，其他的作为子任务' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-aitask')
+  const body = textOf(card)
+  assert.match(body, /合并成计划/, '标题行要说清这是「合成一个计划」')
+  assert.match(body, /不会删任何条目/, '归组的代价只是挪位置——必须写在卡上')
+  assert.match(body, /成为子项/, '要说清它们去哪：keep 下面')
+  assert.doesNotMatch(body, /会删掉/, '这一行**不能**出现——它会让人以为要点下去就是删')
+  assert.match(body, /→ 「归组用总计划」/, '标题会怎么变也要写出来')
+  requests = []
+  findAll(card, (x) => x.type === 'button' && textOf(x) === '按这个合并成计划')[0].props.onClick(ev())
+  await settle()
+  const paths = requests.map((r) => String(r.path).split('/').pop())
+  assert.ok(!paths.includes('node-remove'), '归组不能删任何东西：' + paths.join(','))
+  const moves = requests.filter((r) => String(r.path).endsWith('/node-move'))
+  assert.equal(moves.length, 2, '两条都要挪到保留的那条下面')
+  for (const m of moves) assert.equal(m.body.parent, idOf('表层待办'), 'parent 必须是 keep 自己')
+  assert.deepEqual(moves.map((m) => m.body.node).sort(), [idOf('收件箱一条'), idOf('深层待办')].sort())
+  assert.equal(requests.find((r) => String(r.path).endsWith('/node-set')).body.title, '归组用总计划')
+})
+
 test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起」已删）', async () => {
   // 两颗按钮调同一个 setFabOpen(false)，是纯粹的重复。留哪颗的判断依据是位置：
   // 标题行右上角是「关闭一个面板」的常规位置，快捷行那颗文字按钮反而占宽度。

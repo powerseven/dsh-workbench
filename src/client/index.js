@@ -1488,9 +1488,12 @@ function apply(ctx) {
     }
 
     /**
-     * **合并**：keep 留下、fold 并进去（fold 会被删掉）。
+     * **合并**：keep 留下、fold 并进去。两种 mode 走两条路：
      *
-     * 走的是**既有的四个写入口**，一步都不新：
+     * · `children`——**保留为子任务**：keep 变成计划，fold 里的每一条都挪到它下面当子项，
+     *   **一条都不删**（用户原话：「我要的就是要把一些任务进行合并，然后作为计划，
+     *   然后其他的作为它的子计划。」）。只挪标题（模型给了合并稿才挪）+ `/node-move`。
+     * · `merge`（默认）——**并进去然后删掉**，给「这两条是一件事」用。走既有的四个写入口：
      *   ① keep 改标题（模型给了合并稿才改）      → /node-set
      *   ② fold 的子项逐个移到 keep 下（追加）    → /node-move
      *   ③ fold 的证据与关联**追加**到 keep       → /node-set / todo-set
@@ -1499,6 +1502,8 @@ function apply(ctx) {
      * 顺序是有意的：**先搬干净再删**，所以任何一步失败都不会丢掉子项或证据
      * （最坏情况是留下一条空了但还在的节点，再合一次即可）。每一步 host 都会自动
      * 归档版本，所以合错了能回滚。结果用 flash 说清楚并了哪些、删了哪条。
+     *
+     * 两种 mode **都没有新增写入口**：都是 /node-set、/node-move、/node-remove 这几条。
      */
     /**
      * **执行删除**：AI 提议的删除，用户确认后走这里。
@@ -1532,6 +1537,26 @@ function apply(ctx) {
         // patch 是「保留那条缺、重复那条有」的字段（截止/重要程度/备注）——只搬子项
         // 与证据的话，这些会**静默丢掉**：合并完发现截止没了，而谁也没提醒过。
         await write('node-set', Object.assign({ node: keep.id, title: keepTitle }, patch))
+      }
+      if (merge.mode === 'children') {
+        // 保留为子任务：只挪位置，不删东西。挪不动的（成环、被别人抢先改了）逐条跳过，
+        // 并在 flash 里说清成功了几条——静默少挪一条，用户回头看计划只会以为是自己记错了。
+        const moved = []
+        const stuck = []
+        for (const f of (Array.isArray(merge.folds) ? merge.folds : [])) {
+          const node = nodeById(f.id)
+          if (node === null) { stuck.push(String(f.title)); continue }
+          const r = await doMove(node.id, keep.id)
+          if (r === null) stuck.push(String(node.title))
+          else moved.push(String(node.title))
+        }
+        setFabOpen(false)
+        flash(moved.length === 0
+          ? '没有归组成功的条目（' + (stuck.join('、') || '都被跳过了') + '）'
+          : '已归为一个计划：「' + keepTitle + '」下面 ' + moved.length + ' 条：'
+            + moved.map((t) => '「' + t + '」').join('、')
+            + (stuck.length === 0 ? '' : '（' + stuck.join('、') + ' 没能挪过去）'))
+        return
       }
       const done = []
       for (const f of merge.folds) {
@@ -1724,11 +1749,13 @@ function apply(ctx) {
     }
 
     /**
-     * **合并卡**：并哪几条、留下哪条、**会删掉哪条**——三件事写在同一张卡上。
+     * **合并卡**：并哪几条、留下哪条、**最后那几条去哪**——三件事写在同一张卡上。
      *
-     * 删除是这张卡的全部风险，所以「会删掉：X」是卡片的固定一行（不是 tooltip），
-     * 按钮也不叫「采纳」而叫「按这个合并」。合并本身不丢东西：子项、证据、关联
-     * 都先并进保留的那条（见 applyMerge）。
+     * 两种 mode 写不同的「去向」行，因为它们的代价完全不同：
+     *   · children（保留为子任务）：「不会删任何条目：这 N 条会挪到「X」下面成为子项」；
+     *   · merge（并进去删掉）：「会删掉：X、Y（子项、证据、关联会先并进保留的那条）」。
+     * 合并卡的全部风险就在这一行上，所以它是**固定的一行**（不是 tooltip）。
+     * 按钮也不叫「采纳」而叫「按这个合并」——这一次点击就是人的确认。
      */
     /**
      * 删除建议卡。与合并卡同形，但把「不可逆」写在最显眼处——
@@ -1766,10 +1793,16 @@ function apply(ctx) {
     const aiMergeCard = (merge, onDismiss, onDone) => {
       const folds = Array.isArray(merge.folds) ? merge.folds : []
       const missing = Array.isArray(merge.missing) ? merge.missing : []
+      const skipped = Array.isArray(merge.skipped) ? merge.skipped : []
       const keepName = '「' + (merge.keepTitle === '' || merge.keepTitle === undefined ? String(merge.keep) : String(merge.keepTitle)) + '」'
+      // 归组模式：一条都不删，代价只是「挪位置」——所以卡上不写删除，写的是去向。
+      const asChildren = merge.mode === 'children'
+      const foldNames = folds.length === 0 ? '（没有能对上的）' : folds.map((f) => '「' + String(f.title) + '」').join('、')
       return h('div', { className: 'dsh-wb-aitask' + (merge.ok === true ? '' : ' miss'), key: merge.key },
         h('div', { className: 'dsh-wb-aititle', key: 't' },
-          h('span', null, '合并：' + folds.map((f) => '「' + String(f.title) + '」').join('、') + ' → ' + keepName),
+          h('span', null, asChildren
+            ? '合并成计划：把 ' + foldNames + ' 都挂到 ' + keepName + '下面'
+            : '合并：' + foldNames + ' → ' + keepName),
           h('button', {
             key: 'x',
             className: 'dsh-wb-aibtn',
@@ -1784,17 +1817,25 @@ function apply(ctx) {
         merge.title === '' || merge.title === undefined ? null : h('div', { className: 'dsh-wb-formrow', key: 'tt' },
           h('span', { className: 'dsh-wb-fmeta' }, '标题'),
           h('span', { className: 'dsh-wb-fref' }, keepName + ' → 「' + String(merge.title) + '」')),
-        h('div', { className: 'dsh-wb-aihist', key: 'del' },
-          '会删掉：' + (folds.length === 0 ? '（没有能对上的）' : folds.map((f) => '「' + String(f.title) + '」').join('、'))
-          + '（子项、证据、关联会先并进保留的那条）'),
+        asChildren
+          ? h('div', { className: 'dsh-wb-aihist', key: 'del' },
+            '不会删任何条目：这 ' + folds.length + ' 条会挪到 ' + keepName + '下面成为子项'
+            + (merge.keepKids > 0 ? '（它下面现在有 ' + merge.keepKids + ' 个子项）' : '')
+            + '；' + keepName + '变成一个计划。')
+          : h('div', { className: 'dsh-wb-aihist', key: 'del' },
+            '会删掉：' + foldNames + '（子项、证据、关联会先并进保留的那条）'),
         missing.length === 0 ? null : h('div', { className: 'dsh-wb-aihist', key: 'miss' },
           '没对上：' + missing.map((t) => '「' + String(t) + '」').join('、')),
+        skipped.length === 0 ? null : h('div', { className: 'dsh-wb-aihist', key: 'skip' },
+          '这些没动：' + skipped.map((s) => '「' + String(s.title) + '」' + (s.why ? '（' + String(s.why) + '）' : '')).join('、')),
         merge.ok !== true ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
-            title: '按这个合并；上面列出的条目会被删掉（每一步都有版本留档，合错了能回滚）',
+            title: asChildren
+              ? '确认：把这些挪到 ' + keepName + '下面当子项（不删除任何条目，每一步都有版本留档）'
+              : '按这个合并；上面列出的条目会被删掉（每一步都有版本留档，合错了能回滚）',
             onClick: () => { applyMerge(merge); if (typeof onDone === 'function') onDone() },
-          }, '按这个合并')),
+          }, asChildren ? '按这个合并成计划' : '按这个合并')),
       )
     }
 
@@ -2152,7 +2193,11 @@ function apply(ctx) {
       const summaryParts = []
       if (aiTasks.length > 0) summaryParts.push(aiTasks.length + ' 条新任务')
       if (aiEdits.length > 0) summaryParts.push(aiEdits.length + ' 条改动')
-      if (aiMerges.length > 0) summaryParts.push(aiMerges.length + ' 处可合并')
+      // 两种合并分开报：归组（保留为子任务）与并掉（删重复）是用户完全不同的两件事，
+      // 混成一个「N 处可合并」会让人以为都是要删东西的。
+      const groupCount = aiMerges.filter((m) => m.mode === 'children').length
+      if (groupCount > 0) summaryParts.push(groupCount + ' 处合并成计划')
+      if (aiMerges.length - groupCount > 0) summaryParts.push((aiMerges.length - groupCount) + ' 处可合并')
       if (aiDeletes.length > 0) summaryParts.push(aiDeletes.length + ' 条可删除')
 
       // 最近一条助手回答的首行——汇总栏用它指路（「结论见上方『…』」），
@@ -2293,9 +2338,16 @@ function apply(ctx) {
       const canApplyAll = unsureCount === 0 && otherKinds === 0
       const line = (r) => {
         const isTask = r.q.kind === 'task'
+        // 归组（合并成计划、不删东西）在总览上要与「并掉重复」分开标——
+        // 一个是重新组织结构，一个是删除数据，代价差着量级。
+        const isGroup = r.q.kind === 'merge' && r.q.item.mode === 'children'
         const title = isTask ? String(r.q.item.title) : (r.q.kind === 'edit'
           ? '改：' + String(r.q.item.target)
-          : (r.q.kind === 'merge' ? '合并 ' + String(r.q.item.keep) : '删：' + String(r.q.item.target)))
+          : (r.q.kind === 'merge'
+            ? (isGroup
+              ? String(r.q.item.keepTitle || r.q.item.keep) + ' ← ' + (Array.isArray(r.q.item.folds) ? r.q.item.folds.length : 0) + ' 条'
+              : '合并 ' + String(r.q.item.keep))
+            : '删：' + String(r.q.item.target)))
         const meta = isTask && typeof r.q.item.due === 'string' && r.q.item.due !== ''
           ? r.q.item.due.slice(5) : ''
         return h('button', {
@@ -2305,7 +2357,7 @@ function apply(ctx) {
           onClick: () => { setAiStep(r.i); setAiShowOverview(false) },
         },
           h('span', { className: 'dsh-wb-ovnum' }, String(r.i + 1)),
-          h('span', { className: 'dsh-wb-ovkind' }, KIND_LABEL[r.q.kind]),
+          h('span', { className: 'dsh-wb-ovkind' }, isGroup ? '归组' : KIND_LABEL[r.q.kind]),
           h('span', { className: 'dsh-wb-ovtitle' }, title),
           r.dum ? h('span', { className: 'dsh-wb-ovwarn', title: '这条我没把握——没说时间，需要你定' }, '⚠')
             : h('span', { className: 'dsh-wb-ovmeta' }, meta),

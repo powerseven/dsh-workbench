@@ -338,7 +338,8 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '"list":{"title":"清单名","items":["任务标题","任务标题"]},',
     '"edits":[{"target":"已有任务的标题","patch":{"due":"...","priority":"...","plan":"...","note":"...","title":"..."},',
     '"why":"为什么这么改"}],',
-    '"merges":[{"keep":"保留的那条标题","fold":["并进去的那条标题"],"title":"合并后的标题或留空","why":"为什么"}],',
+    '"merges":[{"keep":"留下的那条标题","fold":["其余那些的标题"],"mode":"merge 或 children",',
+    '"title":"合并后的标题或留空","why":"为什么"}],',
     '"deletes":[{"target":"要删掉的那条标题","why":"为什么该删"}]}',
     '',
     '规则：',
@@ -398,11 +399,18 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '   patch 只可含 due / priority / plan / note / title 五个键，只放**要改的那几个**——',
     '   没提到的键不要出现在 patch 里（那表示「不改」，不是「清空」）。',
     '   只改已有的东西时**不要**再给一条同名 tasks：那是「新建一条」的意思，会变成两条。',
-    '9b. **合并任务**（「A 和 B 其实是一件事」「把这两条并起来」）：放进 merges。',
-    '   keep 是**保留**的那条、fold 是**并进去（会被删掉）**的那些，都必须是原样标题；',
-    '   fold 至少一条、不能含 keep 自己；title 留空表示沿用 keep 的标题，',
-    '   要改标题就写一个合并后的（例如「A（含 B）」）。合并前先想清楚留哪条：',
-    '   **留子项多的、在推进的那条**，把零散的那条并进去。',
+    '9b. **合并任务**（「A 和 B 其实是一件事」「把这两条并起来」「把这几条归到一个计划下面」）：放进 merges。',
+    '   keep 是**留下的那条**、fold 是**其余那些**（都必须是原样标题）；fold 至少一条、不能含 keep 自己。',
+    '   **mode 有两种，按用户的意思选——不要一律当成删除**：',
+    '   · mode="merge"：**并进去、然后删掉**（同一件事的重复条目）。子项、证据、关联先并进 keep，再删 fold。',
+    '   · mode="children"：**保留为子任务**。keep 变成一个计划，fold 里的每一条都**挪到 keep 下面**当它的子项，',
+    '     **一条都不删**。用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」',
+    '   判据：说「重复 / 是一件事 / 并进去」→ merge；说「作为子任务 / 子计划 / 归到一个计划下面 / 归到一起 /',
+    '   收成一个计划 / 归到一起做」→ children。',
+    '   **不要因为「你只能给标题」就反过来要用户把完整清单列出来**——能从【当前全貌】里挑出该挑的',
+    '   就直接挑（挑不准就在 why 里说明你挑了哪些），最终由用户在卡片上确认。',
+    '   留哪条挑**子项多的、在推进的那条**；title 留空表示沿用 keep 的标题，要改就写合并后的',
+    '   （例如「A（含 B）」，或者一个能盖住这批事的总标题）。',
     '9c. **删除任务**（「把那条删掉」「这条不用了」）：放进 deletes。',
     '   target 必须是从【当前全貌】里原样抄下来的标题（与 edits 同一条纪律）；',
     '   why 写清**为什么该删**（重复 / 已作废 / 记错了）——它是删除卡上唯一的判断依据，',
@@ -691,11 +699,32 @@ export function normEdits(raw) {
 }
 
 /**
- * **合并任务**：{ keep: 保留的标题, fold: [并进去的标题], title: 合并后的标题或空, why }。
+ * **合并任务**：{ keep: 留下的标题, fold: [其余标题], mode, title: 合并后的标题或空, why }。
+ *
+ * 两种 mode，差别在**被并的那几条最后去哪**：
+ *   · `merge`（默认）——并进去、然后删掉。给「这两条是一件事、重复了」用。
+ *   · `children`——**保留为子任务**：keep 变成计划，fold 里的每一条都挪到它下面，一条都不删。
+ *     给「把这几条归到一个计划下面」「合并成一个计划，其他作为子任务」用
+ *     （用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」）。
+ *
+ * 缺省必须是 `merge` 而不是 `children`：判错的方向不一样——把 children 误判成 merge
+ * 会**删掉用户的条目**，而把 merge 误判成 children 只是多留几条，改完再删也不迟。
  *
  * keep / fold 都是标题。host 会把两边都匹配回真实节点（匹配不上就标出来），
  * 并且**把「自己并进自己」这种无意义项剔掉**。
  */
+/** children 模式一次能收多少条：用户是把**一批**任务归到一个计划下面（真机上是十来条），MAX_EDITS 那点不够用。 */
+export const MAX_FOLD_CHILDREN = 30
+
+/** 模型的 mode → 合法取值。认不出来的一律当 merge（保守：宁可多留，不要误删）。 */
+export function normMergeMode(v) {
+  if (!isStr(v)) return 'merge'
+  const t = String(v).trim().toLowerCase()
+  if (t === 'children' || t === 'child' || t === 'as-children' || t === 'as-children-tasks'
+    || t === '子任务' || t === '子计划' || t === '保留' || t === '保留为子任务') return 'children'
+  return 'merge'
+}
+
 export function normMerges(raw) {
   if (!Array.isArray(raw)) return []
   const out = []
@@ -703,15 +732,17 @@ export function normMerges(raw) {
     if (item === null || typeof item !== 'object') continue
     const keep = isStr(item.keep) ? String(item.keep).trim().slice(0, 200) : ''
     if (keep === '') continue
+    const mode = normMergeMode(item.mode)
     const fold = (Array.isArray(item.fold) ? item.fold : [])
       .filter((x) => isStr(x))
       .map((x) => String(x).trim().slice(0, 200))
       .filter((x) => x !== '' && x !== keep)
-      .slice(0, MAX_EDITS)
+      .slice(0, mode === 'children' ? MAX_FOLD_CHILDREN : MAX_EDITS)
     if (fold.length === 0) continue
     out.push({
       keep,
       fold,
+      mode,
       // 空 = 沿用 keep 的标题（模型不必为了「不改标题」编一个）。
       title: isStr(item.title) ? String(item.title).trim().slice(0, 200) : '',
       why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
