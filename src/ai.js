@@ -428,6 +428,20 @@ export function extractJson(raw) {
  * 只补括号、不猜内容——所以「截在某个完整对象之后」能救回来，
  * 「截在一个字符串中间」救不回来（那本来就无从猜起）。
  */
+/**
+ * 把一段**被截断的** JSON 补成合法的：从 `end` 往前扫出还没闭合的括号栈，按栈反向补上。
+ *
+ * 两种截断都能救：
+ *   · 截在括号之间（`{"a":1,"b":[1,2`）——补上缺的右括号即可，本函数一直这么做；
+ *   · **截在一个字符串中间**（`{"reply":"· 拆出 1 条：回家过中秋…`）——这是后加的。
+ *     真实故障（mimo-v2.6-flash 把一大段分析塞进 reply，输出预算耗尽）就是这种：
+ *     原先 `inStr → return null` 让所有落点都被拒，整次调用报「模型没有给出能解析的
+ *     JSON」，而**关键信息其实已经在吐出来的那段字里了**（用户看到的正是这个）。
+ *     现在改成先闭合那个未终结的字符串，再补括号——捞回「已经说出口的部分」，
+ *     而它在语义上就是模型已经给定的答案。
+ *
+ * 仍然不猜内容：不补任何键值，只负责把引号/括号配平。
+ */
 function closeJsonAt(s, end) {
   const stack = []
   let inStr = false
@@ -444,10 +458,17 @@ function closeJsonAt(s, end) {
     if (c === '{' || c === '[') stack.push(c)
     else if (c === '}' || c === ']') stack.pop()
   }
-  if (inStr) return null
-  let out = ''
+  // 尾部若是落单的反斜杠，闭合引号会把它自己转义掉，得先去掉——否则补出来的
+  // 字符串永远合不上（`…abc\` + `"` 会被读成 `\"`）。
+  let head = s.slice(0, end + 1)
+  let tail = ''
+  if (inStr) {
+    if (escaped) head = head.slice(0, -1)
+    tail = '"'
+  }
+  let out = tail
   for (let i = stack.length - 1; i >= 0; i--) out += stack[i] === '{' ? '}' : ']'
-  return s.slice(0, end + 1) + out
+  return head + out
 }
 
 /**

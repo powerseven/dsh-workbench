@@ -430,6 +430,15 @@ const CSS = [
   // ── 归位选择器 ──（同样收进强调色，不再另开一个紫色）
   '.dsh-wb-movepick{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-1) 0 var(--wb-sp-3);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px dashed var(--wb-accent);}',
   '.dsh-wb-movepicklabel{font:var(--wb-f3);color:var(--wb-fg-2);}',
+  // ── 建议汇总（AI 解读完先给一张分类汇总，再排具体卡片）──────────────────
+  // 位置在卡片**之前**：用户要先知道「它读出了几件事、分别是哪类」，再决定
+  // 一口全采纳还是逐条看。所以它是这段结果的标题行，不是页脚。
+  '.dsh-wb-aisummary{display:flex;flex-direction:column;gap:var(--wb-sp-1);margin:var(--wb-sp-2) 0 var(--wb-sp-1);padding:var(--wb-sp-3);border-radius:var(--wb-r-2);background:var(--wb-accent-soft);border:1px solid var(--wb-accent);}',
+  '.dsh-wb-aisummaryhead{font:var(--wb-f2s);color:var(--wb-fg);}',
+  // 汇总里的说明行（「结论见上方…」「改动请逐条确认」）：弱一档，不跟主按钮抢注意力。
+  '.dsh-wb-aisummarynote{font:var(--wb-f3);color:var(--wb-fg-2);}',
+  // 汇总里的按钮行不继承 movepick 的虚线框（汇总本身已经是实线强调框了，套两层很吵）。
+  '.dsh-wb-aisummary .dsh-wb-movepick{margin:0;padding:0;border:0;background:transparent;}',
   // ── AI 入口 ─────────────────────────────────────────────────────────────
   // 整块用「强调色虚线框 + 软底」：这一区的内容**不是用户手打的**，是模型给的，
   // 一眼要能分辨。虚线也顺带说明「还没落定」——点过采纳才会真写进计划。
@@ -1770,12 +1779,57 @@ function apply(ctx) {
         ))
       }
 
-      if (aiTasks.length > 0) {
-        rows.push(h('div', { className: 'dsh-wb-aipics', key: 'all' },
-          h('span', null, '待确认 ' + aiTasks.length + ' 条——点「就这么办」逐条加，或'),
-          h('button', { className: 'dsh-wb-aibtn', disabled: aiBusy === true, onClick: aiApplyAll },
-            '全部按首选建议加入'),
+      // ── 建议汇总 ────────────────────────────────────────────────────────
+      //
+      // 用户原话：「你要有一个下面有你解读出来的工作建议，是要增加任务，还是需要
+      // 修改任务，还是要总结。你要下面要有建议的，然后让我选择。」
+      //
+      // 所以这里**先给一张分类汇总**，再排具体卡片：一眼能看清「这次它读出了几件
+      // 事、分别是哪一类」，然后决定全采纳还是逐条看。四类对应 AI 返回的四个字段：
+      //   · 增加 → tasks（草稿卡）  · 修改 → edits（改动卡）
+      //   · 合并 → merges（合并卡） · 总结/清单 → reply 与 list
+      //
+      // **只有「增加」给一键全采纳**：新建一条待办错了删掉即可，而改动与合并动的
+      // 是已经在用的数据（改错标题、并错条目比新建错难受得多），所以那两类刻意
+      // 只给「逐条看」——点进表单/确认框，一条一条确认。这不是遗漏，是纪律。
+      const summaryParts = []
+      if (aiTasks.length > 0) summaryParts.push(aiTasks.length + ' 条新任务')
+      if (aiEdits.length > 0) summaryParts.push(aiEdits.length + ' 条改动')
+      if (aiMerges.length > 0) summaryParts.push(aiMerges.length + ' 处可合并')
+
+      // 最近一条助手回答的首行——汇总栏用它指路（「结论见上方『…』」），
+      // 不重复整段：回答本身就在上面的问答区里，重复会把面板撑长。
+      const lastTurn = aiTurns.length > 0 ? aiTurns[aiTurns.length - 1] : null
+      const rawReply = lastTurn !== null && lastTurn.role === 'assistant' && typeof lastTurn.text === 'string'
+        ? lastTurn.text.trim() : ''
+      const firstLine = rawReply.split('\n')[0].replace(/^[·\s]+/, '').trim()
+      const lastAiReply = firstLine.length > 40 ? firstLine.slice(0, 40) + '…' : firstLine
+
+      if (summaryParts.length > 0) {
+        rows.push(h('div', { className: 'dsh-wb-aisummary', key: 'summary' },
+          h('div', { className: 'dsh-wb-aisummaryhead' }, '建议：' + summaryParts.join(' · ')),
+          h('div', { className: 'dsh-wb-movepick' },
+            // 总结：模型的回答已经作为问答留在上面（aiTurns），这里只给一行定位提示，
+            // **不重复整段文字**——那会把面板撑得很长，而它就在上方看得见。
+            lastAiReply !== ''
+              ? h('span', { className: 'dsh-wb-aisummarynote' }, '结论见上方「' + lastAiReply + '」')
+              : null,
+            aiTasks.length > 0
+              ? h('button', {
+                className: 'dsh-wb-aibtn primary',
+                disabled: aiBusy === true,
+                title: '把 ' + aiTasks.length + ' 条新任务都按首选建议加入（改动与合并仍需逐条确认）',
+                onClick: aiApplyAll,
+              }, '全部增加（' + aiTasks.length + '）')
+              : null,
+            aiEdits.length > 0 || aiMerges.length > 0
+              ? h('span', { className: 'dsh-wb-aisummarynote' }, '改动与合并请逐条点开确认')
+              : null,
+          ),
         ))
+      }
+
+      if (aiTasks.length > 0) {
         for (const task of aiTasks) rows.push(aiTaskCard(task))
       }
 

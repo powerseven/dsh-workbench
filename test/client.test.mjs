@@ -1010,6 +1010,59 @@ test('没有内容点解析：不发请求，只提示', async () => {
   assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|贴个文件/)
 })
 
+test('建议汇总栏：先给分类汇总（增加/改动/可合并），再排具体卡片', async () => {
+  // 用户原话：「你要有一个下面有你解读出来的工作建议，是要增加任务，还是需要修改
+  // 任务，还是要总结。你要下面要有建议的，然后让我选择。」
+  withAi()
+  aiReply = {
+    reply: '· 拆出 1 条：补台账\n· 另有一条可以合并',
+    tasks: [{ title: '补台区台账', due: '', priority: '', note: '', plan: '', candidates: [] }],
+    edits: [{ target: '工作主线', patch: { due: '2026-10-01' }, why: '截止该填了' }],
+    merges: [{ keep: '工作主线', fold: ['子计划'], title: '', why: '两条是一件事' }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '补台账，顺便看看有没有重复的' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const summary = firstByClass(render(), 'dsh-wb-aisummary')
+  assert.ok(summary !== null, '应有建议汇总栏')
+  const head = textOf(firstByClass(render(), 'dsh-wb-aisummaryhead'))
+  assert.match(head, /1 条新任务/, '要报出新增条数')
+  assert.match(head, /1 条改动/, '要报出改动条数')
+  assert.match(head, /1 处可合并/, '要报出可合并处数')
+
+  // 汇总排在卡片**之前**（先看结论，再看明细）。
+  const tree = render()
+  const sumIdx = JSON.stringify(tree).indexOf('dsh-wb-aisummary')
+  const cardIdx = JSON.stringify(tree).indexOf('dsh-wb-aitask')
+  assert.ok(sumIdx >= 0 && cardIdx >= 0 && sumIdx < cardIdx, '汇总栏应排在卡片之前')
+})
+
+test('建议汇总栏：只有「增加」给一键全采纳，改动与合并必须逐条确认', async () => {
+  withAi()
+  aiReply = {
+    reply: '· 有改动',
+    tasks: [{ title: '新任务甲', due: '', priority: '', note: '', plan: '', candidates: [] }],
+    edits: [{ target: '工作主线', patch: { due: '2026-10-01' }, why: '截止该填了' }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '记一条，顺便改一条' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  // 全采纳按钮只针对新增条目——改的是已经在用的数据，错得比新建难受。
+  const allBtn = byClass(render(), 'dsh-wb-aisummary')
+    .flatMap((el) => findAll(el, (x) => classesOf(x).includes('dsh-wb-aibtn')))
+    .find((b) => textOf(b).indexOf('全部增加') >= 0)
+  assert.ok(allBtn !== undefined, '应有「全部增加」按钮')
+  assert.match(textOf(allBtn), /全部增加（1）/, '按钮上要带条数')
+
+  // 明说改动要逐条确认，用户才不会以为「全部增加」把改动也一起吞了。
+  const note = textOf(firstByClass(render(), 'dsh-wb-aisummary'))
+  assert.match(note, /逐条/, '要说明改动/合并需逐条确认')
+})
+
 test('解析结果渲染成草稿；点建议**不直接落库**，而是填进详情表单等确认', async () => {
   withAi()
   aiReply = {
