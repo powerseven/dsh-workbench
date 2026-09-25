@@ -615,6 +615,11 @@ const CSS = [
   '.dsh-wb-wait .dsh-wb-waittxt{flex:1;min-width:0;}',
   // 秒数是等宽数字：否则每次跳动都会让整行宽度变一下，看着像在抖。
   '.dsh-wb-wait .dsh-wb-waittime{flex:none;font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  // 中断入口。做成**文字**而不是一个 ✕ 图标：等待中的用户正在盯着这一块看，
+  // 文字「算了」比一个需要辨认的小叉更容易在焦虑时一眼找到。
+  // 触摸目标给足 40px 高（手指点得中），但不是主按钮的视觉重量——它是个退路。
+  '.dsh-wb-wait .dsh-wb-waitcancel{flex:none;min-height:32px;padding:0 var(--wb-sp-3);border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);background:transparent;color:var(--wb-fg-2);font:var(--wb-f3);cursor:pointer;}',
+  '.dsh-wb-wait .dsh-wb-waitcancel:hover{color:var(--wb-fg);border-color:var(--wb-fg-2);}',
   // 尊重「减少动态效果」：转圈换成一圈静止的环，但**文字照常**——
   // 状态信息不该因为动效偏好而消失。
   '@media (prefers-reduced-motion:reduce){.dsh-wb-wait .dsh-wb-spin{animation:none;border-top-color:var(--wb-line-2);}}',
@@ -825,11 +830,17 @@ function apply(ctx) {
     return React.useSyncExternalStore(store.subscribe, store.get)
   }
 
-  async function api(method, args) {
+  async function api(method, args, signal) {
     const res = await fetch('/api/workbench/' + method, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify(args || {}),
+      // signal 可选：只有 AI 那条路会传（见 runAi 的取消）。
+      //
+      // 为什么必须能取消：Nielsen 的三条阈值里，超过 10 秒的等待**必须**有一个
+      // 「清楚标示的中断方式」；而用户实测过「模型在计算的时候时间还是很长，
+      // 然后那个空白的框一直在那里」——不能中断，就只能干等。
+      signal: signal === undefined ? undefined : signal,
     })
     let payload = null
     try { payload = await res.json() } catch (e) { /* 非 JSON 响应，落到下面的状态码分支 */ }
@@ -1105,6 +1116,9 @@ function apply(ctx) {
     // 单一同步点：不管 aiText 从哪条路被改（提交后清空、粘贴图片、点快捷问法），
     // ref 都跟着走。散在各个 setAiText 调用点去手写 ref 赋值迟早漏一个。
     React.useEffect(() => { aiTextRef.current = aiText }, [aiText])
+    // 当前那次 AI 请求的 AbortController（没有请求时为 null）。
+    // 存 ref 而不是 state：取消是个「读一次就动作」的命令，不需要触发重渲。
+    const aiAbortRef = React.useRef(null)
     const [aiPics, setAiPics] = React.useState([])    // [{ mediaType, data, name }]
     const [aiBusy, setAiBusy] = React.useState(false)
     // 模型已经跑了多久（秒）。用户抱怨「模型在计算的时候时间还是很长，然后那个
@@ -1209,9 +1223,18 @@ function apply(ctx) {
       }
       setAiBusy(true)
       setAiText('')
-      api('ai-parse', { sessionId, text: ask, images: aiPics, history: aiTurns })
+      // 可取消：用户点等待块上的「算了」时中止这次请求。
+      //
+      // 为什么必须有：Nielsen 三条阈值里，>10 秒的等待**必须**配一个「清楚标示的
+      // 中断方式」。模型跑十几秒时用户唯一能做的就是干等——而等的过程里他可能
+      // 已经发现自己问错了。abort 之后 fetch 会 reject（AbortError），
+      // 下面的 catch 认得它，不当作错误处理（见 catch 段）。
+      const controller = typeof AbortController === 'function' ? new AbortController() : null
+      aiAbortRef.current = controller
+      api('ai-parse', { sessionId, text: ask, images: aiPics, history: aiTurns }, controller === null ? undefined : controller.signal)
         .then((r) => {
           setAiBusy(false)
+          aiAbortRef.current = null
           setAiPics([])
           const reply = typeof r.reply === 'string' ? r.reply : ''
           const list = Array.isArray(r.tasks) ? r.tasks : []
@@ -1254,6 +1277,13 @@ function apply(ctx) {
         })
         .catch((e) => {
           setAiBusy(false)
+          aiAbortRef.current = null
+          // 用户主动取消不是错误——别把「你自己按的算了」渲染成一条红色报错。
+          // AbortError 是这个平台上中止 fetch 的固定名字。
+          if (e !== null && e !== undefined && e.name === 'AbortError') {
+            flash('已取消')
+            return
+          }
           store.set({ error: e instanceof Error ? e.message : String(e) })
         })
     }
@@ -1794,15 +1824,43 @@ function apply(ctx) {
      * 「在对照你已有的计划」——后者才是真正花时间的那一步（要把上下文读完）。
      * 这比从头到尾一句「加载中」诚实，也更像一个人在干活时该说的话。
      */
+    /**
+     * 「正在算」的等待块。
+     *
+     * 用户原话：「你这样子输入的时候可以点确认，确认完了之后，你在模型在计算的时候，
+     * 时间还是很长。然后那个空白的框一直在那里，人家不知道你干嘛。」
+     *
+     * 移动端调研给出的硬性要求（Nielsen 三条阈值）：
+     *   · **>10 秒必须给「清楚标示的中断方式」**——所以这一块上有「算了」；
+     *   · 无法预估总量时，**给「已完成多少」式的滚动反馈**——所以文案分阶段推进，
+     *     而不是从头到尾一句「加载中」；
+     *   · 2–10 秒不需要真进度条（那是过度设计），但要有不显眼的进行感——转圈够了。
+     *
+     * 阶段文案是**按耗时推断**的，不是真进度：模型是一次性返回的，客户端拿不到
+     * 中间态。所以这里的诚实做法是把「正常大概卡在哪一步」说出来，而不是假装
+     * 有百分比。到 15 秒承认「比平时慢」，比一直说「马上就好」可信。
+     */
     const aiWaiting = () => {
       const text = aiWaited < 3 ? '正在理解你说的…'
         : aiWaited < 8 ? '正在对照你已有的计划…'
-          : aiWaited < 15 ? '还在算，内容有点多，稍等…'
-            : '它在跑，只是慢——超过半分钟还没回来，可以点上面的 ✕ 重来'
+          : aiWaited < 15 ? '正在安排时间和归位…'
+            : aiWaited < 30 ? '比平时慢一点，还在算…'
+              : '它还在跑——可以继续等，也可以取消了自己写一条'
       return h('div', { className: 'dsh-wb-wait', key: 'wait' },
         h('span', { className: 'dsh-wb-spin' }),
         h('span', { className: 'dsh-wb-waittxt' }, text),
+        // 秒数用等宽数字（CSS 里 tabular-nums），否则每跳一次整行宽度都会变，看着像在抖。
         h('span', { className: 'dsh-wb-waittime' }, aiWaited + ' 秒'),
+        // 中断入口。Nielsen：超过 10 秒的等待**必须**能被中断——用户等的过程里
+        // 可能已经发现自己问错了，或者只是想改个说法重来。
+        h('button', {
+          className: 'dsh-wb-waitcancel',
+          title: '取消这次请求（已经等的时间不算白等——你可以改个说法再来）',
+          onClick: () => {
+            const c = aiAbortRef.current
+            if (c !== null && c !== undefined && typeof c.abort === 'function') c.abort()
+          },
+        }, '算了'),
       )
     }
 
@@ -1994,9 +2052,17 @@ function apply(ctx) {
             key: 'm' + i,
             className: 'dsh-wb-msg ' + (t.role === 'assistant' ? 'ai' : 'me'),
           }, t.text)),
-          aiBusy === true ? aiWaiting() : null,
         ))
       }
+      // 等待块**独立于问答之外**渲染——这是一个真 bug 的修复。
+      //
+      // 原来它被写在 `if (aiTurns.length > 0)` 的**里面**，而第一次提问时
+      // aiTurns 还是空的（要等回复到了才写进去）——于是**第一次提问永远看不到
+      // 任何等待反馈**，屏幕上就是用户说的「那个空白的框一直在那里，人家不知道
+      // 你干嘛」。第二次之后才有，所以这个问题很容易在自测时漏掉。
+      //
+      // 等待是「正在发生的事」，不依赖已有内容；它必须无条件渲染。
+      if (aiBusy === true) rows.push(aiWaiting())
 
       if (aiPics.length > 0) {
         rows.push(h('div', { className: 'dsh-wb-aipics', key: 'pics' },
@@ -2095,7 +2161,24 @@ function apply(ctx) {
       for (const m of aiMerges) queue.push({ kind: 'merge', item: m })
       for (const d of aiDeletes) queue.push({ kind: 'delete', item: d })
 
-      if (isMobile === true && queue.length > 0) {
+      if (isMobile === true && queue.length === 1) {
+        // **单条不进向导**（移动端调研的核心结论之一）。
+        //
+        // 「语音说一句」是最常见的一档：它只产出**一条**建议。这时候队列反而是
+        // 纯噪音——「第 1 / 1 条」不含任何信息，「跳过」对唯一一条没有意义
+        // （跳过了就什么都不剩），而用户还得多点一次才看得到结果。
+        //
+        // 单条直接给那一张卡：看完点「就这么办」，一次点击结束。
+        // 用户原话「正常来说说一句话就选一个就好了」正是这个意思——
+        // 说的是**别给一堆东西**，不是「给我一个有一个条目的队列」。
+        const only = queue[0]
+        rows.push(only.kind === 'task' ? aiTaskCard(only.item)
+          : only.kind === 'edit' ? aiEditCard(only.item)
+            : only.kind === 'merge' ? aiMergeCard(only.item)
+              : aiDeleteCard(only.item))
+      } else if (isMobile === true && queue.length > 1) {
+        // 多条（图片清单那种一次拆出十几条）才走向导：这时「第 N / M 条」
+        // 才真的在传达信息，逐条才有意义。
         rows.push(aiWizard(queue))
       } else {
         for (const task of aiTasks) rows.push(aiTaskCard(task))

@@ -1792,6 +1792,75 @@ test('快捷问法：点一下就把问题发出去（不用想怎么问）', as
   assert.equal(call.body.text, '我今天该做什么')
 })
 
+test('单条建议不进向导：没有「第 1 / 1 条」，也没有「跳过」', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 语音说一句 → 只产出**一条**建议。这正是最常见的那一档。
+    aiReply = { reply: '加好了。', tasks: [{ title: '明天去踢球', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] }] }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '明天去踢球' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const txt = textOf(render())
+    // 「第 1 / 1 条」不含任何信息；「跳过」对唯一一条没有意义（跳过了就什么都不剩）。
+    assert.doesNotMatch(txt, /1 \/ 1/, '单条不该出现队列进度——那是纯噪音')
+    assert.doesNotMatch(txt, /跳过/, '单条不该有跳过（跳过唯一一条等于放弃全部）')
+    // 但那张卡本身要在——用户看完点一次就结束。
+    assert.ok(firstByClass(render(), 'dsh-wb-aitask') !== null, '单条应直接给那张卡')
+  } finally {
+    restore()
+  }
+})
+
+test('多条建议才走向导：有进度、可跳过', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 图片清单那种一次拆出好几条的场景。
+    aiReply = {
+      reply: '读出 3 条。',
+      tasks: [
+        { title: '买牛奶', due: '', priority: '', note: '', plan: '', candidates: [] },
+        { title: '交电费', due: '', priority: '', note: '', plan: '', candidates: [] },
+        { title: '预约牙医', due: '', priority: '', note: '', plan: '', candidates: [] },
+      ],
+    }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '看这张清单' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const txt = textOf(render())
+    assert.match(txt, /3/, '多条应有总数——有终点才叫流程')
+    assert.match(txt, /跳过/, '多条才需要「跳过」（先放着，之后还能回来）')
+  } finally {
+    restore()
+  }
+})
+
+test('等待块：超过 10 秒的等待有中断入口（Nielsen 硬要求）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '问一句' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    // 不 await：此刻正处在「模型在算」的状态里。
+
+    const wait = firstByClass(render(), 'dsh-wb-wait')
+    assert.ok(wait !== null, '等待期间应有等待块（不是一个空白框）')
+    const cancel = byClass(render(), 'dsh-wb-waitcancel')
+    assert.equal(cancel.length, 1, '>10 秒的等待必须有一个标示清楚的中断方式')
+    assert.match(textOf(cancel[0]), /算了/, '中断按钮要是个看得懂的词，不是光秃秃一个 ✕')
+  } finally {
+    restore()
+  }
+})
+
 test('快捷问法：手里有东西时就让位（同一屏不重复问同样的事）', async () => {
   withAi()
   aiReply = { reply: '该做：补台账', tasks: [] }
