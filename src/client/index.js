@@ -1839,6 +1839,10 @@ function apply(ctx) {
           }, icon('close')),
         ),
         merge.why === '' || merge.why === undefined ? null : h('div', { className: 'dsh-wb-advice', key: 'w' }, '※ ' + merge.why),
+        // **这一组的 mode 被改过**（模型漏填，host 按用户原话兜底，见 mergeWantsChildren）。
+        // 依据要摆出来：它是**按人那句话**改的模型判读，不是 AI 擅自改主意——不说清就像它搞错了。
+        merge.modeNote === '' || merge.modeNote === undefined
+          ? null : h('div', { className: 'dsh-wb-aihist', key: 'mn' }, merge.modeNote),
         merge.title === '' || merge.title === undefined ? null : h('div', { className: 'dsh-wb-formrow', key: 'tt' },
           h('span', { className: 'dsh-wb-fmeta' }, '标题'),
           h('span', { className: 'dsh-wb-fref' }, keepName + ' → 「' + String(merge.title) + '」')),

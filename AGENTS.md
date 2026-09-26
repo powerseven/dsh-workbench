@@ -393,6 +393,14 @@ if (surface !== undefined && seed.target !== 'bottom') { /* 走 surface = 官方
   `moveNode` 拒绝（面板点下去只会报错），所以 `matchMerges` 在这一层就剔掉，记进
   `skipped`（原因随卡片带回来）；本来就在 keep 底下的也不必再挪一次。
 - **写入口一个没加**：`children` 只走 `/node-set`（改标题）+ `/node-move`（挪位置）。
+- **模型会漏填 `mode`，而空缺 = 删除**（真机实测：reply 里写着「其余 10 条全部挂成它的
+  子任务」，JSON 里却没有 mode，落到 `merge` = 删掉那 10 条）。所以有两道：
+  ① 提示词写明「**mode 必填，不写就按 merge（＝会删掉）处理**」；
+  ② host 的 `mergeWantsChildren(用户原话)` 兜底——用户自己说了「作为子任务 / 子计划 /
+  合并成一个计划 / 挂到…下面」而模型没给 mode 时，按 children 下发，并把依据写进
+  `modeNote` 摆在卡上（改判是**按人那句话**改的模型判读，不说清就像 AI 擅自改主意）。
+  兜底必须**窄**：用户说的是「这两条是一件事」时不许改判——替用户改主意比不兜底更糟。
+  判据只看**用户的话**，不猜模型的意图。
 
 **没有新增工具、没有新增路由**：edits 走详情表单（`/node-set`），merges 是
 「`/node-set` 改标题 → `/node-move` 逐个子项搬过去 → 证据/关联追加 → `/node-remove`」，

@@ -2833,6 +2833,9 @@ test('归组卡（mode=children）：明写「不会删任何条目」；采纳�
       skipped: [],
       ok: true,
       why: '都是同一批调研',
+      // host 按用户原话把 mode 兜底成 children 时会带这句（真机上模型漏填过一次）。
+      // 改判必须**说得出依据**，否则看着像 AI 擅自改主意。
+      modeNote: '模型没写明合并方式，按你话里的「作为子计划」按「保留为子任务」执行（不删除）',
     }],
   }
   const { render, view } = await mountAi()
@@ -2846,6 +2849,7 @@ test('归组卡（mode=children）：明写「不会删任何条目」；采纳�
   assert.match(body, /不会删任何条目/, '归组的代价只是挪位置——必须写在卡上')
   assert.match(body, /成为子项/, '要说清它们去哪：keep 下面')
   assert.doesNotMatch(body, /会删掉/, '这一行**不能**出现——它会让人以为要点下去就是删')
+  assert.match(body, /模型没写明合并方式/, 'mode 被 host 兜底改过时，依据要摆在卡上')
   assert.match(body, /→ 「归组用总计划」/, '标题会怎么变也要写出来')
   requests = []
   findAll(card, (x) => x.type === 'button' && textOf(x) === '按这个合并成计划')[0].props.onClick(ev())

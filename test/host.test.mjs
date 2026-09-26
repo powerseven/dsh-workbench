@@ -999,6 +999,45 @@ test('/ai-parse 的归组合并：mode=children 原样下发，挪不动的剔�
   assert.equal(after.versions, before.versions, '也不该留版本快照')
 })
 
+test('/ai-parse 兜住「模型漏填 mode」：用户说了「作为子计划」就按保留子任务下发', async () => {
+  // 真机踩出来的：模型 reply 里写着「其余 10 条全部挂成它的子任务」，JSON 里却没有
+  // mode。空缺按 merge 处理 = **删掉那 10 条**，而用户要的是嵌套。判错的方向不对等，
+  // 所以 host 这一层按**用户自己的原话**兜底，并把依据回显（modeNote）。
+  await call('plan_node_add', { title: '兜底用总任务' })
+  await call('plan_node_add', { title: '兜底用甲' })
+  await call('plan_node_add', { title: '兜底用乙' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '其余两条全部挂成它的子任务',
+    // 注意：这里**故意不给 mode**——这正是真机上发生的那一次。
+    merges: [{ keep: '兜底用总任务', fold: ['兜底用甲', '兜底用乙'], title: '兜底用总计划' }],
+  }))
+
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把这几个任务合并成一个计划，其他的作为他的子任务' })
+  assert.equal(r.status, 200)
+  const m = r.payload.merges[0]
+  assert.equal(m.mode, 'children', '模型漏填 + 用户说了要保留 → 不得按删除下发')
+  assert.equal(m.ok, true)
+  assert.match(m.modeNote, /模型没写明合并方式/, '改判要有回显：用户得看见是按他的话改的')
+  assert.equal(m.folds.length, 2, '两条都要保留成子项')
+})
+
+test('/ai-parse 用户没说「子任务」时不乱改：维持模型给的模式', async () => {
+  // 兜底必须是**窄**的。用户说的是「这两条是一件事」（= 该删重复），那就照模型说的做，
+  // 替用户改主意比不兜底更糟。
+  await call('plan_node_add', { title: '不兜底用甲' })
+  await call('plan_node_add', { title: '不兜底用乙' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '两条重复了',
+    merges: [{ keep: '不兜底用甲', fold: ['不兜底用乙'] }],
+  }))
+
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '这两条其实是一件事，并起来' })
+  assert.equal(r.payload.merges[0].mode, 'merge')
+  assert.equal(r.payload.merges[0].modeNote, '', '没有改判就没有回显')
+})
+
 test('/ai-parse 把「同名草稿」转成改动，不当新建下发（否则一点就多一条重复的）', async () => {
   // 用户原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
   // 而不是说让我确认再加任务」。模型经常一边在 reply 里写「这两条本来就在手上，

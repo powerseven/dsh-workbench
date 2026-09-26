@@ -28,6 +28,7 @@ import {
   extractJson,
   historyText,
   matchPlan,
+  mergeWantsChildren,
   normDeletes,
   parseAiReply,
   planOutline,
@@ -229,6 +230,17 @@ test('提示词把两种 mode 都讲清楚，并明说不要反过来要用户�
   // 根本没有逐条勾选——确认是「全执行」或「整条丢掉」两选一。说了兑现不了就是骗人。
   assert.match(p, /不要在 reply 里/, '要禁止承诺「可以只选其中几条」')
   assert.match(p, /点名写进 why/, '替代出口要写明：可疑的那几条点名进 why，让用户自己挪')
+})
+
+test('mergeWantsChildren：只看用户自己说的话，且宁可判不中也不乱判', () => {
+  // 真机踩出来的：模型 reply 写着「其余 10 条全部挂成它的子任务」，JSON 里却没给
+  // mode（空缺 = 按 merge 处理 = 删掉那 10 条）。用户的原话是唯一可靠的证据。
+  assert.equal(mergeWantsChildren('把这几个任务合并成一个计划，其他的作为他的子任务'), true)
+  assert.equal(mergeWantsChildren('把这些挂到「X」下面'), true)
+  assert.equal(mergeWantsChildren('把 A 和 B 合并，它们其实是一件事'), false)
+  assert.equal(mergeWantsChildren('记一条：交电费'), false)
+  assert.equal(mergeWantsChildren(''), false)
+  assert.equal(mergeWantsChildren(undefined), false)
 })
 
 test('只有改动或只有合并，也算一次成功的解析（不能判成失败）', () => {

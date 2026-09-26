@@ -100,6 +100,7 @@ import {
   attachSuggestions,
   collectText,
   historyText,
+  mergeWantsChildren,
   parseAiReply,
   planOutline,
 } from './ai.js'
@@ -1223,6 +1224,19 @@ export function apply(ctx) {
         parsed.reply = (parsed.reply === '' ? '' : parsed.reply + '\n')
           + '· （回复被长度上限截断，上面只拿到前面这些；先采纳，再补一句处理剩下的）'
       }
+      // **兜住「模型漏填 mode」**：空缺按 merge 处理是**会删掉那些条目**的，
+      // 而真机上模型这么漏过一次——reply 里写着「其余 10 条全部挂成它的子任务」，
+      // JSON 里却没有 mode。用户的原话明确说了要保留时按 children 走，并回显依据。
+      // 判据只看**用户自己说的话**（mergeWantsChildren），不猜模型的意思。
+      if (mergeWantsChildren(String(body.text ?? ''))) {
+        for (const m of parsed.merges) {
+          if (m.mode === 'children') continue
+          m.mode = 'children'
+          m.modeNote = m.modeGiven === true
+            ? '按你话里的「作为子计划」，这次按「保留为子任务」执行（不删除）'
+            : '模型没写明合并方式，按你话里的「作为子计划」按「保留为子任务」执行（不删除）'
+        }
+      }
       // **已有同名任务的「草稿」不是新建，是归位/改动。**
       // 用户的原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
       // 而不是说让我确认再加任务」——模型经常一边在 reply 里写「这两条本来就在手上，
@@ -1409,6 +1423,9 @@ export function apply(ctx) {
           mode,
           title: m.title,
           why: m.why,
+          // 「为什么这一组按 children 走」——用户自己那句话触发的兜底（见 /ai-parse），
+          // 依据要摆在卡上：他得看见是**按他的话**改的模型判读，而不是 AI 擅自改主意。
+          modeNote: typeof m.modeNote === 'string' ? m.modeNote : '',
           keepId,
           keepTitle: keep === null ? '' : String(keep.title ?? ''),
           folds: fold,

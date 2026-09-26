@@ -407,6 +407,8 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '     **一条都不删**。用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」',
     '   判据：说「重复 / 是一件事 / 并进去」→ merge；说「作为子任务 / 子计划 / 归到一个计划下面 / 归到一起 /',
     '   收成一个计划 / 归到一起做」→ children。',
+    '   **mode 必填，不写就按 merge（＝会删掉那些条目）处理**：两种结果差着量级，',
+    '   所以哪怕你只确定了一种，也要把另一个值原样写上，别留空。',
     '   **不要因为「你只能给标题」就反过来要用户把完整清单列出来**——能从【当前全貌】里挑出该挑的',
     '   就直接挑（挑不准就在 why 里说明你挑了哪些），最终由用户在卡片上确认。',
     '   **确认只有两种结果：全部并进去，或整条丢掉**（面板上没有逐条勾选）。所以**不要在 reply 里',
@@ -747,6 +749,10 @@ export function normMerges(raw) {
       keep,
       fold,
       mode,
+      // **模型有没有明确给 mode**。没有 = 它把这一项当成了「不用填」。
+      // 这个差别要留着：host 那一层据此在用户的原话里找证据（见 mergeWantsChildren），
+      // 把「漏填 → 默认删」这一条兜住——真机上就这么漏过一次。
+      modeGiven: isStr(item.mode) && String(item.mode).trim() !== '',
       // 空 = 沿用 keep 的标题（模型不必为了「不改标题」编一个）。
       title: isStr(item.title) ? String(item.title).trim().slice(0, 200) : '',
       why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
@@ -754,6 +760,26 @@ export function normMerges(raw) {
     if (out.length >= MAX_EDITS) break
   }
   return out
+}
+
+/**
+ * **用户的话里是不是明确说了「要保留成子任务」**——用来兜住模型漏填 mode。
+ *
+ * 真机上踩到过一次：模型 reply 里白纸黑字写着「其余 10 条全部挂成它的子任务」，
+ * JSON 里却没给 mode（空缺 = 按 merge 处理 = **删掉那 10 条**）。判错的方向不对等：
+ * 猜成 children 只是多一层嵌套，用户点完还能拆下来；猜成 merge 是数据没了。
+ *
+ * 所以这里只做一件很窄的事：**用户自己说了要保留**，而模型没给 mode 时，
+ * 按 children 走，并把依据回显到卡上（`modeNote`）让他看见为什么。
+ *
+ * 判据只用**用户自己会说的那几种说法**，不猜语义：
+ * 「作为子任务 / 子计划 / 子项」「挂到…下面」「合并成一个计划 / 收成一个计划」。
+ * 命中不了就维持原判（merge）——宁可按模型说的做，也不替用户改主意。
+ */
+export function mergeWantsChildren(userText) {
+  if (!isStr(userText)) return false
+  const t = String(userText)
+  return /子任务|子计划|子项|挂到.{0,8}下面|合并成一个计划|合成一个计划|收成一个计划|作为一个计划/.test(t)
 }
 
 /**
