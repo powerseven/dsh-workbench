@@ -60,29 +60,57 @@ function planNodes(plan) {
   return Array.isArray(plan.nodes) ? plan.nodes : []
 }
 
-/** 已「纳入工作计划」（filed）——只在顶层待办上有意义，口径必须与 store.js 一致。 */
+/**
+ * 顶层待办：**不再区分「收件箱」与「工作计划」**。
+ *
+ * 历史：这里原本有 `filed`（已纳入工作计划）标记，把顶层分成两组——
+ * 没收进去的算「收件箱」（催人归位）、收进去的算「工作计划」。用户要求去掉：
+ *
+ *   「不要分收件箱和工作计划了，那是直接全部变成了这个工作计划。」
+ *
+ * 去掉是对的。那个区分制造了一个**用户并不关心的中间态**：刚记下的一条待办
+ * 既不属于哪个计划、又还不算「工作计划」，于是界面要分两栏，还要一颗「纳入计划」
+ * 按钮催他做决定。可真正该回答的问题只有一个——**它是什么、要不要往下拆**，
+ * 而这个由结构派生（有子项=计划、没有=待办）已经答了，`filed` 是多出来的手续。
+ *
+ * 函数名保留（inboxOf / workPlans / filedOf）是为了不把调用点与测试一起掀翻；
+ * 语义已经变成「顶层待办 / 顶层节点 / 恒假」，见各自的注释。
+ */
+
+/**
+ * `filed` 已废弃，恒返回 false。
+ *
+ * 保留这个函数而不是删掉，是因为调用点分布在 UI 与新老数据路径上；
+ * 它就相当于一个「这个字段不再存在」的显式声明，比在每个调用点手写 false 清楚。
+ * 老 plan.json 里的残留键由 host 侧读盘归一清掉（store.js 的 normalize）。
+ */
 function filedOf(node) {
-  return node !== null && node !== undefined && typeof node === 'object' && node.filed === true
+  return false
 }
 
-/** 收件箱：还没归位、也还没纳入工作计划的顶层待办。 */
+/**
+ * 顶层待办（名字沿用了历史上的「收件箱」）。
+ *
+ * 与过去唯一的差别：**不再用 `filed` 过滤**——所有顶层待办都在这儿。
+ * 一条刚记下的待办就出现在这一栏里，不需要先「纳入」什么。
+ */
 function inboxOf(plan) {
   var out = []
   var roots = planNodes(plan)
   for (var i = 0; i < roots.length; i++) {
-    if (nodeType(roots[i]) === 'todo' && !filedOf(roots[i])) out.push(roots[i])
+    if (nodeType(roots[i]) === 'todo') out.push(roots[i])
   }
   return out
 }
 
-/** 「工作计划」栏：顶层计划 + 已纳入工作计划的顶层待办（与收件箱互补）。 */
+/**
+ * 顶层节点（名字沿用了历史上的「工作计划栏」）。
+ *
+ * 与过去唯一的差别：不再需要 `|| filedOf(...)`——顶层计划本来就在，顶层待办
+ * 现在也在（它们不再被 `filed` 挡在外面）。
+ */
 function workPlans(plan) {
-  var out = []
-  var roots = planNodes(plan)
-  for (var i = 0; i < roots.length; i++) {
-    if (nodeType(roots[i]) === 'plan' || filedOf(roots[i])) out.push(roots[i])
-  }
-  return out
+  return planNodes(plan)
 }
 
 /** 顶层计划（进度只看它们，收件箱不参与）。 */
@@ -201,10 +229,12 @@ function summarize(plan) {
   out.hasPlan = roots.length > 0
   for (var i = 0; i < roots.length; i++) count(roots[i], 1)
 
-  var inbox = inboxOf(plan)
-  out.inbox = inbox.length
-  for (var j = 0; j < inbox.length; j++) {
-    if (isOpen(inbox[j])) out.inboxOpen++
+  // 不再叫 inbox/inboxOpen——顶层不分栏，这两个数是「顶层待办」的统计。
+  // 字段名保留是为了不掀翻调用点与测试；含义已从「未归位」变成「在顶层」。
+  var loose = inboxOf(plan)
+  out.inbox = loose.length
+  for (var j = 0; j < loose.length; j++) {
+    if (isOpen(loose[j])) out.inboxOpen++
   }
 
   if (typeof plan.progress === 'number' && isFinite(plan.progress)) {

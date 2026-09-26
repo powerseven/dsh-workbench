@@ -194,8 +194,14 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 
 let dir = ''
 
-/** 每次挂载记录一次 betterSidebar.openTab 调用（页脚入口的用例要断言它）。 */
+/** 每次挂载记录一次官方 sidebarRight.openTab 调用（页脚入口的用例要断言它）。 */
 let openTabCalls = []
+
+/** 手机档「记一条」预填进宿主 composer 的文本（每次挂载重置）。 */
+let draftWrites = []
+
+/** 同一路径上对宿主 composer 的 submit 次数——用来钉住「只预填、不代发」。 */
+let submitCalls = 0
 
 /** 用**真 host 半身**建一份计划，并调 plan_show 拿真 payload。 */
 async function buildRealPlan(root) {
@@ -255,19 +261,33 @@ beforeEach(() => {
  * 挂载面板并等首屏数据到位。每次都用新的 Cordis 上下文调一次 apply，
  * 于是 store 与交互态都是干净的（apply 内部才 createStore，复用会串场）。
  */
-async function mount() {
-  let tab = null
+async function mount(options) {
+  const opts = options === undefined || options === null ? {} : options
+  let tabType = null
+  let tabBody = null
   openTabCalls = []
+  // 手机档「记一条」借宿主输入框：记录它对宿主 composer 的写入与提交。
+  // submit 单独计数，用来断言**只预填、不代发**。
+  draftWrites = []
+  submitCalls = 0
   const slotEntries = []
   const slots = {
     inject: (key, cb) => { cb(); return () => {} },
-    register: (options, component) => { slotEntries.push({ options, component }); return () => {} },
+    register: (options, component) => {
+      slotEntries.push({ options, component })
+      // 官方右栏的正文走 keyed slot：name='sidebar.right.pane.tab' + key=<注册的 id>
+      if (options.name === 'sidebar.right.pane.tab') tabBody = component
+      return () => {}
+    },
   }
   wbModule.apply({
-    get: (name) => (name === 'slots' ? slots : name === 'betterSidebar'
-      ? { registerTab: (def) => { tab = def; return () => {} },
-          openTab: (seed, scope) => { openTabCalls.push({ seed, scope }); return () => {} } }
-      : undefined),
+    get: (name) => (name === 'slots' ? slots
+      // 官方两个服务（替代 better-sidebar 的单一 betterSidebar 服务）
+      : name === 'sidebarRightTabs'
+        ? { register: (def) => { tabType = def; return () => {} } }
+        : name === 'sidebarRight'
+          ? { openTab: (kind, options) => { openTabCalls.push({ kind, options }); return () => {} } }
+          : undefined),
     // Cordis 里 `ctx.slots` 是注入后的服务属性，替身必须也把它摆出来——只给 get()
     // 的话 `ctx.slots.inject` 会直接抛（真实运行时有，测试里没有，就会假失败）。
     slots,
@@ -276,9 +296,22 @@ async function mount() {
     // 一个 tab」，看不出是替身的错。
     effect: (fn) => { fn() },
   })
-  assert.ok(tab !== null, '面板应注册成一个 tab')
+  assert.ok(tabType !== null, '面板应注册成一个 tab 类型')
+  assert.ok(tabBody !== null, '面板应注册一个 tab 正文')
 
-  const holder = tab.component({ scope: { sessionId: SESSION_ID } })
+  // 正文组件经标准 session prop 读 visible（useTabInfo）与当前会话（useSessions），
+  // 替身按官方形状喂给它——真实运行时这两个钩子由 slot 框架注入。
+  // inputActions 是宿主 composer 的公开操作面（SessionStandardProps 提供），
+  // 手机档的「记一条」靠它把话预填进宿主输入框。
+  const holder = tabBody({
+    useTabInfo: () => ({ tab: { visible: true } }),
+    useSessions: (sel) => sel({ current: SESSION_ID }),
+    // noInputActions：模拟「老宿主 / composer 未挂载」，用来钉住兜底路径。
+    inputActions: opts.noInputActions === true ? undefined : {
+      setDraft: (text) => { draftWrites.push(text) },
+      submit: () => { submitCalls++ },
+    },
+  })
   const Panel = holder.type
   const props = holder.props
 
@@ -291,7 +324,9 @@ async function mount() {
   }
   render()
   await flush()
-  return { render, view: render(), badge: () => tab.badge(), slotEntries }
+  // 官方右栏没有 tab badge API（better-sidebar 的 badge 是它自己的扩展），
+  // 未完成数由「页脚入口按钮」的 data-count + CSS 伪元素承载——见页脚入口用例。
+  return { render, view: render(), tabType, slotEntries }
 }
 
 /**
@@ -397,23 +432,33 @@ test('面板渲染出计划树、收件箱与设置入口（不白屏）', async
   assert.ok(headBtn(view, '设置') !== null, '应有「设置」入口')
 })
 
-test('tab 角标显示未完成数', async () => {
-  const { badge } = await mount()
-  assert.equal(badge(), 3, '三条待办都还没完成')
+// better-sidebar 有 tab badge API（`badge: () => number`），官方右侧栏**没有**。
+// 但「未完成数」这个能力没有丢：它挂在页脚入口按钮的 `data-count` 上（那里本来
+// 就因为手机 chip 的 textContent 约束而这么做了）。这个用例因此改成断言入口按钮
+// 的 data-count——**能力等价，载体换了**。
+test('未完成数挂在页脚入口的 data-count 上（官方右栏无 tab badge API）', async () => {
+  const { slotEntries } = await mount()
+  const entry = slotEntries.find((e) => e.options.id === 'dsh-workbench-entry')
+  assert.ok(entry !== undefined, '应注册页脚入口')
+  const el = entry.component()
+  assert.equal(el.props['data-count'], '3', '三条待办都还没完成')
 })
 
-test('两个分栏标题结构一致：只有「标题 + 计数」，都不带图标', async () => {
+test('顶层只有一栏：不再有「收件箱」与「工作计划」两段标题', async () => {
   const { view } = await mount()
-  // 这两段（收件箱 / 工作计划）是并列的，只差一个图标会显得一段比另一段更重要。
-  // 层级交给字重与留白——这条断言就是那个决定的护栏。
-  const inbox = firstByClass(view, 'dsh-wb-inboxhead')
+  // 用户要求合并：「不要分收件箱和工作计划了，那是直接全部变成了这个工作计划。」
+  //
+  // 那个区分制造了一个用户并不关心的中间态：刚记下的待办既不属于哪个计划、
+  // 又还不算「工作计划」。现在顶层就是一条平铺列表。
+  assert.equal(byClass(view, 'dsh-wb-inboxhead').length, 0, '不该再有「收件箱」段标题')
+  // 保留的唯一标题是「全部」——它现在只报数量，表明「这里是全部顶层条目」。
   const sect = firstByClass(view, 'dsh-wb-secthead')
-  assert.ok(inbox !== null && sect !== null)
-  for (const [name, head] of [['收件箱', inbox], ['工作计划', sect]]) {
-    assert.equal(findAll(head, (el) => el.type === 'svg').length, 0, name + ' 标题前不该有图标')
-    const kids = (head.children || []).filter((c) => c !== null && c !== undefined)
-    assert.equal(kids.length, 2, name + ' 标题段只有「标题 + 计数」两个元素')
-  }
+  assert.ok(sect !== null, '应有一条顶层标题（全部）')
+  assert.match(textOf(sect), /全部/, '标题读作「全部」')
+  // 结构护栏不变：标题段只有「标题 + 计数」两个元素、不带图标。
+  assert.equal(findAll(sect, (el) => el.type === 'svg').length, 0, '标题前不该有图标')
+  assert.equal((sect.children || []).filter((c) => c !== null && c !== undefined).length, 2,
+    '标题段只有「标题 + 计数」两个元素')
 })
 
 test('空工作区也能记下第一件事（入口在浮球里；它就是第一个节点）', async () => {
@@ -968,6 +1013,130 @@ test('没有内容点解析：不发请求，只提示', async () => {
   assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /问一句|说点什么|贴个文件/)
 })
 
+test('删除建议：渲染成卡片，**点确认才删**——不因为模型说了就自动落库', async () => {
+  // 用户原话：「我需要可以删除任务和合并任务，你要增加，在里面增加这个权限。」
+  // 在此之前模型只能答「schema 里也没有删除字段，我不会用改标题之类的动作伪装成
+  // 删除」——这条用例守住「补上了，而且仍然要人确认」。
+  withAi()
+  aiReply = {
+    reply: '· 建议删掉重复的那条',
+    deletes: [{
+      target: '收件箱一条', why: '与另一条是同一件事',
+      id: idOf('收件箱一条'), title: '收件箱一条', children: 0, ok: true,
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '收件箱那条不用了' } })
+  const before = requests.length
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  // 解析出来只渲染卡片，**这一轮没有任何删除写入**。
+  const card = byClass(render(), 'dsh-wb-aitask')
+    .find((el) => textOf(el).indexOf('删除：') >= 0)
+  assert.ok(card !== undefined, '应渲染删除卡')
+  const writes = requests.slice(before).filter((r) => String(r.path).indexOf('node-remove') >= 0)
+  assert.equal(writes.length, 0, '解析阶段绝不能删——只是提议')
+  assert.match(textOf(card), /回滚/, '要说清可回滚，用户才敢点')
+
+  // 点确认才真的删。
+  const confirm = findAll(card, (x) => classesOf(x).includes('dsh-wb-aibtn'))
+    .find((b) => textOf(b).indexOf('确认删除') >= 0)
+  assert.ok(confirm !== undefined, '删除卡上要有明确的确认按钮')
+  const beforeClick = requests.length
+  confirm.props.onClick(ev())
+  await settle()
+  const removed = requests.slice(beforeClick).filter((r) => String(r.path).indexOf('node-remove') >= 0)
+  assert.equal(removed.length, 1, '点确认后应恰好删一次')
+  assert.equal(removed[0].body.node, idOf('收件箱一条'), '删的是那一条')
+})
+
+test('删除建议：对不上的目标不显示确认键，只说明「没对上」', async () => {
+  withAi()
+  aiReply = {
+    reply: '· 找到了要删的',
+    deletes: [{ target: '不存在的一条', why: '重复', id: null, title: '', children: 0, ok: false }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '删掉那条' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = byClass(render(), 'dsh-wb-aitask')
+    .find((el) => textOf(el).indexOf('删除：') >= 0)
+  assert.ok(card !== undefined, '对不上也要渲染出来（不能悄悄丢）')
+  assert.match(textOf(card), /没对上/, '要说明没对上')
+  const confirm = findAll(card, (x) => classesOf(x).includes('dsh-wb-aibtn'))
+    .find((b) => textOf(b).indexOf('确认删除') >= 0)
+  assert.equal(confirm, undefined, '没对上的不能有确认键（点了会删错）')
+})
+
+test('建议汇总栏会把「可删除」也算进分类里', async () => {
+  withAi()
+  aiReply = {
+    reply: '· 一条可删',
+    deletes: [{ target: '收件箱一条', why: '重复', id: idOf('收件箱一条'), title: '收件箱一条', children: 0, ok: true }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '删掉重复的' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-aisummaryhead')), /1 条可删除/)
+})
+
+test('建议汇总栏：先给分类汇总（增加/改动/可合并），再排具体卡片', async () => {
+  // 用户原话：「你要有一个下面有你解读出来的工作建议，是要增加任务，还是需要修改
+  // 任务，还是要总结。你要下面要有建议的，然后让我选择。」
+  withAi()
+  aiReply = {
+    reply: '· 拆出 1 条：补台账\n· 另有一条可以合并',
+    tasks: [{ title: '补台区台账', due: '', priority: '', note: '', plan: '', candidates: [] }],
+    edits: [{ target: '工作主线', patch: { due: '2026-10-01' }, why: '截止该填了' }],
+    merges: [{ keep: '工作主线', fold: ['子计划'], title: '', why: '两条是一件事' }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '补台账，顺便看看有没有重复的' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const summary = firstByClass(render(), 'dsh-wb-aisummary')
+  assert.ok(summary !== null, '应有建议汇总栏')
+  const head = textOf(firstByClass(render(), 'dsh-wb-aisummaryhead'))
+  assert.match(head, /1 条新任务/, '要报出新增条数')
+  assert.match(head, /1 条改动/, '要报出改动条数')
+  assert.match(head, /1 处可合并/, '要报出可合并处数')
+
+  // 汇总排在卡片**之前**（先看结论，再看明细）。
+  const tree = render()
+  const sumIdx = JSON.stringify(tree).indexOf('dsh-wb-aisummary')
+  const cardIdx = JSON.stringify(tree).indexOf('dsh-wb-aitask')
+  assert.ok(sumIdx >= 0 && cardIdx >= 0 && sumIdx < cardIdx, '汇总栏应排在卡片之前')
+})
+
+test('建议汇总栏：只有「增加」给一键全采纳，改动与合并必须逐条确认', async () => {
+  withAi()
+  aiReply = {
+    reply: '· 有改动',
+    tasks: [{ title: '新任务甲', due: '', priority: '', note: '', plan: '', candidates: [] }],
+    edits: [{ target: '工作主线', patch: { due: '2026-10-01' }, why: '截止该填了' }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '记一条，顺便改一条' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  // 全采纳按钮只针对新增条目——改的是已经在用的数据，错得比新建难受。
+  const allBtn = byClass(render(), 'dsh-wb-aisummary')
+    .flatMap((el) => findAll(el, (x) => classesOf(x).includes('dsh-wb-aibtn')))
+    .find((b) => textOf(b).indexOf('全部增加') >= 0)
+  assert.ok(allBtn !== undefined, '应有「全部增加」按钮')
+  assert.match(textOf(allBtn), /全部增加（1）/, '按钮上要带条数')
+
+  // 明说改动要逐条确认，用户才不会以为「全部增加」把改动也一起吞了。
+  const note = textOf(firstByClass(render(), 'dsh-wb-aisummary'))
+  assert.match(note, /逐条/, '要说明改动/合并需逐条确认')
+})
+
 test('解析结果渲染成草稿；点建议**不直接落库**，而是填进详情表单等确认', async () => {
   withAi()
   aiReply = {
@@ -992,7 +1161,7 @@ test('解析结果渲染成草稿；点建议**不直接落库**，而是填进�
   const drafted = render()
   const chipTexts = chipsOf(drafted, 0).map((c) => textOf(c))
   assert.equal(chipTexts[0], '建议 ↳ 子计划', '模型点名的排最前，且标出「建议」')
-  assert.ok(chipTexts.includes('收件箱'), '收件箱永远是备选')
+  assert.ok(chipTexts.includes('顶层'), '「先放着」永远是备选（顶层两栏合并后的叫法）')
   assert.match(chipTexts[chipTexts.length - 1], /建计划/)
 
   requests = []
@@ -1037,7 +1206,7 @@ test('选「收件箱」= 表单里 parent 为空，保存后是顶层待办', a
   await settle()
 
   requests = []
-  chipsOf(render(), 0).find((c) => textOf(c) === '收件箱').props.onClick(ev())
+  chipsOf(render(), 0).find((c) => textOf(c) === '顶层').props.onClick(ev())
   await settle()
 
   const place = firstByClass(render(), 'dsh-wb-fadd')
@@ -1626,6 +1795,179 @@ test('快捷问法：点一下就把问题发出去（不用想怎么问）', as
   assert.equal(call.body.text, '我今天该做什么')
 })
 
+test('单条建议不进向导：没有「第 1 / 1 条」，也没有「跳过」', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 语音说一句 → 只产出**一条**建议。这正是最常见的那一档。
+    aiReply = { reply: '加好了。', tasks: [{ title: '明天去踢球', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] }] }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '明天去踢球' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const txt = textOf(render())
+    // 「第 1 / 1 条」不含任何信息；「跳过」对唯一一条没有意义（跳过了就什么都不剩）。
+    assert.doesNotMatch(txt, /1 \/ 1/, '单条不该出现队列进度——那是纯噪音')
+    assert.doesNotMatch(txt, /跳过/, '单条不该有跳过（跳过唯一一条等于放弃全部）')
+    // 但那张卡本身要在——用户看完点一次就结束。
+    assert.ok(firstByClass(render(), 'dsh-wb-aitask') !== null, '单条应直接给那张卡')
+  } finally {
+    restore()
+  }
+})
+
+test('总览：拿不准的条目标 ⚠ 且排在最前，主按钮不催用户跳过', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 三条里两条没日期（= 拿不准）、一条有日期（= 已填好）。
+    aiReply = {
+      reply: '读出 3 条。',
+      tasks: [
+        { title: '买牛奶', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] },
+        { title: '交电费', due: '', priority: '', note: '', plan: '', candidates: [] },
+        { title: '预约牙医', due: '', priority: '', note: '', plan: '', candidates: [] },
+      ],
+    }
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '看这张清单' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const warns = byClass(render(), 'dsh-wb-ovwarn')
+    assert.equal(warns.length, 2, '两条没日期的要标出来——它们是「需要你定」的')
+    // 有疑问的排最前：先把要动脑的解决，剩下的才好一键过。
+    const order = byClass(render(), 'dsh-wb-ovrow').map((r) => textOf(r))
+    assert.match(order[0], /交电费|预约牙医/, '有疑问的应排在最前')
+
+    // **有 ⚠ 时主按钮不该是「全部就这么定」**——那等于鼓励用户跳过自己该定的部分。
+    const txt = textOf(render())
+    assert.doesNotMatch(txt, /全部就这么定/, '还有拿不准的，不该主推一键全定')
+    assert.match(txt, /先看有疑问的 2 件/, '主按钮应是「先看有疑问的」')
+  } finally {
+    restore()
+  }
+})
+
+test('总览：全无疑问时才给「全部就这么定」', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    aiReply = {
+      reply: '读出 2 条。',
+      tasks: [
+        { title: '买牛奶', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] },
+        { title: '交电费', due: '2026-09-28', priority: '', note: '', plan: '', candidates: [] },
+      ],
+    }
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '看这张清单' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    // 都有日期 → 用户看一眼就能过，这才该给一键。
+    const txt = textOf(render())
+    assert.match(txt, /全部就这么定（2 件）/, '都填好了就该能一键过')
+  } finally {
+    restore()
+  }
+})
+
+test('总览：混了改动/合并时不给「全部就这么定」（那时按钮会撒谎）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // aiApplyAll 只新建 tasks；改动动的是已有数据，必须逐条确认。
+    // 按钮若写「全部」而实际只做了新建，就是在骗用户。
+    aiReply = {
+      reply: '一增一改。',
+      tasks: [{ title: '买牛奶', due: '2026-09-26', priority: '', note: '', plan: '', candidates: [] }],
+      edits: [{ target: '交电费', patch: { due: '2026-09-28' }, why: '你说挪到 28 号' }],
+    }
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '买牛奶，顺便把交电费挪到 28 号' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const txt = textOf(render())
+    assert.doesNotMatch(txt, /全部就这么定/, '有改动项时不该给「全部」——那会盖住要逐条确认的部分')
+    assert.match(txt, /逐条确认/, '应提示逐条确认')
+  } finally {
+    restore()
+  }
+})
+
+test('多条建议才走向导：有进度、可跳过', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 图片清单那种一次拆出好几条的场景。
+    aiReply = {
+      reply: '读出 3 条。',
+      tasks: [
+        { title: '买牛奶', due: '', priority: '', note: '', plan: '', candidates: [] },
+        { title: '交电费', due: '', priority: '', note: '', plan: '', candidates: [] },
+        { title: '预约牙医', due: '', priority: '', note: '', plan: '', candidates: [] },
+      ],
+    }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '看这张清单' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const txt = textOf(render())
+    // 多条时**先进总览**（GOV.UK「先给任务清单页」）：一屏可扫读的列表，
+    // 而不是七张带徽章的大卡——这正是「8 秒看都看不完」的解法。
+    assert.match(txt, /3/, '总览要说清总共有几件')
+    assert.ok(byClass(render(), 'dsh-wb-ovlist').length > 0, '多条应先给总览列表')
+    // 总览上直接可以「逐条看」或「全部定」，所以「12 条要 12 次下一步」不成立。
+    assert.match(txt, /逐条看/, '总览应给逐条入口')
+  } finally {
+    restore()
+  }
+})
+
+test('等待块：超过 10 秒的等待有中断入口（Nielsen 硬要求）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    const { view, render } = await mount()
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '问一句' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    // 不 await：此刻正处在「模型在算」的状态里。
+
+    const wait = firstByClass(render(), 'dsh-wb-wait')
+    assert.ok(wait !== null, '等待期间应有等待块（不是一个空白框）')
+    const cancel = byClass(render(), 'dsh-wb-waitcancel')
+    assert.equal(cancel.length, 1, '>10 秒的等待必须有一个标示清楚的中断方式')
+    assert.match(textOf(cancel[0]), /算了/, '中断按钮要是个看得懂的词，不是光秃秃一个 ✕')
+  } finally {
+    restore()
+  }
+})
+
+test('快捷问法：手里有东西时就让位（同一屏不重复问同样的事）', async () => {
+  withAi()
+  aiReply = { reply: '该做：补台账', tasks: [] }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onFocus(ev())
+  // 空手时问法在——那正是「我该问点什么」的时候。
+  assert.ok(byClass(render(), 'dsh-wb-quick').length > 0, '空手时应有快捷问法')
+
+  // 问过一轮之后，屏幕上已经有问答了；再摆一排「我今天该做什么 / 哪些逾期了」
+  // 就是同一屏里重复问同样的事——用户读完答案正要动手，那排问法只是噪音。
+  const chip = byClass(render(), 'dsh-wb-chip').find((c) => textOf(c) === '我今天该做什么')
+  chip.props.onClick(ev())
+  await settle()
+
+  const txt = textOf(render())
+  assert.doesNotMatch(txt, /哪些逾期了/, '有内容后不该再摆快捷问法')
+  assert.doesNotMatch(txt, /总结一下进展/, '有内容后不该再摆快捷问法')
+})
+
 test('草稿卡给出专家意见与历史依据（新增时要结合当前与历史）', async () => {
   withAi()
   aiReply = {
@@ -1849,58 +2191,50 @@ test('详情页：有未完成子项的计划，「已完成」按钮禁用并�
   assert.match(String(doneBtn.props.title), /自动完成/)
 })
 
-// ---------------------------------------------------------------- 纳入工作计划
+// ------------------------------------------------- 顶层平铺（原「纳入工作计划」）
 
-test('收件箱行有常显的「纳入计划」按钮，点了写 node-set(filed:true)', async () => {
+test('顶层待办与计划平铺在同一栏，不再需要「纳入计划」这一步', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
+  // 一条顶层待办 + 一个顶层计划，同时摆在顶层。
   planPayload.nodes.push({ id: 'w1', type: 'todo', title: '独立事项', status: 'todo' })
   try {
     const { view } = await mount()
-    const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap') && textOf(el).includes('独立事项'))[0]
-    assert.ok(row !== undefined, '应有这条收件箱行')
-    const btn = byClass(row, 'dsh-wb-adopt')[0]
-    assert.ok(btn !== undefined, '收件箱行应有「纳入计划」按钮')
-    assert.equal(textOf(btn), '纳入计划')
-    requests = []
-    btn.props.onClick(ev())
-    await settle()
-    const req = requests.find((r) => r.path === '/api/workbench/node-set')
-    assert.ok(req !== undefined, '应走 /node-set（不新增通路）')
-    assert.equal(req.body.node, 'w1')
-    assert.equal(req.body.filed, true)
+    const page = view
+
+    // 两栏已合并：不该再有「收件箱」段，也不该再有「工作计划」段。
+    assert.equal(byClass(page, 'dsh-wb-inboxhead').length, 0, '不该再有收件箱分栏')
+    assert.ok(!byClass(page, 'dsh-wb-secttitle').map(textOf).includes('工作计划'),
+      '不该再有独立的工作计划分栏')
+
+    // 但那条顶层待办**照常显示**——它不需要先被「纳入」什么。
+    const row = findAll(page, (el) => classesOf(el).includes('dsh-wb-todowrap')
+      && textOf(el).includes('独立事项'))[0]
+    assert.ok(row !== undefined, '顶层待办应直接出现在列表里')
+
+    // 「纳入计划」按钮已删——没有这个中间态了。
+    assert.equal(byClass(page, 'dsh-wb-adopt').length, 0, '不该再有「纳入计划」按钮')
+
+    // 顶层待办要有勾选框（完成语义与形态脱钩）。
+    const box = byClass(row, 'dsh-wb-check')[0] || byClass(row, 'dsh-wb-todobox')[0]
+      || findAll(row, (el) => el.type === 'input')[0]
+    assert.ok(box !== undefined, '顶层待办应有勾选框')
   } finally {
     planPayload = keep
   }
 })
 
-test('已纳入工作计划的叶子：进工作计划栏、有勾选框、可退回，且不再留在收件箱', async () => {
+test('老数据里的 filed 键不再影响分栏（顶层一律平等）', async () => {
   const keep = planPayload
   planPayload = JSON.parse(JSON.stringify(keep))
-  planPayload.nodes.push({ id: 'w2', type: 'todo', title: '已纳入的事', status: 'todo', filed: true })
+  // 历史上 filed:true 的待办会跳到「工作计划」栏；现在它只是普通顶层条目。
+  planPayload.nodes.push({ id: 'w2', type: 'todo', title: '带着老标记的事', status: 'todo', filed: true })
   try {
-    const { render } = await mount()
-    const page = render()
-    assert.ok(byClass(page, 'dsh-wb-secttitle').map(textOf).includes('工作计划'),
-      '收件箱下方应有「工作计划」分栏标题')
-
-    const inbox = byClass(page, 'dsh-wb-inbox')[0]
-    assert.ok(!textOf(inbox).includes('已纳入的事'), '纳入之后就不该再留在收件箱')
-
-    const planRow = findAll(page, (el) => classesOf(el).includes('dsh-wb-plan') && textOf(el).includes('已纳入的事'))[0]
-    assert.ok(planRow !== undefined, '应以独立条目出现在工作计划栏')
-    // 它是叶子，所以必须还能勾完成（完成语义与形态脱钩）。
-    assert.ok(byClass(planRow, 'dsh-wb-plantitle')[0] !== undefined)
-
-    const back = byClass(planRow, 'dsh-wb-act')
-      .find((b) => String(b.props.title || '').includes('退回收件箱'))
-    assert.ok(back !== undefined, '纳入不该是单向门：要有退回入口')
-    requests = []
-    back.props.onClick(ev())
-    await settle()
-    const req = requests.find((r) => r.path === '/api/workbench/node-set')
-    assert.equal(req.body.filed, false)
-    assert.equal(req.body.node, 'w2')
+    const { view } = await mount()
+    // 它照常显示，位置由它在 nodes[] 里的次序决定，而不是由 filed 决定。
+    const row = findAll(view, (el) => classesOf(el).includes('dsh-wb-todowrap')
+      && textOf(el).includes('带着老标记的事'))[0]
+    assert.ok(row !== undefined, '带 filed 的老数据仍要正常显示（不因字段废弃而消失）')
   } finally {
     planPayload = keep
   }
@@ -1969,27 +2303,252 @@ function stubCoarse(matches) {
   return () => { globalThis.window.matchMedia = old }
 }
 
-test('浮球长在面板树里，且**所有设备**都出现（它不再只是手机形态）', async () => {
+test('手机档没有浮球、改用底部常驻输入条；桌面档仍是浮球', async () => {
+  // 手机档：底部常驻输入条（借宿主输入框预填），**没有浮球**。
+  // 用户明确要求：「在手机版上不需要浮球了，直接用现在的输入框就行」。
   let restore = stubCoarse(true)
-  const touchMount = await mount()
-  assert.ok(byClass(touchMount.view, 'dsh-wb-fabball').length > 0, '触摸设备上面板里应有浮球')
-  // 浮球本身是面板树的一部分（打开计划面板才存在），不是注册到宿主的框架级浮层。
-  // 唯一注册到宿主插槽的是**侧栏页脚入口**——见下一条用例；这里只确认浮球不是那么来的。
-  assert.ok(byClass(touchMount.view, 'dsh-wb-fabball').length > 0, '浮球来自面板树，不是插槽')
-  restore()
+  try {
+    const touchMount = await mount()
+    assert.equal(byClass(touchMount.view, 'dsh-wb-fabball').length, 0,
+      '手机档不应再有浮球（改为底部常驻输入条）')
+    assert.ok(byClass(touchMount.view, 'dsh-wb-dockai').length > 0,
+      '手机档应有底部常驻输入条')
+  } finally {
+    restore()
+  }
 
+  // 桌面档：浮球保持原样——面板住在一个又宽又矮的地方，常驻一行会每屏少一条任务。
   restore = stubCoarse(false)
-  const deskMount = await mount()
-  assert.ok(byClass(deskMount.view, 'dsh-wb-fabball').length > 0,
-    '桌面端也要有浮球——面板顶部那行 AI 输入已经撤掉，这是唯一入口')
-  restore()
+  try {
+    const deskMount = await mount()
+    assert.ok(byClass(deskMount.view, 'dsh-wb-fabball').length > 0,
+      '桌面档仍要有浮球——它是那里唯一的 AI 入口')
+    assert.equal(byClass(deskMount.view, 'dsh-wb-dockai').length, 0,
+      '桌面档不应有底部输入条（那是手机形态）')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档「记一条」：回车**直接落库**进收件箱，不绕对话、不等确认', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view, render } = await mount()
+
+    const bar = byClass(view, 'dsh-wb-dockai')[0]
+    assert.ok(bar !== undefined, '手机档应有底部常驻输入条')
+
+    const input = firstByClass(view, 'dsh-wb-aiinput')
+    assert.ok(input !== null, '底部条里应有输入框')
+    input.props.onChange({ target: { value: '台区 A 改造' } })
+
+    const before = requests.length
+    const afterTyping = firstByClass(render(), 'dsh-wb-aiinput')
+    afterTyping.props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+    await flush()
+
+    // **一次动作就落库**：直接调 /node-add 写进 plan.json。
+    // 用户原话：「输入之后它填进去的就不会自动生成任务，反而要回套到你这个原生的
+    // 对话框里面…然后我要再等确认，它才能记录进去。这个是不行的。」
+    const addCall = requests.slice(before).filter((r) => String(r.path).indexOf('/node-add') >= 0).pop()
+    assert.ok(addCall !== undefined, '回车应直接落库（/node-add）')
+    assert.match(JSON.stringify(addCall.body), /台区 A 改造/, '要带上用户敲的原话')
+
+    // **不许碰宿主输入框**：那会把待办伪装成一条发给 agent 的消息，
+    // 于是必然带出「谁来处理、要不要确认」这一整套对话流程。
+    assert.equal(draftWrites.length, 0, '不应把待办填进宿主输入框')
+    assert.equal(submitCalls, 0, '不应替用户发消息')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档「记一条」：点击「记下」与回车同一条路（都直接落库）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view, render } = await mount()
+
+    const input = firstByClass(view, 'dsh-wb-aiinput')
+    input.props.onChange({ target: { value: '按按钮记一条' } })
+
+    // 「记下」那颗按钮：有字可确认时才显出来（与发送键同一条纪律）。
+    const btn = byClass(render(), 'dsh-wb-iconbtn').filter((b) => b.props.disabled !== true).pop()
+    assert.ok(btn !== undefined, '有字时应有一可点的确认按钮')
+    const before = requests.length
+    btn.props.onClick(ev())
+    await flush()
+
+    const addCall = requests.slice(before).filter((r) => String(r.path).indexOf('/node-add') >= 0).pop()
+    assert.ok(addCall !== undefined, '点「记下」也应直接落库')
+    assert.match(JSON.stringify(addCall.body), /按按钮记一条/)
+  } finally {
+    restore()
+  }
+})
+
+test('手机档「记一条」：空输入什么都不做（不白写一次盘）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view, render } = await mount()
+    const before = requests.length
+    firstByClass(render(), 'dsh-wb-aiinput').props.onKeyDown({ key: 'Enter', preventDefault: () => {} })
+    await flush()
+    assert.equal(requests.length, before, '空输入不应产生任何请求')
+    assert.ok(view !== null)
+  } finally {
+    restore()
+  }
+})
+
+test('手机档 + 有模型：底部是完整 composer（输入框 + 图片 + 确认），不是纯输入框', async () => {
+  // 这是用户要的核心形态：「在插件里面复刻一下这个类似的专用框，就包括[附件]啊，
+  // 还有一个就是可以输入确认的按钮啊…因为我还是需要输入图片，然后让它识别，
+  // 然后做成任务。」
+  const restore = stubCoarse(true)
+  withAi()
+  try {
+    const { view } = await mount()
+
+    const dock = byClass(view, 'dsh-wb-dockai')[0]
+    assert.ok(dock !== undefined, '手机档底部应有常驻 composer 块')
+    assert.ok(firstByClass(view, 'dsh-wb-aiinput') !== null, '应有输入框')
+
+    // 图片入口（label + 隐藏的 file input）：拍照/选图 → /ai-parse 让模型识别成任务。
+    const pic = firstByClass(view, 'dsh-wb-pic')
+    assert.ok(pic !== null, '应有图片/附件入口')
+
+    // 确认按钮：走 /ai-parse。
+    //
+    // 注意它**不按空输入禁用**——空输入由 runAi 自己挡（这是 aiBlock 原有设计，
+    // 桌面浮球与手机档共用同一份逻辑，所以行为一致）。这条断言因此只钉「有按钮」，
+    // 空输入不写盘由下面「空输入什么都不做」那条用例覆盖。
+    const send = firstByClass(view, 'dsh-wb-send')
+    assert.ok(send !== null, '应有确认（发送）按钮')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档 + 有模型：贴图后确认键可点，提交走 /ai-parse（图片识别成任务那条路）', async () => {
+  const restore = stubCoarse(true)
+  withAi()
+  try {
+    const { view, render } = await mount()
+
+    // 只有图片、没有文字时，确认键也必须可点——拍照记任务正是「一个字都不打」。
+    // 这里直接走输入框那条（贴图路径由 /ai-parse 的 images 字段覆盖，见 host 测试）。
+    const input = firstByClass(view, 'dsh-wb-aiinput')
+    input.props.onChange({ target: { value: '把这张清单拆成任务' } })
+    const send = firstByClass(render(), 'dsh-wb-send')
+    assert.equal(send.props.disabled, false, '有内容时确认键应可点')
+
+    const before = requests.length
+    send.props.onClick(ev())
+    await flush()
+
+    const parseCall = requests.slice(before).filter((r) => String(r.path).indexOf('/ai-parse') >= 0).pop()
+    assert.ok(parseCall !== undefined, '确认应走 /ai-parse 让模型拆成任务')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档底部块：收起时只有一条输入行，出结果才升成 sheet', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    // 有内容可答：让 ai-parse 回一段 reply，才会触发展开。
+    aiReply = { reply: '今天有三件事值得动。', tasks: [{ title: '补台账', due: '', priority: '', note: '', plan: '', candidates: [] }] }
+
+    const { view, render } = await mount()
+    const dock = byClass(view, 'dsh-wb-dockai')[0]
+    assert.ok(dock !== undefined, '手机档应有底部块')
+    // **收起态**：class 里没有 on。
+    // 这一条是本次改动的核心——常驻的只该是输入条本身，不是「输入条 + 结果区」。
+    assert.doesNotMatch(String(dock.props.className), /\bon\b/,
+      '默认应是收起态（只有一条输入行）')
+
+    // 提交一次，产出结果后应升成 sheet。
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '今天做什么' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const after = byClass(render(), 'dsh-wb-dockai')[0]
+    assert.match(String(after.props.className), /\bon\b/,
+      '出结果后应升成 sheet（展开态）')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档底部块：展开后有且只有一个收起入口', async () => {
+  const restore = stubCoarse(true)
+  try {
+    withAi()
+    aiReply = { reply: '有结果。', tasks: [] }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '问一句' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    // 展开后要能收回去，否则升起来就回不到计划树了。
+    const collapse = byClass(render(), 'dsh-wb-aibtn').filter((b) => b.props.title !== undefined
+      && String(b.props.title).indexOf('收起这块') >= 0)
+    assert.equal(collapse.length, 1, '恰好一个收起入口（同一个动作不摆两个控件）')
+
+    collapse[0].props.onClick(ev())
+    const folded = byClass(render(), 'dsh-wb-dockai')[0]
+    assert.doesNotMatch(String(folded.props.className), /\bon\b/, '点了收起应回到收起态')
+  } finally {
+    restore()
+  }
+})
+
+test('桌面档底部块：不出现手机专属的「收起」按钮（浮层有自己的 ✕）', async () => {
+  const restore = stubCoarse(false)
+  try {
+    const { view } = await mount()
+    const collapse = byClass(view, 'dsh-wb-aibtn').filter((b) => b.props.title !== undefined
+      && String(b.props.title).indexOf('收起这块') >= 0)
+    assert.equal(collapse.length, 0, '桌面档不应有手机专属的收起按钮')
+  } finally {
+    restore()
+  }
+})
+
+test('手机档底部块的 DOM 层级：输入行是 aiwrap 的直接子元素（收起态 CSS 靠它命中）', async () => {
+  const restore = stubCoarse(true)
+  try {
+    const { view } = await mount()
+    const wrap = firstByClass(view, 'dsh-wb-aiwrap')
+    assert.ok(wrap !== null, '底部块里应有 aiwrap（aiBlock() 的容器）')
+
+    // **这条钉住的是一个真实踩过的坑**：收起态的 CSS 写的是
+    //     .dsh-wb-dockai .dsh-wb-aiwrap > *  { display:none }
+    //     .dsh-wb-dockai .dsh-wb-aiwrap > .dsh-wb-aibar { display:flex }
+    // 它要求输入行（.dsh-wb-aibar）是 aiwrap 的**直接子元素**。
+    // 第一版选择器写成 `.dsh-wb-dockai > .dsh-wb-aibar`（漏了 aiwrap 这一层），
+    // 于是那条规则永远命中 0 个元素——收起态会把输入框也一起藏掉。
+    // 这个 bug 单测「class 名对不对」是查不出来的，必须断言层级。
+    const directBar = (wrap.children || []).find((kid) => classesOf(kid).includes('dsh-wb-aibar'))
+    assert.ok(directBar !== undefined,
+      '输入行必须是 aiwrap 的直接子元素——否则收起态的选择器命中不到，会把输入框一起藏掉')
+  } finally {
+    restore()
+  }
 })
 
 test('侧栏页脚入口：形态满足 zen 的收割规则，点了走 openTab（而不是代点 DOM）', async () => {
   const { slotEntries } = await mount()
-  assert.equal(slotEntries.length, 1, '只注册一个插槽：侧栏页脚入口')
-  assert.equal(slotEntries[0].options.name, 'sidebar.footer.action')
-  assert.equal(slotEntries[0].options.id, 'dsh-workbench-entry')
+  // 两个插槽注册点：① 侧栏页脚入口（本用例）② 官方右栏的 tab 正文
+  // （'sidebar.right.pane.tab'，由 tab 注册用例覆盖）。
+  assert.equal(slotEntries.length, 2, '侧栏页脚入口 + 官方右栏 tab 正文')
+  const entrySlot = slotEntries.find((e) => e.options.name === 'sidebar.footer.action')
+  assert.ok(entrySlot !== undefined, '应有侧栏页脚入口')
+  assert.equal(entrySlot.options.id, 'dsh-workbench-entry')
+  assert.equal(slotEntries.filter((e) => e.options.name === 'sidebar.right.pane.tab').length, 1,
+    '应恰好注册一个官方右栏 tab 正文')
 
   // 手机外壳插件 dsh-zen-remote 的 scanHarvest 会把这个插槽的**每个直接子节点**
   // 收成主屏的一颗 chip，规则很具体——所以这里逐条钉住，免得哪天改坏了没发现：
@@ -2017,16 +2576,13 @@ test('侧栏页脚入口：形态满足 zen 的收割规则，点了走 openTab�
   assert.equal(findAll(el, (x) => classesOf(x).includes('dsh-wb-entrycount')).length, 0,
     '计数不能是真实节点')
 
-  // 点击走 better-sidebar 的**服务**，而不是代点某个 DOM 按钮——后者会随宿主的
-  // 类名散列失效，这正是 zen 1.1.15 现在的病（它的 header 按钮转发到
+  // 点击走官方右侧栏的**服务**，而不是代点某个 DOM 按钮——后者会随宿主的
+  // 类名散列失效，这正是 zen 1.1.15 的病（它的 header 按钮转发到
   // `[data-dsh-better-sidebar] button[class$="_toggleButton"]`，实测命中 0）。
   el.props.onClick({ stopPropagation: () => {} })
   assert.equal(openTabCalls.length, 1, '点一次 = 调一次 openTab')
-  assert.equal(openTabCalls[0].seed.type, 'dsh-workbench:plan', '要打开的是自己的 tab')
-  // **不能**写 target:'bottom'：openTab 里 `seed.target !== 'bottom'` 才是
-  // 「走 surface（官方右侧栏）」那条分支，写了 bottom 会被塞进底部工作台。
-  assert.equal(openTabCalls[0].seed.target, undefined,
-    '要开右侧栏：不传 target 才走 surface 分支')
+  // 官方 openTab 只收 kind 字符串，不收 better-sidebar 的 `{ type }` 对象。
+  assert.equal(openTabCalls[0].kind, 'dsh-workbench', '要打开的是自己的 tab kind')
 })
 
 test('浮球点开就是一个输入框：说一句统一走 /ai-parse，由模型判断是记录还是回答', async () => {
@@ -2098,11 +2654,11 @@ test('点开浮层助手先说一句「现在什么情况」——本地算的�
   const brief = firstByClass(view, 'dsh-wb-aibrief')
   assert.ok(brief !== null, '浮层里应该有一行现状')
   assert.match(textOf(brief), /现在：|眼下没有/, '要么给数字，要么明说没什么')
-  // fixture 里有一条顶层待办（收件箱一条），所以应该给出「收件箱 1」
-  assert.match(textOf(brief), /收件箱 1/)
+  // fixture 里有一条顶层待办，所以应该给出「顶层 1」（两栏合并后的叫法）。
+  assert.match(textOf(brief), /顶层 1/)
 
-  // 点它：收起浮层（收件箱没有对应的筛选芯片，所以只是把人送回面板）
-  const chip = byClass(brief, 'dsh-wb-chip').find((b) => textOf(b).includes('收件箱'))
+  // 点它：收起浮层（「顶层」没有对应的筛选按钮，所以只是把人送回面板）
+  const chip = byClass(brief, 'dsh-wb-chip').find((b) => textOf(b).includes('顶层'))
   assert.ok(chip !== undefined)
   chip.props.onClick(ev())
   assert.equal(firstByClass(render(), 'dsh-wb-fabsheet'), null, '点完应该收起浮层')
@@ -2256,6 +2812,90 @@ test('合并卡：明写会删掉哪条；采纳后依次走既有的写入口�
   assert.equal(requests.find((r) => String(r.path).endsWith('/node-remove')).body.node, idOf('深层待办'))
 })
 
+test('归组卡（mode=children）：明写「不会删任何条目」；采纳后只挪位置，一条都不删', async () => {
+  // 用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」
+  // 之前这套 schema 只能把 fold 删掉，于是模型只能回答「不支持、请补上完整列表」。
+  // 现在归组是一个**独立模式**，卡上要写清它的代价（挪位置）与它的边界（不删东西），
+  // 采纳后走的仍然是 /node-move——**零新增写通路**。
+  withAi()
+  aiReply = {
+    reply: '归到一个计划下面',
+    merges: [{
+      keep: '表层待办',
+      keepId: idOf('表层待办'),
+      keepTitle: '表层待办',
+      keepKids: 0,
+      fold: ['收件箱一条', '深层待办'],
+      folds: [{ id: idOf('收件箱一条'), title: '收件箱一条' }, { id: idOf('深层待办'), title: '深层待办' }],
+      mode: 'children',
+      title: '归组用总计划',
+      missing: [],
+      skipped: [],
+      ok: true,
+      why: '都是同一批调研',
+      // host 按用户原话把 mode 兜底成 children 时会带这句（真机上模型漏填过一次）。
+      // 改判必须**说得出依据**，否则看着像 AI 擅自改主意。
+      modeNote: '模型没写明合并方式，按你话里的「作为子计划」按「保留为子任务」执行（不删除）',
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把这几条合并成一个计划，其他的作为子任务' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = firstByClass(render(), 'dsh-wb-aitask')
+  const body = textOf(card)
+  assert.match(body, /合并成计划/, '标题行要说清这是「合成一个计划」')
+  assert.match(body, /不会删任何条目/, '归组的代价只是挪位置——必须写在卡上')
+  assert.match(body, /成为子项/, '要说清它们去哪：keep 下面')
+  assert.doesNotMatch(body, /会删掉/, '这一行**不能**出现——它会让人以为要点下去就是删')
+  assert.match(body, /模型没写明合并方式/, 'mode 被 host 兜底改过时，依据要摆在卡上')
+  assert.match(body, /→ 「归组用总计划」/, '标题会怎么变也要写出来')
+  requests = []
+  findAll(card, (x) => x.type === 'button' && textOf(x) === '按这个合并成计划')[0].props.onClick(ev())
+  await settle()
+  const paths = requests.map((r) => String(r.path).split('/').pop())
+  assert.ok(!paths.includes('node-remove'), '归组不能删任何东西：' + paths.join(','))
+  const moves = requests.filter((r) => String(r.path).endsWith('/node-move'))
+  assert.equal(moves.length, 2, '两条都要挪到保留的那条下面')
+  for (const m of moves) assert.equal(m.body.parent, idOf('表层待办'), 'parent 必须是 keep 自己')
+  assert.deepEqual(moves.map((m) => m.body.node).sort(), [idOf('收件箱一条'), idOf('深层待办')].sort())
+  assert.equal(requests.find((r) => String(r.path).endsWith('/node-set')).body.title, '归组用总计划')
+})
+
+test('每张 AI 卡的确认按钮都独占一行（.dsh-wb-aiact），不藏在胶囊行里', async () => {
+  // 真机反馈：「没有确认的按钮？」——根因不在渲染条件，而在样式：主按钮用
+  // accent-soft 底，而它所在的 .dsh-wb-movepick 行**也是** accent-soft 底，
+  // 同色叠同色，按钮在视觉上根本不成其为按钮（那块还要在 build.test.mjs 里钉住）。
+  // 这里钉的是结构：四张卡（新任务 / 改动 / 合并 / 删除）的确认按钮都必须挂在
+  // .dsh-wb-aiact 行里，且那颗按钮带 primary。
+  withAi()
+  aiReply = {
+    reply: '照你说的办',
+    tasks: [{ title: '归组卡用新任务', due: '', priority: '', note: '', plan: '', candidates: [] }],
+    edits: [{ target: '收件箱一条', patch: { due: '2026-10-01' }, why: '截止该填了', id: idOf('收件箱一条'), ok: true }],
+    merges: [{
+      keep: '表层待办', keepId: idOf('表层待办'), keepTitle: '表层待办',
+      fold: ['收件箱一条'], folds: [{ id: idOf('收件箱一条'), title: '收件箱一条' }],
+      missing: [], skipped: [], ok: true,
+    }],
+    deletes: [{ target: '深层待办', id: idOf('深层待办'), title: '深层待办', children: 0, ok: true }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '记一条、改一条、合一条、删一条' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const cards = byClass(render(), 'dsh-wb-aitask')
+  assert.equal(cards.length, 4, '四类建议各一张卡')
+  for (const card of cards) {
+    const rows = findAll(card, (x) => classesOf(x).includes('dsh-wb-aiact'))
+    assert.ok(rows.length >= 1, '这张卡没有确认按钮行：' + textOf(card).slice(0, 20))
+    const primary = findAll(rows[0], (x) => x.type === 'button' && classesOf(x).includes('primary'))
+    assert.equal(primary.length, 1, '确认按钮要带 primary（实心）：' + textOf(card).slice(0, 20))
+  }
+})
+
 test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起」已删）', async () => {
   // 两颗按钮调同一个 setFabOpen(false)，是纯粹的重复。留哪颗的判断依据是位置：
   // 标题行右上角是「关闭一个面板」的常规位置，快捷行那颗文字按钮反而占宽度。
@@ -2300,6 +2940,6 @@ test('纯输入框（宿主没模型）提交后自动收起——不用再点�
   const after = ctx.render()
   assert.ok(firstByClass(after, 'dsh-wb-fabball') !== null, '记完就该回到浮球')
   assert.equal(firstByClass(after, 'dsh-wb-fabsheet'), null, '浮层已经收起')
-  assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /已记入收件箱/)
+  assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /已记下/)
 })
 

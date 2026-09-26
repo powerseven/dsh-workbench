@@ -188,37 +188,58 @@ export function planNodes(plan) {
   return Array.isArray(plan.nodes) ? plan.nodes : []
 }
 
-/** 收件箱：还没归位到任何计划下的顶层待办。 */
-export function inboxOf(plan) {
-  return planNodes(plan).filter((node) => isTodo(node) && !filedOf(node))
-}
-
 /**
- * 这条待办是否已「纳入工作计划」（`filed: true`）。
+ * 顶层节点：**一律平等，不再分「收件箱」与「工作计划」两栏**。
  *
- * 收件箱里的待办有两条出路：**归位**到某个已有计划下当子项（`plan_node_move`），
- * 或者**纳入工作计划**——不作为谁的子项，而是以独立条目出现在「工作计划」栏里。
- * 这个标记只在**顶层**才有意义：一旦挪进某个计划下，它就是别人的子项了。
+ * 这里原本有 `filed`（已纳入工作计划）标记，把顶层分成两组：没收进去的是
+ * 「收件箱」（催人归位），收进去的是「工作计划」。用户要求去掉这层区分：
+ *
+ *   「不要分收件箱和工作计划了，那是直接全部变成了这个工作计划。」
+ *
+ * 去掉是对的——那个区分在界面上制造了一个**用户并不关心的中间态**：
+ * 一条待办刚记下来时既不属于哪个计划、又还不算「工作计划」，于是面板上要分两段，
+ * 还要一个「纳入计划」按钮催他决定。可用户真正关心的只有一件事：**它是什么、
+ * 要不要往下拆**。类型由结构派生（有子项=计划、没有=待办）已经回答了这个问题，
+ * `filed` 只是多出来的一层手续。
+ *
+ * 现在顶层就是顶层：待办与计划平铺在一起，谁也不用「纳入」谁。
+ * 老数据里的 `filed` 键在读盘归一时被清掉（见 normalize），所以磁盘上不会
+ * 长期留着这个已经没人读的字段。
  */
-export function filedOf(node) {
-  if (node === null || node === undefined || typeof node !== 'object') return false
-  return node.filed === true
-}
-
-/** 打开 / 关闭「纳入工作计划」。关掉就删键——磁盘上不留 `filed:false`（同 starred）。 */
-export function setFiled(node, on) {
-  if (node === null || node === undefined || typeof node !== 'object') return node
-  if (on === true) node.filed = true
-  else delete node.filed
-  return node
+export function topLevelNodes(plan) {
+  return planNodes(plan)
 }
 
 /**
- * 「工作计划」栏的内容：顶层计划 + 已纳入工作计划的顶层待办。
- * 与收件箱**互补**——一个顶层节点要么在收件箱、要么在这里，不会两边都出现。
+ * 以下三个名字**保留是为了不掀翻调用点与测试**（host、面板、6 个测试文件都在用），
+ * 语义已随「顶层不再分栏」改变。留在这里当一层薄薄的兼容层，比在十几个调用点
+ * 各写一遍新名字更不容易出错——尤其因为它改的是**行为**而不是签名。
  */
+
+/** 顶层待办（名字沿用了历史上的「收件箱」）。现在不再用 filed 过滤。 */
+export function inboxOf(plan) {
+  return planNodes(plan).filter((node) => isTodo(node))
+}
+
+/** 顶层节点（名字沿用了历史上的「工作计划栏」）。现在就是全部顶层。 */
 export function workPlans(plan) {
-  return planNodes(plan).filter((node) => isPlan(node) || filedOf(node))
+  return planNodes(plan)
+}
+
+/** `filed` 已废弃，恒为 false。保留名字是为了让「这个字段不存在」有个显式落点。 */
+export function filedOf() {
+  return false
+}
+
+/**
+ * `filed` 已废弃，这个函数**什么都不做**。
+ *
+ * 保留空实现而不是删掉：host 侧的历史调用路径（老 agent 传 dep.filed）走得到一个
+ * 明确的无操作，而不是抛「函数不存在」。真正要保证的是**磁盘上不再长出这个键**
+ * ——那由 normalize 统一清（见那里的注释）。
+ */
+export function setFiled() {
+  return undefined
 }
 
 /** 顶层计划（进度只看它们——收件箱不参与完成度，见 docs/DESIGN.md）。 */
@@ -357,7 +378,10 @@ export function planProgress(plan) {
 
 /** 待办计数（面板角标、进度条文案）。总数只算待办，计划数单列。 */
 export function todoCounts(plan) {
-  const out = { todo: 0, doing: 0, done: 0, dropped: 0, total: 0, plans: 0, inbox: 0, inboxOpen: 0, filed: 0 }
+  // 不再有 filed 计数：顶层待办一律平等（见 topLevelNodes 的注释）。
+  // inbox / inboxOpen 保留为**兼容字段**（对外契约与面板都读它），值分别是
+  // 「顶层待办数」与「其中未结束的」——语义收窄，调用方无需改动。
+  const out = { todo: 0, doing: 0, done: 0, dropped: 0, total: 0, plans: 0, inbox: 0, inboxOpen: 0, openTop: 0 }
   // 计划数与待办数都要递归统计——只数顶层的话，任何嵌套计划都会被漏掉。
   for (const x of collectNodes(plan, 'any')) {
     if (x.type === 'plan') {
@@ -370,13 +394,11 @@ export function todoCounts(plan) {
   }
   for (const node of planNodes(plan)) {
     if (!isTodo(node)) continue
-    // 已纳入工作计划的待办不再算收件箱——它已经在下面的工作计划栏里了。
-    if (filedOf(node)) {
-      out.filed += 1
-      continue
-    }
     out.inbox += 1
-    if (node.status !== 'done' && node.status !== 'dropped') out.inboxOpen += 1
+    if (node.status !== 'done' && node.status !== 'dropped') {
+      out.inboxOpen += 1
+      out.openTop += 1
+    }
   }
   return out
 }
@@ -951,8 +973,10 @@ export function delegatedList(plan, today = todayStr()) {
  *   warnings   存在管控缺口的节点数
  *   behind     落后于周期（配速）的节点数
  *   unverified 已完成但没有证据的节点数
- *   inbox      收件箱条数（含已完成的）
- *   inboxOpen  收件箱里还没归位的待办数
+ *   inbox      顶层待办条数（含已完成的）。名字沿用了历史上的「收件箱」，
+ *              现在顶层不分栏，它就是「顶层待办」——字段名保留是为了不动
+ *              plan_show 的对外契约（agent 与面板都读它）。
+ *   inboxOpen  这些里面还没结束的条数
  */
 export function controlSummary(plan, today = todayStr()) {
   const nodes = collectNodes(plan, 'any')
@@ -969,8 +993,11 @@ export function controlSummary(plan, today = todayStr()) {
       return pace !== null && pace.behind
     }).length,
     unverified: nodes.filter((x) => isUnverified(x.node)).length,
-    inbox: counts.inbox,
-    inboxOpen: counts.inboxOpen,
+    // 兼容字段：对外形状不变，值来自新的 openTop 统计。
+    // 顶层不分栏之后「收件箱条数」不再有独立含义，这里返回的就是顶层待办数
+    // ——契约没变、语义收窄，调用方不需要改。
+    inbox: counts.total - counts.plans,
+    inboxOpen: counts.openTop,
   }
 }
 
@@ -1096,8 +1123,9 @@ export function appendChild(plan, node, parentRef) {
     planNodes(plan).push(node)
     return node
   }
-  // 挂到别人下面，就不再是「工作计划栏」的独立条目了——把标记清掉。留着它的话，
-  // 将来把这条挪回顶层，它会**凭空回到工作计划栏**：界面上无从解释，也查不出所以然。
+  // 这里原本要 delete node.filed（挂到别人下面就不再是工作计划栏的独立条目）。
+  // 那个字段已经废弃了（顶层不再分栏），新建的节点也从不会带上它；
+  // 老数据里的残留由读盘归一统一清掉（见 normalize）。
   delete node.filed
   const { node: parent } = resolveAny(plan, parentRef)
   if (!Array.isArray(parent.children)) parent.children = []
@@ -1704,12 +1732,16 @@ export function normalizePlan(plan) {
     // 派生后按形状归一一次。
     normalizeShape(x.node)
   }
-  // `filed`（已纳入工作计划）只在**顶层**有意义：挪进某个计划下的待办已经是别人的
-  // 子项了，留着这个标记，将来把它挪回顶层时会**凭空回到工作计划栏**——静默发生，
-  // 且从界面上无从解释。所以每次归一都按「它现在在哪一层」重算一次。
-  const roots = new Set(planNodes(plan))
+  // **清掉老数据里的 `filed`**：这个字段已经不参与任何判断了（顶层不再分栏，
+  // 见 topLevelNodes），留着只会在 plan.json 里堆一层没人读的键。
+  //
+  // 为什么要在这里统一扫一遍而不是各自 delete：老 plan.json 里可能有任意层级的
+  // 残留（历史上它只在顶层有意义，但外部手改或更早的版本可能留下别的形态）。
+  // 读盘归一是唯一能保证「磁盘上不再长出这个字段」的地方。
   for (const x of collectNodes(plan, 'any')) {
-    if (!roots.has(x.node)) delete x.node.filed
+    if (x.node !== null && x.node !== undefined && typeof x.node === 'object' && 'filed' in x.node) {
+      delete x.node.filed
+    }
   }
   return plan
 }
@@ -1850,7 +1882,7 @@ export function renderMarkdown(plan) {
   lines.push('- 计划：' + String(c.plans) + ' 个；待办：共 ' + String(c.total) + '，已完成 '
     + String(c.done) + '，进行中 ' + String(c.doing) + '，待办 ' + String(c.todo))
   if (c.inbox > 0) {
-    lines.push('- 收件箱：' + String(c.inbox) + ' 条（未完成 ' + String(c.inboxOpen) + '）')
+    lines.push('- 顶层待办：' + String(c.inbox) + ' 条（未完成 ' + String(c.inboxOpen) + '）')
   }
   const ctrl = controlSummary(plan)
   lines.push('- 管控：高重要度 ' + String(ctrl.high) + ' · 委派中 ' + String(ctrl.delegated)
@@ -1864,12 +1896,13 @@ export function renderMarkdown(plan) {
     if (isPlan(node)) renderNode(node, 0, lines)
   }
 
-  // 收件箱放在最后：先读计划、再读还没归位的东西。
-  const inbox = inboxOf(plan)
-  if (inbox.length > 0) {
-    lines.push('## 收件箱 · 未归类待办  ' + String(inbox.length) + ' 条')
+  // 顶层待办放在最后：先读计划树、再读还没往下拆的那些。
+  // （原来是「收件箱 · 未归类待办」——现在顶层不分栏，它们就是顶层待办。）
+  const loose = planNodes(plan).filter((node) => isTodo(node))
+  if (loose.length > 0) {
+    lines.push('## 顶层待办  ' + String(loose.length) + ' 条')
     lines.push('')
-    for (const todo of inbox) {
+    for (const todo of loose) {
       lines.push(todoLine(todo, 0))
       const note = opt(todo.note)
       if (note !== undefined) lines.push('  - ' + note)

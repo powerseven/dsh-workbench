@@ -16,6 +16,8 @@ import assert from 'node:assert/strict'
 import {
   CONTEXT_LIMIT,
   DEFAULT_PERSONA,
+  MAX_EDITS,
+  MAX_FOLD_CHILDREN,
   MAX_OPTIONS,
   MAX_TASKS,
   aiContext,
@@ -26,6 +28,8 @@ import {
   extractJson,
   historyText,
   matchPlan,
+  mergeWantsChildren,
+  normDeletes,
   parseAiReply,
   planOutline,
 } from '../src/ai.js'
@@ -180,6 +184,63 @@ test('合并任务：keep 不能并进自己，fold 空了整条丢掉', () => {
   assert.deepEqual(r.merges[0].fold, ['旧清单'], 'keep 自己与空白项都要剔掉')
   assert.equal(r.merges[0].title, '数据梳理（含旧清单）')
   assert.equal(r.merges[0].why, '是一件事')
+  assert.equal(r.merges[0].mode, 'merge', '不给 mode 时默认「并进去删掉」——判错的方向不一样，见 normMergeMode')
+})
+
+test('合并的两种 mode：保留为子任务（children）认得出来，认不出的一律当 merge', () => {
+  // 用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」
+  // 在有 mode 之前，模型看到 schema 里只写「fold 会被删掉」，就只能回答「不支持」。
+  const r = parseAiReply(JSON.stringify({
+    reply: '归到一个计划下面',
+    merges: [
+      { keep: '学科调研', fold: ['学情分析', '辅导闭环'], mode: 'children', title: '高中物理学科调研', why: '都是这次调研的一部分' },
+      { keep: 'A', fold: ['B'], mode: '子任务' },
+      { keep: 'C', fold: ['D'], mode: 'as-children' },
+      { keep: 'E', fold: ['F'], mode: '随便写的' },
+    ],
+  }))
+  assert.equal(r.merges.length, 4)
+  assert.equal(r.merges[0].mode, 'children')
+  assert.equal(r.merges[0].title, '高中物理学科调研', 'children 模式照样能改那一条的标题（当总标题用）')
+  assert.equal(r.merges[1].mode, 'children', '中文写法也认')
+  assert.equal(r.merges[2].mode, 'children')
+  assert.equal(r.merges[3].mode, 'merge', '认不出来的宁可当 merge：多留几条只是麻烦，误删是事故')
+})
+
+test('children 模式的 fold 上限更高：用户是把一批任务归到一个计划下面', () => {
+  // 真机上是十来条（见 AGENTS.md 的移动端反馈）。用 merge 的上限（10）会把用户
+  // 明说的那批任务悄悄截断——他看到卡上少了一半，以为自己漏说了。
+  const many = []
+  for (let i = 0; i < MAX_FOLD_CHILDREN + 8; i++) many.push('任务' + i)
+  const asGroup = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many, mode: 'children' }] }))
+  assert.equal(asGroup.merges[0].fold.length, MAX_FOLD_CHILDREN, 'children 模式按 MAX_FOLD_CHILDREN 截')
+  const asMerge = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many }] }))
+  assert.equal(asMerge.merges[0].fold.length, MAX_EDITS, 'merge 模式仍按 MAX_EDITS（那是「一条条过」的数量，不是这批事的规模）')
+})
+
+test('提示词把两种 mode 都讲清楚，并明说不要反过来要用户列全清单', () => {
+  // 这两条是同一个故障的两半：schema 里没有 children，模型就只能答「不支持、
+  // 请补上完整列表」；两半都要钉住，否则模型退回老行为时没有测试会红。
+  const p = aiSystemPrompt('学科调研', '2026-09-25', { context: '…' })
+  assert.match(p, /mode="children"/, '提示词必须写清 children 模式')
+  assert.match(p, /一条都不删/, '要写明 children 不删东西——这是它与 merge 的唯一区别')
+  assert.match(p, /作为它的子计划/, '要覆盖用户的原话，那种说法必须被认出来')
+  assert.match(p, /不要因为「你只能给标题」就反过来要用户把完整清单列出来/, '要禁止「请补上完整列表」这种把活推回去的回应')
+  // 真机实测踩出来的：模型在 reply 里承诺「确认时可只勾选前 6 条作为子项」，而面板上
+  // 根本没有逐条勾选——确认是「全执行」或「整条丢掉」两选一。说了兑现不了就是骗人。
+  assert.match(p, /不要在 reply 里/, '要禁止承诺「可以只选其中几条」')
+  assert.match(p, /点名写进 why/, '替代出口要写明：可疑的那几条点名进 why，让用户自己挪')
+})
+
+test('mergeWantsChildren：只看用户自己说的话，且宁可判不中也不乱判', () => {
+  // 真机踩出来的：模型 reply 写着「其余 10 条全部挂成它的子任务」，JSON 里却没给
+  // mode（空缺 = 按 merge 处理 = 删掉那 10 条）。用户的原话是唯一可靠的证据。
+  assert.equal(mergeWantsChildren('把这几个任务合并成一个计划，其他的作为他的子任务'), true)
+  assert.equal(mergeWantsChildren('把这些挂到「X」下面'), true)
+  assert.equal(mergeWantsChildren('把 A 和 B 合并，它们其实是一件事'), false)
+  assert.equal(mergeWantsChildren('记一条：交电费'), false)
+  assert.equal(mergeWantsChildren(''), false)
+  assert.equal(mergeWantsChildren(undefined), false)
 })
 
 test('只有改动或只有合并，也算一次成功的解析（不能判成失败）', () => {
@@ -420,4 +481,59 @@ test('默认人设里写明了性格、专业、边界与「记住的事」', ()
   assert.match(DEFAULT_PERSONA, /## 边界/)
   assert.match(DEFAULT_PERSONA, /## 记住的事/, '持续改善要有个地方落笔')
   assert.match(DEFAULT_PERSONA, /不擅自改数据/, '只建议不改数据，这条要明确写进人设')
+})
+
+// ============================================================ 删除建议
+
+test('normDeletes：收敛删除意图，target 必填、why 可空', () => {
+  const out = normDeletes([
+    { target: '明天回家', why: '与另一条重复' },
+    { target: '  ', why: '空标题应被丢掉' },
+    { why: '没有 target 也丢掉' },
+    null,
+    '不是对象',
+    { target: '记错了的一条' },
+  ])
+  assert.equal(out.length, 2, '只留 target 非空的两条')
+  assert.equal(out[0].target, '明天回家')
+  assert.equal(out[0].why, '与另一条重复')
+  assert.equal(out[1].why, '', 'why 缺省为空串，不是 undefined')
+})
+
+test('normDeletes：非数组一律回空（不抛）', () => {
+  assert.deepEqual(normDeletes(undefined), [])
+  assert.deepEqual(normDeletes(null), [])
+  assert.deepEqual(normDeletes('删掉它'), [])
+  assert.deepEqual(normDeletes({ target: 'x' }), [], '对象不是数组，不算删除建议')
+})
+
+test('parseAiReply：只给 deletes 也算有效结果（不能误判成失败）', () => {
+  // 这条目录要跟着新产出一块长——漏一个就会把新形态误判成「模型既没有回答，
+  // 也没有给出待办或改动」，而用户只是说了句「把那条删掉」。
+  const parsed = parseAiReply(JSON.stringify({
+    reply: '',
+    deletes: [{ target: '明天回家', why: '重复了' }],
+  }))
+  assert.equal(parsed.error, '', '不应报错')
+  assert.equal(parsed.deletes.length, 1)
+  assert.equal(parsed.deletes[0].target, '明天回家')
+})
+
+test('parseAiReply：deletes 与 tasks 可以同时出现（删一条、记一条）', () => {
+  const parsed = parseAiReply(JSON.stringify({
+    reply: '· 删掉旧的，记一条新的',
+    tasks: [{ title: '新的一条' }],
+    deletes: [{ target: '旧的那条', why: '不用了' }],
+  }))
+  assert.equal(parsed.error, '')
+  assert.equal(parsed.tasks.length, 1)
+  assert.equal(parsed.deletes.length, 1)
+})
+
+test('提示词里必须写明 deletes（否则模型不会用，只会说「我不能删」）', () => {
+  const p = aiSystemPrompt({ outline: '', context: '', history: '' })
+  assert.match(p, /deletes/, '格式声明里要有 deletes')
+  assert.match(p, /删除任务/, '规则里要有「删除任务」这一条')
+  // 模型原先拒答的理由是「schema 里也没有删除字段」——那条理由必须不再成立。
+  assert.match(p, /不可逆/, '要说清删除不可逆、只作为建议呈现')
 })

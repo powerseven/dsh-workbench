@@ -37,9 +37,12 @@ test('client bundle 用正确的插件 id 包装成 C6 模块', () => {
 })
 
 test('client 无条件导出 name/inject/apply（否则面板静默不注册）', () => {
-  assert.match(client, /module\.exports = \{ name: 'dsh-workbench-client'/)
-  assert.match(client, /inject: \['slots', 'betterSidebar'\]/)
-  assert.match(client, /apply: apply \}/)
+  // 导出可以是单行或多行形式，所以按字段分别匹配，不钉整段字面量。
+  assert.match(client, /module\.exports = \{[\s\S]{0,200}?name: 'dsh-workbench-client'/)
+  // 官方右侧栏的两个服务必须声明：不声明时 apply 开头 ctx.get 拿到 undefined
+  // 就静默 return，面板不注册（PITFALLS 坑 #472 的形态）。
+  assert.match(client, /inject: \['slots', 'sidebarRight', 'sidebarRightTabs'\]/)
+  assert.match(client, /apply: apply/)
   // 导出语句前面不能有 window 守卫
   assert.doesNotMatch(client, /if \(typeof window === 'undefined'[\s\S]{0,200}module\.exports = \{ name:/)
 })
@@ -198,6 +201,31 @@ test('软底状态胶囊的文字走中性色，语义色只做描边与底色',
     // 里也含这个子串，会把正确的描边误判成文字色。
     assert.doesNotMatch(body, /(^|;)color:var\(--wb-danger\)/, sel + ' 不应把 danger 当文字色')
   }
+})
+
+test('确认按钮用宿主主按钮那一对，且底色不能与它所在行的底色相同', () => {
+  // 真机反馈「没有确认的按钮？」——**渲染是对的，是样式把它藏了**：
+  // 主按钮原来是 accent-soft 底，而它坐在 .dsh-wb-movepick（同样 accent-soft 底）
+  // 里，同色叠同色，按钮在视觉上根本不成其为按钮。
+  // 现在抄宿主自己的主按钮配方（button-primary-fill + label-primary-foreground，
+  // 与宿主聊天/工具栏同款），对比度由宿主保证，换肤自动跟随（坑 #19/#31）。
+  const { flat } = cssBlock()
+  assert.ok(
+    flat.includes('--wb-btn-fill:var(--dsw-alias-button-primary-fill)'),
+    '别名层要映射宿主的主按钮填充色',
+  )
+  assert.ok(
+    flat.includes('--wb-btn-fg:var(--dsw-alias-label-primary-foreground)'),
+    '主按钮文字色要用宿主配套的前景色（对比度由宿主保证）',
+  )
+  const line = flat.split('}').find((l) => l.includes('.dsh-wb-aibtn.primary{'))
+  assert.ok(line, '找不到 .dsh-wb-aibtn.primary 规则')
+  assert.match(line, /background:var\(--wb-btn-fill\)/, '主按钮要实心（宿主主按钮填充）')
+  assert.doesNotMatch(line, /background:var\(--wb-accent-soft\)/, '主按钮不能与所在行的底色同色')
+  // 确认按钮还要好点：铺满 + 44px 触屏点击区下限。
+  // 注意 flat 压掉了所有空白与 '+'，后代选择器里的空格也被吃掉了。
+  assert.ok(flat.includes('.dsh-wb-aiact.dsh-wb-aibtn{flex:1;'), '要有独占一行的确认按钮行')
+  assert.ok(flat.includes('min-height:44px'), '确认按钮的点击区不得小于 44px')
 })
 
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {

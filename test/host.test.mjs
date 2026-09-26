@@ -952,6 +952,92 @@ test('/ai-parse 的改动与合并：标题匹配回真实节点，对不上的�
   assert.equal(after.versions, before.versions, '也不该留版本快照')
 })
 
+test('/ai-parse 的归组合并：mode=children 原样下发，挪不动的剔出来并说清原因', async () => {
+  // 用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」
+  // 这一组测的是 host 这一层的三件事：mode 透传、成环的剔掉、已经在下面的不重复挪。
+  // 剔的时候必须把原因带回去（skipped）——静默丢一条，用户回头看计划只会以为
+  // 是自己记错了，而真正的原因（挪进去会成环）没人知道。
+  await call('plan_node_add', { title: '归组用总任务' })
+  await call('plan_node_add', { title: '归组用甲' })
+  await call('plan_node_add', { title: '归组用乙' })
+  await call('plan_node_add', { title: '归组用上级' })
+  await call('plan_node_add', { title: '归组用下级', parent: '归组用上级' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '归到一个计划下面',
+    merges: [
+      { keep: '归组用总任务', fold: ['归组用甲', '归组用乙'], mode: 'children', title: '归组用总计划', why: '都是同一批调研' },
+      // keep 在 fold 底下：把上级挪进自己的子孙 = 成环，store 会直接拒绝。
+      { keep: '归组用下级', fold: ['归组用上级'], mode: 'children' },
+      // 已经是 keep 的直接子项：不用再挪一次。
+      { keep: '归组用上级', fold: ['归组用下级'], mode: 'children' },
+    ],
+  }))
+
+  const before = await snapshotOfAiFixture()
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把这几条合并成一个计划，其他的作为子任务' })
+  const after = await snapshotOfAiFixture()
+
+  assert.equal(r.status, 200)
+  assert.equal(r.payload.merges.length, 3)
+  const [group, cycle, already] = r.payload.merges
+  assert.equal(group.mode, 'children')
+  assert.equal(group.ok, true)
+  assert.deepEqual(group.folds.map((f) => f.title), ['归组用甲', '归组用乙'], '两条都要保留为子任务')
+  assert.equal(group.title, '归组用总计划', 'keep 那一版可以改成总标题')
+  assert.equal(group.keepKids, 0, '卡片上要能说出它下面现在有 0 个子项')
+
+  assert.equal(cycle.ok, false, '唯一一条 fold 被剔掉后整组不能执行')
+  assert.equal(cycle.folds.length, 0)
+  assert.equal(cycle.skipped[0].title, '归组用上级')
+  assert.match(cycle.skipped[0].why, /成环/)
+
+  assert.equal(already.ok, false, '本来就在下面的那条不必再挪，整组因此无需执行')
+  assert.match(already.skipped[0].why, /已经在/)
+
+  assert.equal(after.plan, before.plan, '解析仍然只读——一个字节都不该写进计划')
+  assert.equal(after.versions, before.versions, '也不该留版本快照')
+})
+
+test('/ai-parse 兜住「模型漏填 mode」：用户说了「作为子计划」就按保留子任务下发', async () => {
+  // 真机踩出来的：模型 reply 里写着「其余 10 条全部挂成它的子任务」，JSON 里却没有
+  // mode。空缺按 merge 处理 = **删掉那 10 条**，而用户要的是嵌套。判错的方向不对等，
+  // 所以 host 这一层按**用户自己的原话**兜底，并把依据回显（modeNote）。
+  await call('plan_node_add', { title: '兜底用总任务' })
+  await call('plan_node_add', { title: '兜底用甲' })
+  await call('plan_node_add', { title: '兜底用乙' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '其余两条全部挂成它的子任务',
+    // 注意：这里**故意不给 mode**——这正是真机上发生的那一次。
+    merges: [{ keep: '兜底用总任务', fold: ['兜底用甲', '兜底用乙'], title: '兜底用总计划' }],
+  }))
+
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '把这几个任务合并成一个计划，其他的作为他的子任务' })
+  assert.equal(r.status, 200)
+  const m = r.payload.merges[0]
+  assert.equal(m.mode, 'children', '模型漏填 + 用户说了要保留 → 不得按删除下发')
+  assert.equal(m.ok, true)
+  assert.match(m.modeNote, /模型没写明合并方式/, '改判要有回显：用户得看见是按他的话改的')
+  assert.equal(m.folds.length, 2, '两条都要保留成子项')
+})
+
+test('/ai-parse 用户没说「子任务」时不乱改：维持模型给的模式', async () => {
+  // 兜底必须是**窄**的。用户说的是「这两条是一件事」（= 该删重复），那就照模型说的做，
+  // 替用户改主意比不兜底更糟。
+  await call('plan_node_add', { title: '不兜底用甲' })
+  await call('plan_node_add', { title: '不兜底用乙' })
+  fakeDefaultModel = { currentSelection: () => ({ provider: 'deepseek', model: 'deepseek-chat' }) }
+  fakeLlm = llmReturning(JSON.stringify({
+    reply: '两条重复了',
+    merges: [{ keep: '不兜底用甲', fold: ['不兜底用乙'] }],
+  }))
+
+  const r = await post('/ai-parse', { sessionId: SESSION_ID, text: '这两条其实是一件事，并起来' })
+  assert.equal(r.payload.merges[0].mode, 'merge')
+  assert.equal(r.payload.merges[0].modeNote, '', '没有改判就没有回显')
+})
+
 test('/ai-parse 把「同名草稿」转成改动，不当新建下发（否则一点就多一条重复的）', async () => {
   // 用户原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
   // 而不是说让我确认再加任务」。模型经常一边在 reply 里写「这两条本来就在手上，
@@ -1558,25 +1644,25 @@ test('叶子计划可以手动完成（面板勾选走的就是这条通路）',
   assert.equal(dig((await readPlan()).nodes, made.node.id).status, 'done')
 })
 
-test('「纳入工作计划」：工具与 HTTP 面共用同一条写入，filed 随 payload 下发', async () => {
+test('filed 已废弃：老调用被安全忽略，不报错、不生效、不落盘', async () => {
+  // 顶层不再分「收件箱 / 工作计划」两栏，「纳入工作计划」这个动作随字段一起删除。
+  // 但 agent 可能还按老习惯传 filed——所以这条测试钉住**兼容行为**：
+  // 传了不报错（不会把一个已无意义的历史参数变成硬失败），也不改变任何东西。
   const made = await call('plan_node_add', { title: '独立事项' })
   const id = made.node.id
   const before = (await call('plan_show')).plan.counts
-  const inbox0 = before.inbox
 
-  // agent 侧：plan_node_set 的 filed 走 DEP_PARAMS，与 star / recur 同一条通道。
+  // agent 侧：plan_node_set 带 filed —— 应被忽略。
   await call('plan_node_set', { node: id, filed: true })
   const after = (await call('plan_show')).plan
-  assert.equal(after.counts.inbox, inbox0 - 1, '纳入后退出收件箱')
-  assert.equal(after.counts.filed, (before.filed ?? 0) + 1)
-  assert.equal(after.nodes.find((n) => n.id === id).filed, true, 'filed 随 payload 下发')
-  // 归位建议只给**还在收件箱**的待办算——纳入过的不再需要建议。
-  assert.deepEqual(after.nodes.find((n) => n.id === id).parentSuggestions, [])
+  assert.equal(after.counts.inbox, before.inbox, 'filed 不再改变任何计数')
+  assert.equal('filed' in after.nodes.find((n) => n.id === id), false,
+    '磁盘/payload 上都不该长出这个键')
 
-  // 面板侧：同一条通路（/node-set），退回收件箱。
+  // 面板侧：同一条通路（/node-set）单传 filed 会得到**说清楚的**提示，
+  // 而不是「没有要改的属性」——后者会让 agent 以为自己参数名写错了然后反复试。
   const { payload } = await post('/node-set', { sessionId: SESSION_ID, node: id, filed: false })
-  assert.equal(payload.ok, true)
-  const back = (await post('/get', { sessionId: SESSION_ID })).payload.plan.counts
-  assert.equal(back.inbox, inbox0, '退回后回到收件箱')
-  assert.equal(back.filed, before.filed ?? 0)
+  assert.equal(payload.ok, false)
+  assert.match(String(payload.error), /filed 已废弃/, '要明说这个字段废弃了')
+  assert.match(String(payload.error), /加子项/, '并告诉它现在该怎么做（加子项）')
 })

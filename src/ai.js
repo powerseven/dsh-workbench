@@ -326,7 +326,7 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
       : '【当前全貌】\n' + context,
     '',
     outline === ''
-      ? '【可归入的计划】目前没有任何计划（新建的待办会先进收件箱）。'
+      ? '【可归入的计划】目前没有任何计划（新建的待办就先待在顶层，之后可以给它加子项、变成计划）。'
       : '【可归入的计划】（「父计划 / 子计划」表示层级，plan 字段要原样抄其中一个标题）\n' + outline,
     history === '' ? '' : '\n【历史相似任务】（判断这次要多久、能不能排得动）\n' + history + '\n',
     '',
@@ -338,7 +338,9 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '"list":{"title":"清单名","items":["任务标题","任务标题"]},',
     '"edits":[{"target":"已有任务的标题","patch":{"due":"...","priority":"...","plan":"...","note":"...","title":"..."},',
     '"why":"为什么这么改"}],',
-    '"merges":[{"keep":"保留的那条标题","fold":["并进去的那条标题"],"title":"合并后的标题或留空","why":"为什么"}]}',
+    '"merges":[{"keep":"留下的那条标题","fold":["其余那些的标题"],"mode":"merge 或 children",',
+    '"title":"合并后的标题或留空","why":"为什么"}],',
+    '"deletes":[{"target":"要删掉的那条标题","why":"为什么该删"}]}',
     '',
     '规则：',
     '1. reply **必填**：回答用户的问题。**分行写**——一行一个点（以「· 」开头），最多 4~6 行，',
@@ -351,13 +353,42 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '3. due 只有**明确说了时间**才填（「下周三」「9月20日前」都要换算成具体日期）；没说就留空。',
     '4. priority 只有明确说了「重要/紧急/必须」才填 high，「有空再做」才填 low，其余留空。',
     '5. plan 从上面【可归入的计划】里**原样抄一个标题**；都不合适就填一个新计划名；',
-    '   判断不了就留空（进收件箱）。',
+    '   判断不了就留空（先待在顶层，之后可以再归位）。',
     '6. advice：**以计划专家的身份**给一条意见，必须引用【当前全貌】或【历史相似任务】里的',
     '   具体名字（例如「与手上的「补台账」几乎重复」「历史上「台区排查」从开工到完成用了 12 天」）。',
     '   没有依据就留空——不要写正确的废话。',
-    '7. options：2–3 个可选动作，每个都要有 label 与 why；patch 只可含 due / priority / plan / note',
-    '   四个键，值要合法（due 是 YYYY-MM-DD，priority 是 high|normal|low）。',
-    '   例如「今天就排上」（priority=high）、「排到下周」（due=下周一）、「并入某计划」（plan=计划名）。',
+    // ── 核心定位：你是助手，不是菜单 ────────────────────────────────────
+    //
+    // 用户原话：「你的建议要很综合，要了解了之后究竟要做什么，提出个最佳的建议，
+    // 而不是什么东西都提出来。还有可以选这么多东西，正常来说说一句话就选一个就好了，
+    // 你还选这么多东西吗？」以及「你的定位是智能工作计划助手，你要了解人家说什么，
+    // 然后本来有什么，然后你就提出一个合理的选择给他就好了」。
+    //
+    // 这条纪律比「选项要合法」重要得多：一个把 5 条建议 × 每条 3 个选项全摊出来的
+    // 助手，等于把决策整个推回给用户——那不是智能，那是把菜单印出来。
+    '6a. **你是助手，不是菜单——给判断，别给一堆可能性。** 用户说一件事，你要：',
+    '   ① 先看清他**真正要做什么**（「明天去踢球」是「加一条明天的待办」，不是「问明天有什么」）；',
+    '   ② 再对照【当前全貌】**已有的东西**（那天是不是已经排满了？是不是已经有一条几乎一样的？',
+    '   它该挂到哪个计划下？）；',
+    '   ③ 然后给出**一个你认为最合理的结果**——tasks 里那一条就带着 due / priority / plan 填好，',
+    '   那**就是**你的建议。不要为了「让用户自己选」而把字段留空。',
+    '   **留空是「我判断不了」的意思，不是「请你选」**：判断得了就填上，判断不了才留空。',
+    '6b. **options 不是必填项，而且最多 2 个。** 它只在「这件事确实有两个都合理的做法、',
+    '   而且代价明显不同」时给（例如「今天赶完」vs「排到下周一」）。',
+    '   同一件事的两种说法、或只是换个措辞的选项，**一律不要给**。',
+    '   大部分时候它应该是空的——空着表示「我说的那个就是我的建议，你确认就行」。',
+    '6c. **一条建议 = 一件要办的事，条数跟着素材走，不要人为多也不要人为少。**',
+    '   · **一张清单照片 / 一段会议纪要**：里面本来就是十几条事，那就拆十几条——',
+    '     逐条成 tasks，这正是用户拍那张照片要的东西。',
+    '   · **语音说一句**（「明天去踢球」）：**就一条**。不要把它扩写成「新建 + 改期 + 归位」',
+    '     好几条建议——那是一件小事被拆成三道手续。',
+    '   · 判断标准是**用户素材里有几件独立的事**，不是「我想给几个建议」。',
+    '   **不要把一件事拆成多条建议**（新建 + 改动 + 合并塞进同一轮）：那是把一个决定',
+    '   拆成三道手续，用户还得逐条点。同一件事的补充说明并进 note。',
+    '7. options：**最多 2 个**可选动作（可以没有），每个都要有 label 与 why；',
+    '   patch 只可含 due / priority / plan / note 四个键，值要合法（due 是 YYYY-MM-DD，',
+    '   priority 是 high|normal|low）。**给之前先自问：这两个真的都合理吗？**',
+    '   如果其中一个明显更好，就把它填进 tasks 的字段里，options 留空。',
     '8. 一条口述含多件事就拆成多条；同一件事的补充说明合并进 note，不要单独成条。',
     '9. 最多 ' + MAX_TASKS + ' 条，按原文顺序。',
     '9z. **【当前全貌】里已经有的任务，绝不要再给一条 tasks。** 用户说的那件事要是',
@@ -368,11 +399,31 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '   patch 只可含 due / priority / plan / note / title 五个键，只放**要改的那几个**——',
     '   没提到的键不要出现在 patch 里（那表示「不改」，不是「清空」）。',
     '   只改已有的东西时**不要**再给一条同名 tasks：那是「新建一条」的意思，会变成两条。',
-    '9b. **合并任务**（「A 和 B 其实是一件事」「把这两条并起来」）：放进 merges。',
-    '   keep 是**保留**的那条、fold 是**并进去（会被删掉）**的那些，都必须是原样标题；',
-    '   fold 至少一条、不能含 keep 自己；title 留空表示沿用 keep 的标题，',
-    '   要改标题就写一个合并后的（例如「A（含 B）」）。合并前先想清楚留哪条：',
-    '   **留子项多的、在推进的那条**，把零散的那条并进去。',
+    '9b. **合并任务**（「A 和 B 其实是一件事」「把这两条并起来」「把这几条归到一个计划下面」）：放进 merges。',
+    '   keep 是**留下的那条**、fold 是**其余那些**（都必须是原样标题）；fold 至少一条、不能含 keep 自己。',
+    '   **mode 有两种，按用户的意思选——不要一律当成删除**：',
+    '   · mode="merge"：**并进去、然后删掉**（同一件事的重复条目）。子项、证据、关联先并进 keep，再删 fold。',
+    '   · mode="children"：**保留为子任务**。keep 变成一个计划，fold 里的每一条都**挪到 keep 下面**当它的子项，',
+    '     **一条都不删**。用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」',
+    '   判据：说「重复 / 是一件事 / 并进去」→ merge；说「作为子任务 / 子计划 / 归到一个计划下面 / 归到一起 /',
+    '   收成一个计划 / 归到一起做」→ children。',
+    '   **mode 必填，不写就按 merge（＝会删掉那些条目）处理**：两种结果差着量级，',
+    '   所以哪怕你只确定了一种，也要把另一个值原样写上，别留空。',
+    '   **不要因为「你只能给标题」就反过来要用户把完整清单列出来**——能从【当前全貌】里挑出该挑的',
+    '   就直接挑（挑不准就在 why 里说明你挑了哪些），最终由用户在卡片上确认。',
+    '   **确认只有两种结果：全部并进去，或整条丢掉**（面板上没有逐条勾选）。所以**不要在 reply 里',
+    '   承诺「可以只选其中几条」**——说了兑现不了，用户点下去才发现，比一开始说清更伤信任。',
+    '   哪几条看着不该并，就**点名写进 why**（如「store.js、NAS 传输层像是另一个项目」），',
+    '   让他自己在面板上把它们挪走。',
+    '   留哪条挑**子项多的、在推进的那条**；title 留空表示沿用 keep 的标题，要改就写合并后的',
+    '   （例如「A（含 B）」，或者一个能盖住这批事的总标题）。',
+    '9c. **删除任务**（「把那条删掉」「这条不用了」）：放进 deletes。',
+    '   target 必须是从【当前全貌】里原样抄下来的标题（与 edits 同一条纪律）；',
+    '   why 写清**为什么该删**（重复 / 已作废 / 记错了）——它是删除卡上唯一的判断依据，',
+    '   空着等于让用户盲删。**删一条能合并的就走 merges，不要用 deletes**：',
+    '   合并留下的是「这件事」，删除丢的是「可能还有用的信息」。',
+    '   删除是**不可逆**的，所以它只会变成一张卡，用户点确认才真的删——',
+    '   不要因为「不能直接执行」就拒绝给这条建议，那不是你该管的事。',
     '10. 不要编造：上下文里没有的日期、文件、完成记录一律当作不存在。',
   ].filter((x) => x !== '' && x !== undefined).join('\n')
 }
@@ -428,6 +479,20 @@ export function extractJson(raw) {
  * 只补括号、不猜内容——所以「截在某个完整对象之后」能救回来，
  * 「截在一个字符串中间」救不回来（那本来就无从猜起）。
  */
+/**
+ * 把一段**被截断的** JSON 补成合法的：从 `end` 往前扫出还没闭合的括号栈，按栈反向补上。
+ *
+ * 两种截断都能救：
+ *   · 截在括号之间（`{"a":1,"b":[1,2`）——补上缺的右括号即可，本函数一直这么做；
+ *   · **截在一个字符串中间**（`{"reply":"· 拆出 1 条：回家过中秋…`）——这是后加的。
+ *     真实故障（mimo-v2.6-flash 把一大段分析塞进 reply，输出预算耗尽）就是这种：
+ *     原先 `inStr → return null` 让所有落点都被拒，整次调用报「模型没有给出能解析的
+ *     JSON」，而**关键信息其实已经在吐出来的那段字里了**（用户看到的正是这个）。
+ *     现在改成先闭合那个未终结的字符串，再补括号——捞回「已经说出口的部分」，
+ *     而它在语义上就是模型已经给定的答案。
+ *
+ * 仍然不猜内容：不补任何键值，只负责把引号/括号配平。
+ */
 function closeJsonAt(s, end) {
   const stack = []
   let inStr = false
@@ -444,10 +509,17 @@ function closeJsonAt(s, end) {
     if (c === '{' || c === '[') stack.push(c)
     else if (c === '}' || c === ']') stack.pop()
   }
-  if (inStr) return null
-  let out = ''
+  // 尾部若是落单的反斜杠，闭合引号会把它自己转义掉，得先去掉——否则补出来的
+  // 字符串永远合不上（`…abc\` + `"` 会被读成 `\"`）。
+  let head = s.slice(0, end + 1)
+  let tail = ''
+  if (inStr) {
+    if (escaped) head = head.slice(0, -1)
+    tail = '"'
+  }
+  let out = tail
   for (let i = stack.length - 1; i >= 0; i--) out += stack[i] === '{' ? '}' : ']'
-  return s.slice(0, end + 1) + out
+  return head + out
 }
 
 /**
@@ -546,18 +618,20 @@ export function parseAiReply(raw) {
   const tasks = tasksOf(list)
   const edits = normEdits(parsed.edits)
   const merges = normMerges(parsed.merges)
+  const deletes = normDeletes(parsed.deletes)
   // **判失败的依据是「一样产出都没有」**：只提问（reply）是合法结果、只给清单是、
-  // 只给改动或合并也是（「把 X 挪到某计划下」就不需要新任务，也不需要回答）。
+  // 只给改动或合并、只提删除也是（「把那条没用的删掉」不需要新任务，也不需要回答）。
   // 这条目录要跟着新产出一块长——漏一个就会把新形态误判成失败（见坑 #25）。
-  if (reply === '' && tasks.length === 0 && edits.length === 0 && merges.length === 0 && normList(parsed.list) === null) {
+  if (reply === '' && tasks.length === 0 && edits.length === 0 && merges.length === 0
+    && deletes.length === 0 && normList(parsed.list) === null) {
     return emptyParsed('模型既没有回答，也没有给出待办或改动')
   }
-  return { reply, tasks, edits, merges, list: normList(parsed.list), error: '' }
+  return { reply, tasks, edits, merges, deletes, list: normList(parsed.list), error: '' }
 }
 
 /** 一份「什么都没解析出来」的骨架——所有产出都用同一个形状，调用方不用判 undefined。 */
 function emptyParsed(error) {
-  return { reply: '', tasks: [], edits: [], merges: [], list: null, error }
+  return { reply: '', tasks: [], edits: [], merges: [], deletes: [], list: null, error }
 }
 
 /** 一次最多提几条改动 / 几组合并——它们都是「要人一条条过的」，多了人就不看了。 */
@@ -611,9 +685,9 @@ export function normEdits(raw) {
     // 一个字段都没落到 patch 上 = 这条改动没有内容，丢掉（免得渲染出一张空卡）。
     if (Object.keys(patch).length === 0) continue
     // 可选项：同一件事有几种合理做法时（「改到周五」还是「挪到下周一」），
-    // 模型给 2–3 个 label + patch，面板渲染成芯片让人挑——与草稿卡的 options 同构。
+    // 模型给 2–3 个 label + patch，面板渲染成按钮让人挑——与草稿卡的 options 同构。
     // 注意：options 挂在**这条改动**上，不是挂在 patch 里（`src` 是 patch）——
-    // 我第一版写成 src.options，结果永远读到 undefined，芯片一个都不出。
+    // 我第一版写成 src.options，结果永远读到 undefined，按钮一个都不出。
     const options = []
     if (Array.isArray(item.options)) {
       for (const o of item.options) {
@@ -631,11 +705,32 @@ export function normEdits(raw) {
 }
 
 /**
- * **合并任务**：{ keep: 保留的标题, fold: [并进去的标题], title: 合并后的标题或空, why }。
+ * **合并任务**：{ keep: 留下的标题, fold: [其余标题], mode, title: 合并后的标题或空, why }。
+ *
+ * 两种 mode，差别在**被并的那几条最后去哪**：
+ *   · `merge`（默认）——并进去、然后删掉。给「这两条是一件事、重复了」用。
+ *   · `children`——**保留为子任务**：keep 变成计划，fold 里的每一条都挪到它下面，一条都不删。
+ *     给「把这几条归到一个计划下面」「合并成一个计划，其他作为子任务」用
+ *     （用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」）。
+ *
+ * 缺省必须是 `merge` 而不是 `children`：判错的方向不一样——把 children 误判成 merge
+ * 会**删掉用户的条目**，而把 merge 误判成 children 只是多留几条，改完再删也不迟。
  *
  * keep / fold 都是标题。host 会把两边都匹配回真实节点（匹配不上就标出来），
  * 并且**把「自己并进自己」这种无意义项剔掉**。
  */
+/** children 模式一次能收多少条：用户是把**一批**任务归到一个计划下面（真机上是十来条），MAX_EDITS 那点不够用。 */
+export const MAX_FOLD_CHILDREN = 30
+
+/** 模型的 mode → 合法取值。认不出来的一律当 merge（保守：宁可多留，不要误删）。 */
+export function normMergeMode(v) {
+  if (!isStr(v)) return 'merge'
+  const t = String(v).trim().toLowerCase()
+  if (t === 'children' || t === 'child' || t === 'as-children' || t === 'as-children-tasks'
+    || t === '子任务' || t === '子计划' || t === '保留' || t === '保留为子任务') return 'children'
+  return 'merge'
+}
+
 export function normMerges(raw) {
   if (!Array.isArray(raw)) return []
   const out = []
@@ -643,17 +738,75 @@ export function normMerges(raw) {
     if (item === null || typeof item !== 'object') continue
     const keep = isStr(item.keep) ? String(item.keep).trim().slice(0, 200) : ''
     if (keep === '') continue
+    const mode = normMergeMode(item.mode)
     const fold = (Array.isArray(item.fold) ? item.fold : [])
       .filter((x) => isStr(x))
       .map((x) => String(x).trim().slice(0, 200))
       .filter((x) => x !== '' && x !== keep)
-      .slice(0, MAX_EDITS)
+      .slice(0, mode === 'children' ? MAX_FOLD_CHILDREN : MAX_EDITS)
     if (fold.length === 0) continue
     out.push({
       keep,
       fold,
+      mode,
+      // **模型有没有明确给 mode**。没有 = 它把这一项当成了「不用填」。
+      // 这个差别要留着：host 那一层据此在用户的原话里找证据（见 mergeWantsChildren），
+      // 把「漏填 → 默认删」这一条兜住——真机上就这么漏过一次。
+      modeGiven: isStr(item.mode) && String(item.mode).trim() !== '',
       // 空 = 沿用 keep 的标题（模型不必为了「不改标题」编一个）。
       title: isStr(item.title) ? String(item.title).trim().slice(0, 200) : '',
+      why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
+    })
+    if (out.length >= MAX_EDITS) break
+  }
+  return out
+}
+
+/**
+ * **用户的话里是不是明确说了「要保留成子任务」**——用来兜住模型漏填 mode。
+ *
+ * 真机上踩到过一次：模型 reply 里白纸黑字写着「其余 10 条全部挂成它的子任务」，
+ * JSON 里却没给 mode（空缺 = 按 merge 处理 = **删掉那 10 条**）。判错的方向不对等：
+ * 猜成 children 只是多一层嵌套，用户点完还能拆下来；猜成 merge 是数据没了。
+ *
+ * 所以这里只做一件很窄的事：**用户自己说了要保留**，而模型没给 mode 时，
+ * 按 children 走，并把依据回显到卡上（`modeNote`）让他看见为什么。
+ *
+ * 判据只用**用户自己会说的那几种说法**，不猜语义：
+ * 「作为子任务 / 子计划 / 子项」「挂到…下面」「合并成一个计划 / 收成一个计划」。
+ * 命中不了就维持原判（merge）——宁可按模型说的做，也不替用户改主意。
+ */
+export function mergeWantsChildren(userText) {
+  if (!isStr(userText)) return false
+  const t = String(userText)
+  return /子任务|子计划|子项|挂到.{0,8}下面|合并成一个计划|合成一个计划|收成一个计划|作为一个计划/.test(t)
+}
+
+/**
+ * 收敛「删除已有任务」的意图：{ target, why }[]。
+ *
+ * 用户原话：「我需要可以删除任务和合并任务，你要增加，在里面增加这个权限。」
+ *
+ * 背景：在这之前 schema 里**根本没有删除字段**，于是模型被要求删一条时只能回答
+ * 「我不能直接执行，需要你在插件里点确认；schema 里也没有删除字段，我不会用改标题
+ * 之类的动作伪装成删除」——**它说得对**，那时候确实没有这条路。现在补上。
+ *
+ * 与 edits / merges 同一条纪律：
+ *   · target 必须是从【当前全貌】原样抄下来的标题（不是 id、不是它自己起的名字）；
+ *   · **只是「提议」**——客户端渲染成一张卡，用户点确认才真的删。
+ *     删除是不可逆的重动作，绝不能由模型一句话直接落库。
+ *   · why 要写清「为什么该删」（重复 / 已作废 / 从未开始），空列表里那一行
+ *     是用户唯一的判断依据。
+ */
+export function normDeletes(raw) {
+  if (!Array.isArray(raw)) return []
+  const out = []
+  for (const item of raw) {
+    if (item === null || typeof item !== 'object') continue
+    const target = isStr(item.target) ? String(item.target).trim().slice(0, 200) : ''
+    if (target === '') continue
+    out.push({
+      target,
       why: isStr(item.why) ? String(item.why).trim().slice(0, 500) : '',
     })
     if (out.length >= MAX_EDITS) break
@@ -784,7 +937,9 @@ export function attachSuggestions(plan, tasks, today = todayStr()) {
       seen.add(String(s.id))
       candidates.push({ kind: 'plan', id: String(s.id), title: String(s.title ?? ''), why: s.why })
     }
-    candidates.push({ kind: 'inbox', title: '收件箱', why: '先记下来，之后再归位' })
+    // 「放着」而不是「收件箱」：顶层不再分栏，这个候选的含义是「先放顶层，
+    // 之后再归位」——kind 名保留（面板与测试用它做判别），title 是给人看的。
+    candidates.push({ kind: 'inbox', title: '先放着', why: '先放顶层，之后再归位' })
     // ④ 模型点名了但对不上任何现有计划 → 它想说的是「新建一个」。
     //    没点名也给这个候选（名字留空），因为「新建计划」是用户明确要的选项，
     //    不能因为模型没说就不给。

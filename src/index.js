@@ -52,6 +52,7 @@ import {
   fileWarnings,
   filesOf,
   inboxOf,
+  isDescendantOf,
   isDueWithin,
   clearFields,
   collectNodes,
@@ -61,7 +62,6 @@ import {
   blockers,
   reopenAncestors,
   removeBlockedBy,
-  setFiled,
   setStar,
   setRecur,
   spawnRecurring,
@@ -100,6 +100,7 @@ import {
   attachSuggestions,
   collectText,
   historyText,
+  mergeWantsChildren,
   parseAiReply,
   planOutline,
 } from './ai.js'
@@ -314,7 +315,10 @@ function depInputOf(args) {
   const rm = optStr(args.blockedRemove)
   if (rm !== undefined) out.blockedRemove = rm
   if (typeof args.star === 'boolean') out.star = args.star
-  if (typeof args.filed === 'boolean') out.filed = args.filed
+  // `filed` **不进来**：顶层不再分「收件箱 / 工作计划」两栏，这个字段已废弃。
+  // 单独处理它不为「应用」，而是为了在「只传了 filed」时给一句**说清楚的**提示
+  // （见下面的 no-change 分支）——否则 agent 会收到「没有要改的属性」，
+  // 而它明明传了一个参数，那是最难查的一类反馈。
   const recur = optStr(args.recur)
   if (recur !== undefined) out.recur = recur
   return Object.keys(out).length > 0 ? out : undefined
@@ -336,10 +340,11 @@ function applyDeps(plan, node, dep) {
     setStar(node, dep.star)
     reasons.push(dep.star ? 'star' : 'unstar')
   }
-  if (dep.filed !== undefined) {
-    setFiled(node, dep.filed)
-    reasons.push(dep.filed ? 'file' : 'unfile')
-  }
+  // `filed` 已废弃：顶层不再分「收件箱 / 工作计划」两栏，这个字段不再影响任何判断。
+  //
+  // 这里**接受但忽略**，而不是拒绝：agent 可能还按老习惯传它（提示词与工具
+  // 描述里刚去掉），为这个报错等于把一个已经无意义的历史参数变成硬失败。
+  // 传了不生效、也不留痕——磁盘上不会长出这个键（见 store.js 的 normalize）。
   if (dep.recur !== undefined) {
     setRecur(node, dep.recur)
     reasons.push('recur')
@@ -1009,8 +1014,19 @@ export function apply(ctx) {
     }
 
     const AI_MAX_BODY_BYTES = 12 * 1024 * 1024
-    /** 一次模型调用最多等 90 秒；超时宁可报错，也不要让面板一直转圈。 */
-    const AI_TIMEOUT_MS = 90_000
+    /**
+     * 一次模型调用最多等多久。
+     *
+     * **量出来的，不是拍的**：真机实测（opencode-go-new / mimo-v2.6-flash，11 条待办、
+     * 一次归组请求）**花了 65 秒**。原来的 90 秒已经被用掉七成——任务再多几条、
+     * 或者带一张图，就正好撞上限，用户看到的是「模型 90 秒没有返回」这种
+     * 把原因说歪的报错（他并没有说错话，是慢）。
+     *
+     * 放宽到 150 秒是安全的：**等待块上那三秒就出现的「算了」能中止这次请求**
+     * （客户端 AbortController，见 runAi），所以等得久不会把人锁死在转圈里。
+     * 宁可让它跑完，也不要在第 91 秒把一次已经算了一半的调用掐掉。
+     */
+    const AI_TIMEOUT_MS = 150_000
 
     /**
      * AI 入口是否可用。**派生量，不落盘**：每次现问宿主有没有 llm 服务与默认模型。
@@ -1208,6 +1224,19 @@ export function apply(ctx) {
         parsed.reply = (parsed.reply === '' ? '' : parsed.reply + '\n')
           + '· （回复被长度上限截断，上面只拿到前面这些；先采纳，再补一句处理剩下的）'
       }
+      // **兜住「模型漏填 mode」**：空缺按 merge 处理是**会删掉那些条目**的，
+      // 而真机上模型这么漏过一次——reply 里写着「其余 10 条全部挂成它的子任务」，
+      // JSON 里却没有 mode。用户的原话明确说了要保留时按 children 走，并回显依据。
+      // 判据只看**用户自己说的话**（mergeWantsChildren），不猜模型的意思。
+      if (mergeWantsChildren(String(body.text ?? ''))) {
+        for (const m of parsed.merges) {
+          if (m.mode === 'children') continue
+          m.mode = 'children'
+          m.modeNote = m.modeGiven === true
+            ? '按你话里的「作为子计划」，这次按「保留为子任务」执行（不删除）'
+            : '模型没写明合并方式，按你话里的「作为子计划」按「保留为子任务」执行（不删除）'
+        }
+      }
       // **已有同名任务的「草稿」不是新建，是归位/改动。**
       // 用户的原话：「我本来就有两条任务是已经存在的了，你现在做的是要进行一些合并删减，
       // 而不是说让我确认再加任务」——模型经常一边在 reply 里写「这两条本来就在手上，
@@ -1225,6 +1254,9 @@ export function apply(ctx) {
         // 转出来的改动排在前面：它们对应「我刚才说的那条其实已经有了」，最该先看见。
         edits: split.moved.concat(matchEdits(plan, parsed.edits)),
         merges: matchMerges(plan, parsed.merges),
+        // **删除任务**：模型给标题，这里匹配回真实节点。只是「提议」——
+        // 客户端渲染成卡，用户点确认才真的删（删除不可逆，不由模型一句话落库）。
+        deletes: matchDeletes(plan, parsed.deletes),
         // AI 动态生成的清单：标题匹配回真实节点（匹配不上的 ok=false 带回去）。
         list: matchListTitles(plan, parsed.list),
         read: picked.map((f) => f.ref),
@@ -1337,39 +1369,97 @@ export function apply(ctx) {
     }
 
     /**
-     * **合并任务**：keep 保留、fold 并进去（会被删掉）。两边都要匹配上才算 ok。
+     * **合并任务**：keep 留下、fold 并进去。两种 mode：
+     *   · `merge`（默认）——fold 的子项/证据/关联并进 keep，**然后删掉 fold**（重复条目）。
+     *   · `children`——**每一条 fold 都挪到 keep 下面当子项，一条都不删**
+     *     （用户原话：「我要的就是要把一些任务进行合并，然后作为计划，然后其他的作为它的子计划。」）
      *
-     * 额外剔两种无意义项：fold 里混进了 keep 自己（按 id 判，标题写得不完全一样时
-     * 也能认出来）、同一个节点被 fold 两次。剩下的对不上就记在 missing 里带回去——
-     * 「哪一条没对上」必须说出来，否则用户只会看到一条不执行的卡片。
+     * 两种 mode 都要 keep 与全部 fold 匹配上才算 ok。
+     *
+     * 剔掉三种无意义项，剔的时候把原因记进 `skipped`（卡片上照实说，不静默丢）：
+     *   ① fold 里混进了 keep 自己（按 id 判，标题写得不完全一样时也能认出来）；
+     *   ② 同一条被 fold 两次；
+     *   ③ children 模式下**挪了会成环**——keep 就在这条 fold 底下（把上级挪进自己的子孙，
+     *      store 的 moveNode 会直接拒绝，面板点下去只会报错）；已经在 keep 底下的也别再挪一次。
+     * 剩下的对不上就记在 `missing` 里带回去——「哪一条没对上」必须说出来，
+     * 否则用户只会看到一条不执行的卡片。
      */
     function matchMerges(plan, merges) {
       if (!Array.isArray(merges)) return []
       const flat = collectNodes(plan, 'any')
+      // 父节点要按 id 回查：判断「这条是不是已经在 keep 底下」用得到。
+      const byId = new Map(flat.map((x) => [String(x.node.id ?? ''), x]))
       return merges.map((m) => {
+        const mode = m.mode === 'children' ? 'children' : 'merge'
         const keep = hitByTitle(flat, m.keep)
         const keepId = keep === null ? null : String(keep.id ?? '')
         const missing = []
+        const skipped = []
         const fold = []
         const seen = new Set(keepId === null ? [] : [keepId])
         for (const t of (Array.isArray(m.fold) ? m.fold : [])) {
           const hit = hitByTitle(flat, t)
           if (hit === null) { missing.push(String(t)); continue }
           const id = String(hit.id ?? '')
-          if (seen.has(id)) continue
+          if (seen.has(id)) { skipped.push({ title: String(hit.title ?? ''), why: '重复列了同一条' }); continue }
           seen.add(id)
+          if (mode === 'children' && keep !== null) {
+            // keep 在这条底下 → 挪过去成环；这条本来就在 keep 底下 → 不用挪。
+            if (isDescendantOf(plan, keep, hit)) {
+              skipped.push({ title: String(hit.title ?? ''), why: '它是「' + String(keep.title ?? '') + '」的上级，挪进去会成环' })
+              continue
+            }
+            const here = byId.get(id)
+            if (here !== undefined && here.parent !== null && String(here.parent.id ?? '') === keepId) {
+              skipped.push({ title: String(hit.title ?? ''), why: '已经在「' + String(keep.title ?? '') + '」下面了' })
+              continue
+            }
+          }
           fold.push({ id, title: String(hit.title ?? '') })
         }
         return {
           keep: m.keep,
           fold: m.fold,
+          mode,
           title: m.title,
           why: m.why,
+          // 「为什么这一组按 children 走」——用户自己那句话触发的兜底（见 /ai-parse），
+          // 依据要摆在卡上：他得看见是**按他的话**改的模型判读，而不是 AI 擅自改主意。
+          modeNote: typeof m.modeNote === 'string' ? m.modeNote : '',
           keepId,
           keepTitle: keep === null ? '' : String(keep.title ?? ''),
           folds: fold,
           missing,
+          skipped,
+          // keep 下面已经有子项时，它本来就（即将）是计划——卡片上要能说清会多出几个子项。
+          keepKids: keep === null ? 0 : childrenOf(keep).length,
           ok: keep !== null && fold.length > 0 && missing.length === 0,
+        }
+      })
+    }
+
+    /**
+     * **删除任务**：把模型给的标题匹配回真实节点。
+     *
+     * 与 matchMerges 同一条纪律：匹配不上的记在 missing 里带回去——「哪一条没对上」
+     * 必须说出来，否则用户只会看到一张不执行的卡。
+     *
+     * 只匹配、**不执行**。真正的删除走既有的 plan_node_remove（客户端点确认后调），
+     * 所以这里不新增任何写入通路。
+     */
+    function matchDeletes(plan, deletes) {
+      if (!Array.isArray(deletes)) return []
+      const flat = collectNodes(plan, 'any')
+      return deletes.map((d) => {
+        const hit = hitByTitle(flat, d.target)
+        return {
+          target: d.target,
+          why: d.why,
+          id: hit === null ? null : String(hit.id ?? ''),
+          title: hit === null ? '' : String(hit.title ?? ''),
+          // 有子项的节点删掉会连带子树——卡片上要能说清「会一起删掉 N 个子项」。
+          children: hit === null ? 0 : collectNodes({ nodes: [hit] }, 'any').length - 1,
+          ok: hit !== null,
         }
       })
     }
@@ -1549,7 +1639,12 @@ export function apply(ctx) {
       const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
       if (spawned !== null) reasons.push('recur-spawn')
       if (reasons.length === 0) {
-        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef / blockedAdd / blockedRemove / star / recur / filed')
+        // 只传了已废弃的 filed 时，给一句说明而不是「没有要改的属性」——
+        // 后者会让 agent 以为自己参数名写错了，然后反复试。
+        if (body !== null && body !== undefined && typeof body.filed === 'boolean') {
+          throw new Error('filed 已废弃并忽略：顶层现在不分「收件箱 / 工作计划」两栏，待办与计划平铺在一起。想让一条待办变成计划，直接给它加子项（plan_node_add 带 parent）')
+        }
+        throw new Error('没有要改的属性：可传 title / note / type / status / priority / owner / start / end / due / metric / to / receipt / clear / evidenceRef / fileRef / blockedAdd / blockedRemove / star / recur')
       }
       await store.save(plan, { reason: reasons.join('+') })
       json(res, {
