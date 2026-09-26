@@ -174,6 +174,14 @@ const CSS = [
   // 于是「蓝」在面板里恒等于「可交互 / 正在进行」，不再有第二、第三种含义。
   + '--wb-accent:var(--dsw-alias-link);'
   + '--wb-accent-soft:var(--dsw-alias-state-business-tertiary);'
+  // **主按钮那一对**。原来确认按钮用 accent-soft 底，而它所在的行也是 accent-soft 底
+  // （.dsh-wb-movepick）——同色叠同色，按钮在视觉上根本不成其为按钮，真机反馈
+  // 「没有确认的按钮？」就是这条。现在直接抄**宿主自己的主按钮配方**
+  // （button-primary-fill + label-primary-foreground，是宿主聊天/工具栏同款搭配），
+  // 对比度由宿主保证，既不自己造色也不会在换肤后失配。
+  + '--wb-btn-fill:var(--dsw-alias-button-primary-fill);'
+  + '--wb-btn-fg:var(--dsw-alias-label-primary-foreground);'
+  + '--wb-btn-hover:var(--dsw-alias-button-primary-hover);'
   // 浮层/浮球的底：宿主的「浮层与气泡」底。面板自身不用它（面板跟着宿主栏背景），
   // 但悬浮在内容之上的东西必须自己有不透明的底，否则底下的字会透上来。
   + '--wb-bg:var(--dsw-alias-bg-overlay);'
@@ -469,8 +477,25 @@ const CSS = [
   '.dsh-wb-aibtn,.dsh-wb-iconbtn{display:inline-flex;align-items:center;gap:var(--wb-sp-2);border:1px solid transparent;background:transparent;color:var(--wb-fg-2);border-radius:var(--wb-pill);cursor:pointer;font:var(--wb-f2);padding:var(--wb-sp-2) var(--wb-sp-3);white-space:nowrap;transition:background var(--wb-dur) var(--wb-ease),color var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-aibtn:hover:not(:disabled),.dsh-wb-iconbtn:hover:not(:disabled){background:var(--wb-hover);color:var(--wb-fg);}',
   '.dsh-wb-aibtn:disabled,.dsh-wb-iconbtn:disabled{opacity:.4;cursor:default;}',
-  // 「解析」是这一块的主动作，给它实心感（描边 + 软底 + 加粗），与其它次要按钮区分。
-  '.dsh-wb-aibtn.primary{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  // 「解析」是这一块的主动作，给它**实心**（宿主主按钮那一对），与其它次要按钮区分。
+  //
+  // 原来是 accent-soft 底 + 加粗，但它当时坐在同样 accent-soft 底的 .dsh-wb-movepick
+  // 里——**同色叠同色**，真机上根本看不出那里有个按钮（用户原话：「没有确认的按钮？」）。
+  // 换成宿主自己的主按钮填充（button-primary-fill + label-primary-foreground）：
+  // 对比度由宿主配色保证，不自己造色，明暗两态自动跟随，也不与宿主抢约定。
+  '.dsh-wb-aibtn.primary{background:var(--wb-btn-fill);color:var(--wb-btn-fg);font-weight:600;}',
+  '.dsh-wb-aibtn.primary:hover:not(:disabled){background:var(--wb-btn-hover);color:var(--wb-btn-fg);}',
+  // **每张 AI 建议卡上那一个主动作**：整行铺满、按钮撑满、点击区 44px。
+  //
+  // 为什么单独一类：.dsh-wb-movepick 还在服务**多选**的那些行（归入候选、可选项），
+  // 那里要的是「几个小胶囊并排」，铺满就没法看了。而「就这么办 / 按这个改 /
+  // 确认删除 / 按这个合并」这四张卡各自**只有那一个**动作——它就是这张卡唯一要人
+  // 回答的问题，藏在虚线框里的小胶囊里等于没有。44px 是触屏点击区的下限。
+  '.dsh-wb-aiact{display:flex;margin:var(--wb-sp-3) 0 0;}',
+  '.dsh-wb-aiact .dsh-wb-aibtn{flex:1;justify-content:center;min-height:44px;font:var(--wb-f2s);border-radius:var(--wb-r-2);}',
+  // 同一张卡上的**第二条路**（「按这个改」进表单）：同样铺满、同样好点，但描边 +
+  // 中性文字——它是备选，不该跟实心主按钮抢眼。两颗实心按钮并排会让人犹豫该点哪颗。
+  '.dsh-wb-aiact .dsh-wb-aibtn:not(.primary){border-color:var(--wb-line-2);color:var(--wb-fg);}',
   '.dsh-wb-aibtn.mic.on{background:var(--wb-accent-soft);color:var(--wb-fg);}',
   '.dsh-wb-aipics{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin:var(--wb-sp-3) 0 0;font:var(--wb-f3);color:var(--wb-fg-2);}',
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
@@ -1723,7 +1748,7 @@ function apply(ctx) {
         // 上面那行「旧 → 新」就是它要写的东西——按下去之前看得见自己会得到什么。
         rows.length === 0 && edit.exists !== true
           ? null
-          : h('div', { className: 'dsh-wb-movepick', key: 'now' },
+          : h('div', { className: 'dsh-wb-aiact', key: 'now' },
             h('button', {
               className: 'dsh-wb-aibtn primary',
               title: '就这么办：直接写入（' + editSummary(edit) + '）。想先改再存，点「按这个改」进表单',
@@ -1739,9 +1764,9 @@ function apply(ctx) {
               onClick: () => { aiEditOption(edit, o); if (typeof onDone === 'function') onDone() },
             }, o.label)))
           : null,
-        node === null ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
+        node === null ? null : h('div', { className: 'dsh-wb-aiact', key: 'a' },
           h('button', {
-            className: 'dsh-wb-aibtn primary',
+            className: 'dsh-wb-aibtn',
             title: '打开这条任务的表单（改动已填好，你可以再改），确认后保存',
             onClick: () => openAiEdit(edit),
           }, '按这个改')),
@@ -1780,7 +1805,7 @@ function apply(ctx) {
             : '删除后可用版本留档回滚（每条改动前都会自动留档）。'),
         item.ok === true ? null : h('div', { className: 'dsh-wb-aihist', key: 'miss' },
           '没对上：全貌里没有叫「' + String(item.target) + '」的条目'),
-        item.ok !== true ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
+        item.ok !== true ? null : h('div', { className: 'dsh-wb-aiact', key: 'a' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
             title: '确认删除「' + name + '」',
@@ -1828,7 +1853,7 @@ function apply(ctx) {
           '没对上：' + missing.map((t) => '「' + String(t) + '」').join('、')),
         skipped.length === 0 ? null : h('div', { className: 'dsh-wb-aihist', key: 'skip' },
           '这些没动：' + skipped.map((s) => '「' + String(s.title) + '」' + (s.why ? '（' + String(s.why) + '）' : '')).join('、')),
-        merge.ok !== true ? null : h('div', { className: 'dsh-wb-movepick', key: 'a' },
+        merge.ok !== true ? null : h('div', { className: 'dsh-wb-aiact', key: 'a' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
             title: asChildren
@@ -2585,7 +2610,7 @@ function apply(ctx) {
           : (pick.kind === 'new'
             ? '新建计划「' + String(pick.title === undefined ? '' : pick.title) + '」'
             : '放顶层')
-        return h('div', { className: 'dsh-wb-movepick', key: 'now' },
+        return h('div', { className: 'dsh-wb-aiact', key: 'now' },
           h('button', {
             className: 'dsh-wb-aibtn primary',
             title: '就这么办：直接建这条待办（' + where + '，'

@@ -2859,6 +2859,39 @@ test('归组卡（mode=children）：明写「不会删任何条目」；采纳�
   assert.equal(requests.find((r) => String(r.path).endsWith('/node-set')).body.title, '归组用总计划')
 })
 
+test('每张 AI 卡的确认按钮都独占一行（.dsh-wb-aiact），不藏在胶囊行里', async () => {
+  // 真机反馈：「没有确认的按钮？」——根因不在渲染条件，而在样式：主按钮用
+  // accent-soft 底，而它所在的 .dsh-wb-movepick 行**也是** accent-soft 底，
+  // 同色叠同色，按钮在视觉上根本不成其为按钮（那块还要在 build.test.mjs 里钉住）。
+  // 这里钉的是结构：四张卡（新任务 / 改动 / 合并 / 删除）的确认按钮都必须挂在
+  // .dsh-wb-aiact 行里，且那颗按钮带 primary。
+  withAi()
+  aiReply = {
+    reply: '照你说的办',
+    tasks: [{ title: '归组卡用新任务', due: '', priority: '', note: '', plan: '', candidates: [] }],
+    edits: [{ target: '收件箱一条', patch: { due: '2026-10-01' }, why: '截止该填了', id: idOf('收件箱一条'), ok: true }],
+    merges: [{
+      keep: '表层待办', keepId: idOf('表层待办'), keepTitle: '表层待办',
+      fold: ['收件箱一条'], folds: [{ id: idOf('收件箱一条'), title: '收件箱一条' }],
+      missing: [], skipped: [], ok: true,
+    }],
+    deletes: [{ target: '深层待办', id: idOf('深层待办'), title: '深层待办', children: 0, ok: true }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '记一条、改一条、合一条、删一条' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const cards = byClass(render(), 'dsh-wb-aitask')
+  assert.equal(cards.length, 4, '四类建议各一张卡')
+  for (const card of cards) {
+    const rows = findAll(card, (x) => classesOf(x).includes('dsh-wb-aiact'))
+    assert.ok(rows.length >= 1, '这张卡没有确认按钮行：' + textOf(card).slice(0, 20))
+    const primary = findAll(rows[0], (x) => x.type === 'button' && classesOf(x).includes('primary'))
+    assert.equal(primary.length, 1, '确认按钮要带 primary（实心）：' + textOf(card).slice(0, 20))
+  }
+})
+
 test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起」已删）', async () => {
   // 两颗按钮调同一个 setFabOpen(false)，是纯粹的重复。留哪颗的判断依据是位置：
   // 标题行右上角是「关闭一个面板」的常规位置，快捷行那颗文字按钮反而占宽度。

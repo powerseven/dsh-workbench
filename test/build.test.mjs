@@ -203,6 +203,31 @@ test('软底状态胶囊的文字走中性色，语义色只做描边与底色',
   }
 })
 
+test('确认按钮用宿主主按钮那一对，且底色不能与它所在行的底色相同', () => {
+  // 真机反馈「没有确认的按钮？」——**渲染是对的，是样式把它藏了**：
+  // 主按钮原来是 accent-soft 底，而它坐在 .dsh-wb-movepick（同样 accent-soft 底）
+  // 里，同色叠同色，按钮在视觉上根本不成其为按钮。
+  // 现在抄宿主自己的主按钮配方（button-primary-fill + label-primary-foreground，
+  // 与宿主聊天/工具栏同款），对比度由宿主保证，换肤自动跟随（坑 #19/#31）。
+  const { flat } = cssBlock()
+  assert.ok(
+    flat.includes('--wb-btn-fill:var(--dsw-alias-button-primary-fill)'),
+    '别名层要映射宿主的主按钮填充色',
+  )
+  assert.ok(
+    flat.includes('--wb-btn-fg:var(--dsw-alias-label-primary-foreground)'),
+    '主按钮文字色要用宿主配套的前景色（对比度由宿主保证）',
+  )
+  const line = flat.split('}').find((l) => l.includes('.dsh-wb-aibtn.primary{'))
+  assert.ok(line, '找不到 .dsh-wb-aibtn.primary 规则')
+  assert.match(line, /background:var\(--wb-btn-fill\)/, '主按钮要实心（宿主主按钮填充）')
+  assert.doesNotMatch(line, /background:var\(--wb-accent-soft\)/, '主按钮不能与所在行的底色同色')
+  // 确认按钮还要好点：铺满 + 44px 触屏点击区下限。
+  // 注意 flat 压掉了所有空白与 '+'，后代选择器里的空格也被吃掉了。
+  assert.ok(flat.includes('.dsh-wb-aiact.dsh-wb-aibtn{flex:1;'), '要有独占一行的确认按钮行')
+  assert.ok(flat.includes('min-height:44px'), '确认按钮的点击区不得小于 44px')
+})
+
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {
   const requires = [...client.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2])
   assert.deepEqual([...new Set(requires)], ['react'], '客户端只应 require react')
