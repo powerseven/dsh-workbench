@@ -840,19 +840,13 @@ function deferDate(base, kind) {
   var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof base === 'string' ? base : '')
   if (m === null) return ''
   var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
-  var ymd = function () {
-    var y = d.getFullYear()
-    var mo = d.getMonth() + 1
-    var da = d.getDate()
-    return y + '-' + (mo < 10 ? '0' + mo : '' + mo) + '-' + (da < 10 ? '0' + da : '' + da)
-  }
-  if (kind === 'tomorrow') { d.setDate(d.getDate() + 1); return ymd() }
+  if (kind === 'tomorrow') { d.setDate(d.getDate() + 1); return ymdOf(d) }
   if (kind === 'nextweek') {
     var dow = d.getDay()
     var toMon = (8 - dow) % 7
     if (toMon === 0) toMon = 7
     d.setDate(d.getDate() + toMon)
-    return ymd()
+    return ymdOf(d)
   }
   return ''
 }
@@ -916,111 +910,177 @@ function upcomingByDay(plan, today) {
   return { days: days }
 }
 
-// -------------------------------------------------------------- 看板分列
+// -------------------------------------------------------------- 日报 / 周报
 
 /**
- * 看板视图的数据：把整棵计划树按**顶层计划**分列，每个顶层计划（或收件箱）占一列，
- * 列里是它名下的全部待办（含嵌套子计划里的），卡片带「属于哪个子计划」的上下文路径。
- *
- * 这是树形之外另一种读法——节点一多，树会越缩越深、越难俯瞰；看板用「横向铺开」
- * 让「每个计划里现在有什么、做完了多少」一眼可见。它**只读** /get 下发的数据，
- * 不新增任何工具或路由（与树形共用同一份 payload）。
- *
- * 筛选器同样作用于看板：filterId 不是 'all' 时，只把命中筛选的待办放进列里
- * （聚焦列表已经帮我们算好了逾期 / 重要度 / 落后等口径，本地不重算）。
- *
- * 列顺序 = 顶层节点顺序，最后接一个收件箱列（所有顶层待办归在一起，而不是每个
- * 顶层待办占一列）。没有任何待办的计划列会被丢弃，保持看板清爽。
- *
- * 纯函数、无 IO，便于在 test/logic.test.mjs 里钉住分组口径。
+ * 本地时区的 YYYY-MM-DD。日期一律走**本地日历**：混进一份 UTC 运算，
+ * 「今天」在两处就会对不上，窗口随之算错（而且不报错，只是少算一天）。
  */
-function boardColumns(plan, filterId, today) {
-  if (plan === null || plan === undefined || typeof plan !== 'object') return []
+function ymdOf(d) {
+  var y = d.getFullYear()
+  var mo = d.getMonth() + 1
+  var da = d.getDate()
+  return y + '-' + (mo < 10 ? '0' + mo : '' + mo) + '-' + (da < 10 ? '0' + da : '' + da)
+}
+
+/** dateStr 加减 n 天。非法输入返回空串——窗口算不出来时该是「这段没有」，不是崩。 */
+function shiftDay(dateStr, n) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof dateStr === 'string' ? dateStr : '')
+  if (m === null) return ''
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  d.setDate(d.getDate() + n)
+  return ymdOf(d)
+}
+
+/**
+ * 本周周一的 YYYY-MM-DD。周一是一周之始（与 deferDate 的「下一个周一」同一把尺）：
+ * 周日回退 6 天，其余回退 (getDay() - 1) 天。
+ */
+function weekStartOf(dateStr) {
+  var m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(typeof dateStr === 'string' ? dateStr : '')
+  if (m === null) return ''
+  var d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]))
+  var dow = d.getDay()
+  return shiftDay(dateStr, dow === 0 ? -6 : -(dow - 1))
+}
+
+/**
+ * **日报 / 周报**：一段时间的账——「我做了多少、卡在哪、接下来该动什么」。
+ *
+ * 它替换掉原来的看板，因为两者回答的不是同一个问题：看板是**存量**（现在每个计划里
+ * 有什么，列恒定、每计划一列），报告是**流量**（这段时间发生了什么，段恒定、五段）。
+ * 看板需要节点多到「树缩得太深」才划算，报告则是每天都能看——所以它按时间切片，
+ * 不按计划分列。
+ *
+ * 五个段（**空段不渲染**，报告里没有「完成 0」这种占位）：
+ *   - 本期完成：`doneAt` 落在完成窗口内
+ *   - 该做没做（逾期）：读服务端 `overdue` 标注
+ *   - 落后于周期：读服务端 `behind` 标注
+ *   - 本期到期：自身的 `due`（容器 `end`）落在到期窗口内
+ *   - 进行中：状态是 doing，且**不欠账、不落后、近期也不到期**
+ *
+ * 后四段是**互斥的一刀切**（逾期 > 落后 > 到期 > 进行中，见下面的分类循环），
+ * 所以表头那五个数互不重复、加起来正好是本期动过的条目数。
+ *
+ * **完成窗口与到期窗口故意不一样**：
+ *   - 完成看**已经过去**的部分——日报是今天，周报是「本周一 → 今天」
+ *   - 到期看**还没到**的部分——日报是今天，周报是「今天 → 本周日」
+ * 于是周四看周报，既知道这四天做了什么，也知道剩下四天欠什么。若完成也按整周算，
+ * 本周尚未发生的四天就是「完成 0」，白占一段还会让人以为这周白过了。
+ *
+ * **判定读服务端标注，一个都不在客户端重算**：逾期与落后直接用 `overdue` / `behind`
+ * （服务端的口径在 `store.isOverdue` 一处，重算就会出现「面板说没逾期、简报说逾期」）。
+ * 客户端只负责**分组**——把一条落进哪个窗口，那是排版问题不是判定问题，与
+ * `upcomingByDay` 同一把尺（分组读节点自身的 `due` / `end`，不引入 `start`）。
+ *
+ * **不吃筛选器**：报告是这段时间的账。套一层「我委派出去的」，「本期完成」会空掉，
+ * 而那个空是筛选造成的、不是真的没完成——那是在骗人。所以报告视图不渲染筛选条。
+ *
+ * `doneAt` 取日期部分的方式与 host 的 `dayOf` 一致（截前 10 位），不引第二把尺。
+ */
+function reportOf(plan, today, mode) {
   var t = (typeof today === 'string' && today !== '') ? today : todayStr()
-  var useFilter = (typeof filterId === 'string' && filterId !== '' && filterId !== 'all')
+  var isDay = mode === 'day'
+  var ws = isDay ? t : weekStartOf(t)
+  var we = isDay ? t : shiftDay(ws, 6)
 
-  // 待办清单：筛选态走 focusList（口径只在 host 一处），全量态直接摊平后只留待办。
-  var flat = useFilter
-    ? focusList(plan, filterId, t)
-    : flattenNodes(plan).filter(function (x) { return x.type === 'todo' })
-  if (flat.length === 0) return []
+  // id → 标题：每条都要说清它属于哪个计划，否则「完成 5 条」是句空话。
+  var titles = {}
+  var nodes = (plan === null || plan === undefined) ? [] : flattenNodes(plan)
+  for (var i = 0; i < nodes.length; i++) {
+    titles[String(nodes[i].node.id)] = String(nodes[i].node.title)
+  }
+  // 摊平表的 path 是 id 链（'n1 / n3 / n7'），末段是它自己——上下文只报祖先。
+  var ctxOf = function (x) {
+    var ids = String(x.path).split(' / ')
+    var out = []
+    for (var k = 0; k < ids.length - 1; k++) {
+      if (titles[ids[k]] !== undefined) out.push(titles[ids[k]])
+    }
+    return out.join(' / ')
+  }
+  // 分组用的锚点日期：与 upcomingByDay 同一把尺（due 优先，容器退到 end）。
+  var anchorOf = function (n) {
+    if (typeof n.due === 'string' && n.due !== '') return n.due
+    if (typeof n.end === 'string' && n.end !== '') return n.end
+    return ''
+  }
+  var overdueOf = function (n) {
+    return n.overdue === true || (n.overdue === undefined && overdueFallback(n, t))
+  }
 
-  // 建 id → 节点 的索引，供卡片的「上下文路径」把 id 翻成标题。
-  var index = {}
-  var roots = planNodes(plan)
-  var planRootIds = []
-  var inboxRootIds = []
-  for (var r = 0; r < roots.length; r++) {
-    var rid = String(roots[r].id)
-    index[rid] = roots[r]
-    if (nodeType(roots[r]) === 'plan') planRootIds.push(rid)
-    else inboxRootIds.push(rid)
-    var kids = childrenOf(roots[r])
-    for (var w = 0; w < kids.length; w++) {
-      var stack = [kids[w]]
-      while (stack.length > 0) {
-        var cur = stack.pop()
-        if (cur === null || cur === undefined || typeof cur !== 'object') continue
-        index[String(cur.id)] = cur
-        var ck = childrenOf(cur)
-        for (var c2 = 0; c2 < ck.length; c2++) stack.push(ck[c2])
+  var done = []
+  var doing = []
+  var overdue = []
+  var behind = []
+  var due = []
+  var dropped = 0
+
+  for (var f = 0; f < nodes.length; f++) {
+    var x = nodes[f]
+    var n = x.node
+    var finished = n.status === 'done' || n.status === 'dropped'
+    if (n.status === 'dropped') dropped++
+    if (finished) {
+      // 完成时间取前 10 位（与 host 的 dayOf 同一把尺），落在完成窗口里才算本期完成。
+      var day = typeof n.doneAt === 'string' ? n.doneAt.slice(0, 10) : ''
+      if (n.status === 'done' && day !== '' && day >= ws && day <= t) {
+        done.push({ node: n, path: ctxOf(x), day: day })
       }
+      continue                                  // 已结束的只可能算「完成」，不再往下判
+    }
+    // 未完成的四段是**互斥的一刀切**，不是四个可叠加的标签——表头那五个数必须互不重复：
+    // 一条在做的任务若同时落后、又在本周到期，它只进最急的那一段。这样表头的五个数
+    // 是**互不重复**的，加起来正好是「本期动过的全部条目」——否则「落后 2」和
+    // 「进行中 3」里同一个人，看的人得自己猜哪条被数了两遍。
+    //   优先级：逾期 > 落后 > 本期到期 > 进行中
+    // 排在前面的段先判、判到就 continue；「进行中」因此读作「手上的事，且不欠账」。
+    if (overdueOf(n)) {
+      overdue.push({ node: n, path: ctxOf(x), date: anchorOf(n) })
+      continue
+    }
+    if (n.behind === true) {
+      behind.push({ node: n, path: ctxOf(x), gap: n.pace ? n.pace.gap : 0 })
+      continue
+    }
+    var a = anchorOf(n)
+    if (a !== '' && a >= t && a <= we) {
+      due.push({ node: n, path: ctxOf(x), date: a })
+      continue
+    }
+    if (n.status === 'doing') doing.push({ node: n, path: ctxOf(x) })
+  }
+
+  // 排序口径逐段不同：完成按时间倒序（刚做完的最先看见），其余按「最该先动」排。
+  done.sort(function (a, b) { return String(b.node.doneAt || '').localeCompare(String(a.node.doneAt || '')) })
+  var byUrgency = function (k) {
+    return function (a, b) {
+      var sa = a.node.starred === true ? 0 : 1
+      var sb = b.node.starred === true ? 0 : 1
+      if (sa !== sb) return sa - sb
+      var pa = priorityRank(a.node.priority)
+      var pb = priorityRank(b.node.priority)
+      if (pa !== pb) return pa - pb
+      return String(k(a)).localeCompare(String(k(b)))
     }
   }
+  doing.sort(byUrgency(anchorOf))
+  overdue.sort(byUrgency(anchorOf))
+  due.sort(byUrgency(anchorOf))
+  behind.sort(function (a, b) { return (b.gap - a.gap) })
 
-  // 列顺序：顶层计划在前，收件箱列（若有顶层待办）垫后。
-  var order = planRootIds.slice()
-  if (inboxRootIds.length > 0) order.push('__inbox__')
-  var meta = {}
-  for (var p = 0; p < planRootIds.length; p++) {
-    meta[planRootIds[p]] = { kind: 'plan', node: index[planRootIds[p]] }
+  return {
+    mode: isDay ? 'day' : 'week',
+    title: isDay ? dayLabel(t) : (dayLabel(ws) + ' – ' + dayLabel(we)),
+    done: done,
+    doing: doing,
+    overdue: overdue,
+    behind: behind,
+    due: due,
+    dropped: dropped,
+    empty: done.length === 0 && doing.length === 0 && overdue.length === 0
+      && behind.length === 0 && due.length === 0,
   }
-  meta['__inbox__'] = { kind: 'inbox', node: null }
-  var bucket = {}
-  for (var o = 0; o < order.length; o++) bucket[order[o]] = []
-
-  for (var f = 0; f < flat.length; f++) {
-    var segs = flat[f].path.split(' / ')
-    var topId = segs[0]
-    if (bucket[topId] !== undefined) bucket[topId].push(flat[f])
-    else if (inboxRootIds.indexOf(topId) >= 0) bucket['__inbox__'].push(flat[f])
-  }
-
-  var cols = []
-  for (var c = 0; c < order.length; c++) {
-    var gid = order[c]
-    var items = bucket[gid]
-    if (items.length === 0) continue
-    // 全量态把已完成的沉到列底；筛选态已由 focusList 排好序（逾期→重要度→快到期）。
-    if (!useFilter) {
-      items = items.slice().sort(function (a, b) {
-        var ao = (a.node.status === 'done' || a.node.status === 'dropped') ? 1 : 0
-        var bo = (b.node.status === 'done' || b.node.status === 'dropped') ? 1 : 0
-        return ao - bo
-      })
-    }
-    var openCount = 0
-    for (var n = 0; n < items.length; n++) if (isOpen(items[n].node)) openCount++
-    var cards = items.map(function (it) {
-      var ids = it.path.split(' / ')
-      ids.pop()                                  // 去掉自身
-      var ctx = ids.slice(1)                      // 去掉顶层归属（列本身已经代表它）
-        .map(function (id) { return index[id] !== undefined ? index[id].title : id })
-        .join(' / ')
-      return { node: it.node, path: ctx }
-    })
-    var m = meta[gid]
-    cols.push({
-      id: gid,
-      kind: m.kind,
-      title: m.kind === 'inbox' ? '收件箱' : m.node.title,
-      progress: m.kind === 'plan' ? progressOf(m.node) : null,
-      total: items.length,
-      open: openCount,
-      cards: cards,
-    })
-  }
-  return cols
 }
 
 // -------------------------------------------------------------- 归位候选
@@ -1311,7 +1371,7 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     upcomingByDay: upcomingByDay,
     deferDate: deferDate,
     dayLabel: dayLabel,
-    boardColumns: boardColumns,
+    reportOf: reportOf,
     moveTargets: moveTargets,
     COLLAPSE_KEY: COLLAPSE_KEY,
     parseCollapsed: parseCollapsed,

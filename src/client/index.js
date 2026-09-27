@@ -305,32 +305,35 @@ const CSS = [
   '.dsh-wb-chip.sug{background:var(--wb-accent-soft);border-color:var(--wb-accent);color:var(--wb-fg);}',
   // ── 主体 ────────────────────────────────────────────────────────────────
   '.dsh-wb-body{flex:1;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);}',
-  // ── 看板视图 ────────────────────────────────────────────────────────────
-  // 看板是树形之外另一种读法：每个顶层计划（含收件箱）占一列，待办摊成卡片。
-  // 节点多了以后树会越缩越深、越难俯瞰；看板「横向铺开」让「每个计划里有什么」
-  // 一眼可见。面板住在 ≈1000px 宽、纵向偏矮的底部工作台，横向铺列恰好吃准这个尺寸。
-  // 它**只读** /get 下发的同一份 payload，不新增任何工具或路由。
-  '.dsh-wb-board{display:flex;gap:var(--wb-sp-4);overflow-x:auto;overflow-y:auto;padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);align-items:flex-start;}',
-  '.dsh-wb-col{flex:0 0 210px;min-width:210px;max-width:210px;display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
-  // 列头用一条上边线把它和相邻列分开；收窄内边距，让一列里多塞下几张卡片。
-  '.dsh-wb-colhead{display:flex;align-items:baseline;gap:var(--wb-sp-2);padding:var(--wb-sp-1) var(--wb-sp-2) var(--wb-sp-2);border-top:2px solid var(--wb-line);}',
-  '.dsh-wb-coltitle{flex:1;font:var(--wb-f1s);word-break:break-word;}',
-  '.dsh-wb-colpct{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-colcount{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
-  '.dsh-wb-cards{display:flex;flex-direction:column;gap:var(--wb-sp-2);}',
-  // 卡片：复用行密度思路——纵向内边距给很小，靠 hover 底色连成一片。
-  '.dsh-wb-card{border:1px solid var(--wb-line-2);border-radius:var(--wb-r-2);padding:var(--wb-sp-2) var(--wb-sp-3);transition:background var(--wb-dur) var(--wb-ease),border-color var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-card:hover{background:var(--wb-hover);border-color:var(--wb-line);}',
-  '.dsh-wb-card.done{opacity:.55;}',
-  '.dsh-wb-cardtop{display:flex;align-items:flex-start;gap:var(--wb-sp-2);}',
-  '.dsh-wb-planhead input,.dsh-wb-focus input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
-  '.dsh-wb-cardtop input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
-  '.dsh-wb-cardtitle{flex:1;word-break:break-word;cursor:pointer;}',
-  '.dsh-wb-cardtitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
-  // 卡片上的上下文路径：说明这张卡属于哪个子计划（列只代表顶层计划）。
-  '.dsh-wb-cardpath{font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);word-break:break-word;margin-top:2px;}',
-  '.dsh-wb-cardmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;margin-top:var(--wb-sp-2);}',
-  // ── 视图切换（树 / 看板）───────────────────────────────────────────────
+  // ── 报告视图（日报 / 周报）───────────────────────────────────────────────
+  // 报告是**竖向**的一段段流水（不是横向分列），所以它要的样式是「段头 + 紧凑行」，
+  // 而不是看板那套 flex 列。面板纵向偏矮，故段与段之间不留大气口。
+  '.dsh-wb-report{padding:var(--wb-sp-4) var(--wb-sp-5) var(--wb-sp-5);}',
+  // 报告头一行：左边档位切换（日报/周报），右边这一段的日期范围。窄屏放不下就折行。
+  '.dsh-wb-rhead{display:flex;align-items:center;gap:var(--wb-sp-2);flex-wrap:wrap;margin-bottom:var(--wb-sp-3);}',
+  '.dsh-wb-rseg{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
+  '.dsh-wb-rsegbtn{padding:var(--wb-sp-1) var(--wb-sp-3);border:none;background:transparent;font:var(--wb-f3s);color:var(--wb-fg-2);cursor:pointer;}',
+  '.dsh-wb-rsegbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
+  '.dsh-wb-rspan{font:var(--wb-f3s);color:var(--wb-fg-2);font-variant-numeric:tabular-nums;}',
+  // 一行统计：完成 / 进行中 / 逾期 / 落后 四个数，各自带词，扫一眼就知道这期怎么样。
+  '.dsh-wb-rsum{display:flex;flex-wrap:wrap;gap:var(--wb-sp-2) var(--wb-sp-4);padding-bottom:var(--wb-sp-2);border-bottom:1px solid var(--wb-line-2);margin-bottom:var(--wb-sp-2);}',
+  '.dsh-wb-rsumitem{font:var(--wb-f3s);color:var(--wb-fg-2);white-space:nowrap;}',
+  '.dsh-wb-rsumitem b{font-weight:600;color:var(--wb-fg);font-variant-numeric:tabular-nums;margin-right:2px;}',
+  // 段头：一条上边线 + 标题 + 计数。计数为 0 的段整段不渲染（见 reportOf 注释）。
+  '.dsh-wb-rsec{margin-top:var(--wb-sp-3);}',
+  '.dsh-wb-rsechead{display:flex;align-items:baseline;gap:var(--wb-sp-2);border-top:2px solid var(--wb-line);padding:var(--wb-sp-1) 0 var(--wb-sp-1);}',
+  '.dsh-wb-rsectitle{flex:1;font:var(--wb-f1s);}',
+  '.dsh-wb-rseccount{flex:none;font:var(--wb-f3);font-variant-numeric:tabular-nums;color:var(--wb-fg-2);}',
+  // 段内的一行：勾选框 + 标题 + 上下文 + 标记。密度对齐 .dsh-wb-focus（见坑 #21）。
+  '.dsh-wb-rrow{display:flex;align-items:flex-start;gap:var(--wb-sp-2);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-1);transition:background var(--wb-dur) var(--wb-ease);}',
+  '.dsh-wb-rrow:hover{background:var(--wb-hover);}',
+  '.dsh-wb-rrow input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
+  '.dsh-wb-rrowtitle{flex:1;word-break:break-word;cursor:pointer;}',
+  '.dsh-wb-rrowtitle.done{text-decoration:line-through;color:var(--wb-fg-2);}',
+  '.dsh-wb-rrowpath{font:var(--wb-f3);color:var(--wb-fg-2);word-break:break-word;}',
+  '.dsh-wb-rrowmeta{display:flex;gap:var(--wb-sp-2);flex-wrap:wrap;align-items:center;flex:none;}',
+  '.dsh-wb-rday{font:var(--wb-f3);color:var(--wb-fg-2);font-variant-numeric:tabular-nums;flex:none;}',
+  // ── 视图切换（工作计划 / 当前任务 / 报告）──────────────────────────────
   // 段控：和筛选按钮同一套语言（填充 + 描边 + 加粗表示选中），不靠颜色单独表意。
   '.dsh-wb-viewtoggle{display:flex;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);overflow:hidden;flex:none;}',
   '.dsh-wb-vbtn{border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:var(--wb-sp-1) var(--wb-sp-3);line-height:1.6;}',
@@ -388,7 +391,7 @@ const CSS = [
   // 行内动作按钮：以前 opacity:0 只在 hover 现身，键盘与触屏完全够不到。
   // 现在键盘用 :focus-within 揭示，触屏用 @media (hover:none) 常驻。
   '.dsh-wb-act{flex:none;border:none;background:transparent;color:var(--wb-fg-2);cursor:pointer;font:var(--wb-f3);padding:0 var(--wb-sp-1);border-radius:var(--wb-r-1);line-height:1.6;opacity:0;transition:opacity var(--wb-dur) var(--wb-ease),background var(--wb-dur) var(--wb-ease);}',
-  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act,.dsh-wb-card:hover .dsh-wb-act,.dsh-wb-card:focus-within .dsh-wb-act,.dsh-wb-focus:hover .dsh-wb-act,.dsh-wb-focus:focus-within .dsh-wb-act{opacity:1;}',
+  '.dsh-wb-task:hover .dsh-wb-act,.dsh-wb-planhead:hover .dsh-wb-act,.dsh-wb-task:focus-within .dsh-wb-act,.dsh-wb-planhead:focus-within .dsh-wb-act,.dsh-wb-rrow:hover .dsh-wb-act,.dsh-wb-rrow:focus-within .dsh-wb-act,.dsh-wb-focus:hover .dsh-wb-act,.dsh-wb-focus:focus-within .dsh-wb-act{opacity:1;}',
   '.dsh-wb-act:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // ── 重要程度徽章 ────────────────────────────────────────────────────────
   // ── 重要程度徽章 ────────────────────────────────────────────────────────
@@ -787,14 +790,17 @@ function saveCollapsed(ids) {
 }
 
 /**
- * 视图切换（树 / 看板）的本地偏好，和折叠一样只属于这一台浏览器的这次浏览，
+ * 视图切换（工作计划 / 当前任务 / 报告）的本地偏好，和折叠一样只属于这台浏览器的这次浏览，
  * 不进 plan.json。用单独的键，避免和折叠那串 id 混在一起解析出错。
  */
 const VIEW_KEY = 'dsh-workbench:view'
 function loadView() {
   try {
     const v = window.localStorage.getItem(VIEW_KEY)
-    return v === 'tree' || v === 'todo' || v === 'board' ? v : 'tree'
+    // 'board' 是报告视图的前身：这台机器上存的旧值要迁到 'report'，否则
+    // loadView 一律判非法 → 静默回到树形，用户会发现自己的视图偏好被重置了。
+    if (v === 'board') return 'report'
+    return v === 'tree' || v === 'todo' || v === 'report' ? v : 'tree'
   } catch (e) { return 'tree' }
 }
 function saveView(v) {
@@ -915,9 +921,13 @@ function apply(ctx) {
     // 宿主没有模型服务时，浮层里的输入行退化成**纯输入框**（直接 /node-add 进收件箱）。
     // 没有它，删掉收件箱常驻输入框之后，那种机器上的面板会「只能看、不能记」。
     const [plainDraft, setPlainDraft] = React.useState('')
-    // 视图切换（树 / 看板）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
+    // 视图切换（工作计划 / 当前任务 / 报告）：和折叠一样是这台浏览器的显示偏好，持久化到 localStorage。
     const [view, setView] = React.useState(() => loadView())
     const setViewPersist = (v) => { setView(v); saveView(v) }
+    // 报告的档位（日 / 周）。**故意不持久化**：它和折叠同类但更短暂——折叠是
+    // 「我不想看那么多」，档位是「我现在想看哪个时间尺度」。停在周报的人切到
+    // 日报看完，刷新一下回到周报才对；跨天还记着昨天那个尺度反而别扭。
+    const [reportMode, setReportMode] = React.useState('week')
     const [editing, setEditing] = React.useState(null)   // { id, original } | null
     const [editDraft, setEditDraft] = React.useState('')
     const [dragId, setDragId] = React.useState(null)
@@ -932,7 +942,7 @@ function apply(ctx) {
     const [vaultEditing, setVaultEditing] = React.useState(false)
     const [vaultDraft, setVaultDraft] = React.useState('')
     // 详情编辑页：整个面板换成这一个节点/新建项的表单。
-    // `{ mode: 'edit' | 'new', id?, draft }`——打开期间树与看板都不渲染，
+    // `{ mode: 'edit' | 'new', id?, draft }`——打开期间树与报告都不渲染，
     // 所以「有未保存改动」这件事不可能悄悄发生，也不用再挂一层脏检查。
     const [form, setForm] = React.useState(null)
     const [formSaving, setFormSaving] = React.useState(false)
@@ -3531,55 +3541,138 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-plan', key: node.id }, body)
     }
 
-    // ============================================================ 看板视图
+    // ============================================================ 报告视图（日报 / 周报）
     //
-    // 看板是树形之外另一种读法：每个顶层计划（含收件箱）占一列，待办摊成卡片。
-    // 它**只读** state.plan 这一份 payload，不新增任何工具或路由——和树形共用
-    // 同一份 /get 下发的数据，只是换了一种二维铺法。筛选器同样生效：state.filter
-    // 不是 all 时，只把命中的待办放进列里（boardColumns 内部复用 focusList 的口径）。
+    // 报告回答的是「**这段时间我做得怎么样、接下来该动什么**」，与树（存量结构）、
+    // 执行清单（下一个动作）都不重样：它按**时间切片**，段恒定、每段空就不渲染。
     //
-    // 列顺序 = 顶层节点顺序（计划在前、收件箱垫后）；没有任何待办的计划列会被丢弃。
-    // 列头显示计划标题 + 完成度 + 「未完成/总数」；卡片显示标题、所属子计划路径、
-    // 重要程度、委派 / 落后 / 证据 / 截止等标记；已完成卡片整体淡出。
-    // 写入路径与树形完全一致：勾选走 /todo-set、点标题切换完成、双击改名、徽章换档。
+    // 它**只读** state.plan 这一份 payload，不新增任何工具或路由——完成的时间戳
+    // 早就落在 plan.json 里（doneAt 就是为「本周做了什么」这类统计准备的）。
+    //
+    // **不吃筛选器**：报告是这段时间的账，套一层筛选会让「本期完成」空掉，而那个空
+    // 是筛选造成的、不是真的没完成。所以筛选条在报告视图里不渲染（见下方 render 前
+    // 的早返回）。分组口径全在 logic.cjs 的 reportOf 一处，便于单测。
 
-    /** 一张看板卡片。复用树形里那些已经写好的标记组件，避免两套实现漂移。 */
-    const renderCard = (node, path) => {
+    /**
+     * 报告里的一行。**不复用卡片的 checkbox 布局**——报告的「本期完成」段是已经
+     * 做完的事，再给一个可点的勾会让人以为「点了才完成」；只有未完成的段给勾选框，
+     * 且走的还是 /todo-set（与树、执行清单同一条写入路径）。
+     */
+    const renderReportRow = (item, opts) => {
+      const node = item.node
       const done = node.status === 'done'
-      return h('div', { className: 'dsh-wb-card' + (done ? ' done' : ''), key: String(node.id) },
-        h('div', { className: 'dsh-wb-cardtop' },
-          h('input', {
+      const o = opts === undefined || opts === null ? {} : opts
+      return h('div', { className: 'dsh-wb-rrow', key: String(node.id) },
+        o.checkable
+          ? h('input', {
             type: 'checkbox',
             checked: done,
-            onChange: () => setTodo(node.id, toggleStatus(node.status)),
-          }),
-          titleNode(node, 'dsh-wb-cardtitle', { canToggle: true, draggable: false }),
-          priBadge(node),
-        ),
-        path !== '' && path !== undefined && path !== null
-          ? h('div', { className: 'dsh-wb-cardpath', key: 'path' }, path)
+            onChange: () => (o.isLeaf === false
+              ? togglePlanDone(node)
+              : setTodo(node.id, toggleStatus(node.status))),
+          })
           : null,
-        h('div', { className: 'dsh-wb-cardmeta', key: 'meta' },
+        h('span', { className: 'dsh-wb-rrowtitle' + (done ? ' done' : '') },
+          titleNode(node, 'dsh-wb-rrowtitle', { canToggle: false, draggable: false })),
+        o.path !== '' && o.path !== undefined && o.path !== null
+          ? h('span', { className: 'dsh-wb-rrowpath' }, o.path)
+          : null,
+        o.date !== '' && o.date !== undefined && o.date !== null
+          ? h('span', { className: 'dsh-wb-rday' }, dayLabel(o.date))
+          : null,
+        h('span', { className: 'dsh-wb-rrowmeta' },
           delegChip(node),
           behindChip(node),
           evidChip(node),
-          dueSpan(node),
+          priBadge(node),
+          // 报告是「俯瞰」视图，但看到一条要改的时候不该先切回树去找它。
+          h('button', {
+            className: 'dsh-wb-act',
+            key: 'edit',
+            title: '编辑全部信息',
+            onClick: () => openEdit(node),
+          }, icon('edit')),
         ),
-        // 看板卡片上也要能进详情：看板是「俯瞰」视图，但看到一条要改的时候
-        // 不该先切回树去找它。
-        h('button', {
-          className: 'dsh-wb-act',
-          key: 'edit',
-          title: '编辑全部信息',
-          onClick: () => openEdit(node),
-        }, icon('edit')),
       )
+    }
+
+    /** 一个段：段头（标题 + 计数）+ 段内的行。空段直接不渲染。 */
+    const reportSection = (title, items, opts) => {
+      if (items.length === 0) return null
+      const o = opts === undefined || opts === null ? {} : opts
+      return h('div', { className: 'dsh-wb-rsec', key: title },
+        h('div', { className: 'dsh-wb-rsechead' },
+          h('span', { className: 'dsh-wb-rsectitle' }, title),
+          h('span', { className: 'dsh-wb-rseccount' }, String(items.length)),
+        ),
+        items.map((item) => renderReportRow(item, {
+          checkable: o.checkable === true,
+          // 完成语义一体化：叶子计划（无子项）也能勾，只是通路不同（走 /node-set）。
+          isLeaf: nodeType(item.node) === 'todo',
+          path: item.path,
+          date: o.date === true ? (item.date === undefined ? '' : item.date) : '',
+        })),
+      )
+    }
+
+    /**
+     * 一整份报告。档位（日 / 周）是组件本地 state——和折叠同类，是「我现在想看哪个
+     * 尺度」，跨刷新记住反而没意义（打开面板时看日报的人，不想下周打开还停在周报上）。
+     */
+    const renderReport = () => {
+      const rep = reportOf(plan, todayStr(), reportMode)
+      const seg = (id, label, title) => h('button', {
+        className: 'dsh-wb-rsegbtn' + (reportMode === id ? ' on' : ''),
+        key: id,
+        title: title,
+        onClick: () => setReportMode(id),
+      }, label)
+
+      // 一行统计：四个数各带一个词，扫一眼就知道这期怎么样（空段不渲染，数仍是 0）。
+      const sumItems = [
+        ['完成', rep.done.length],
+        ['逾期', rep.overdue.length],
+        ['落后', rep.behind.length],
+        ['本期到期', rep.due.length],
+        ['进行中', rep.doing.length],
+      ]
+      if (rep.dropped > 0) sumItems.push(['放弃', rep.dropped])
+
+      // 头与统计**永远渲染**，哪怕这一期是空的：空的时候恰恰最需要知道「我在看的是哪一期」
+      //，也需要还能切档位——把档位开关一起藏掉，空报告就成了死路（切不回周报）。
+      const rows = [
+        h('div', { className: 'dsh-wb-rhead', key: 'head' },
+          h('div', { className: 'dsh-wb-rseg', key: 'seg' },
+            seg('week', '周报', '看这一周：做了多少、还欠什么'),
+            seg('day', '日报', '只看今天'),
+          ),
+          h('span', { className: 'dsh-wb-rspan' }, rep.title),
+        ),
+        h('div', { className: 'dsh-wb-rsum', key: 'sum' },
+          sumItems.map(([label, n]) => h('span', { className: 'dsh-wb-rsumitem', key: label },
+            h('b', null, String(n)), label)),
+        ),
+      ]
+      if (rep.empty) {
+        rows.push(h('div', { className: 'dsh-wb-empty', key: 'empty' },
+          reportMode === 'day' ? '今天没有完成的事，也没有到期的事。' : '这一期还没有动静。'))
+      } else {
+        // 段序即「读序」：先看做成了什么，再看欠着的（逾期 → 落后 → 快到的），
+        // 「进行中」垫底——它是「不欠账的那部分」，急事都报完了才轮到它。
+        // 「本期完成」不给勾选框——它已经是过去式，再摆个可点的勾会误导。
+        rows.push(reportSection('本期完成', rep.done, { checkable: false, date: true }))
+        rows.push(reportSection('该做没做', rep.overdue, { checkable: true, date: true }))
+        rows.push(reportSection('落后于周期', rep.behind, { checkable: true, date: true }))
+        rows.push(reportSection('本期到期', rep.due, { checkable: true, date: true }))
+        rows.push(reportSection('进行中', rep.doing, { checkable: true, date: true }))
+      }
+      return h('div', { className: 'dsh-wb-body dsh-wb-report', key: 'body' }, rows)
     }
 
     /**
      * 执行清单（MLO 的 TODO 视图）。
      *
-     * 回答的问题只有一个：「**下一个动作是什么**」。树和看板展示结构，
+     * 回答的问题只有一个：「**下一个动作是什么**」。树和报告展示存量，
      * 这里把结构抹平：跨所有分支把「现在能做的」排成一张清单
      * （星标 > 重要度 > 逾期/本周 > 截止），被依赖挡住的单独折叠在下面——
      * 它们不是没做，是做不了，混在一起会让人误以为拖延了。
@@ -3603,7 +3696,7 @@ function apply(ctx) {
             onChange: () => setTodo(node.id, node.status === 'doing' ? 'done' : 'doing'),
           }),
           titleNode(node, 'dsh-wb-tasktitle', { canToggle: true }),
-          // 不显示树路径：执行视图的本意就是「结构抹平」，路径属于树和看板。
+          // 不显示树路径：执行视图的本意就是「结构抹平」，路径属于树和报告。
           delegChip(node),
           warnBadge(node),
           priBadge(node),
@@ -3635,38 +3728,6 @@ function apply(ctx) {
           ))))
       }
       return h('div', { className: 'dsh-wb-body', key: 'body' }, rows)
-    }
-
-    /** 一整块看板（横向铺开的列）。无内容时给一个空状态，而不是白屏。 */
-    const renderBoard = () => {
-      const cols = boardColumns(plan, state.filter, todayStr())
-      if (cols.length === 0) {
-        const label = (FILTERS.find((f) => f.id === state.filter) || {}).label || ''
-        return h('div', { className: 'dsh-wb-body', key: 'body' },
-          h('div', { className: 'dsh-wb-empty' },
-            state.filter !== 'all'
-              ? h('div', null, '「' + label + '」下没有可看的任务。')
-              : h('div', null, '这个工作区还没有计划，也没有待办。'),
-          ),
-        )
-      }
-      const colsView = cols.map((col) => {
-        const head = h('div', { className: 'dsh-wb-colhead', key: 'h' },
-          col.kind === 'inbox'
-            ? h('span', { className: 'dsh-wb-coltitle' }, '▤ 收件箱')
-            : h('span', { className: 'dsh-wb-coltitle' }, String(col.title)),
-          col.kind === 'plan'
-            ? h('span', { className: 'dsh-wb-colpct' }, pct(col.progress))
-            : null,
-          h('span', { className: 'dsh-wb-colcount' }, col.open + '/' + col.total),
-        )
-        const cards = col.cards.map((card) => renderCard(card.node, card.path))
-        return h('div', { className: 'dsh-wb-col', key: col.id },
-          head,
-          h('div', { className: 'dsh-wb-cards', key: 'cards' }, cards),
-        )
-      })
-      return h('div', { className: 'dsh-wb-body dsh-wb-board', key: 'body' }, colsView)
     }
 
     /**
@@ -3757,7 +3818,7 @@ function apply(ctx) {
 
     // ============================================================ 详情编辑页（渲染）
     //
-    // 打开时**整块替换**面板：树 / 看板 / 筛选都不渲染，只留这一张表单。
+    // 打开时**整块替换**面板：树 / 报告 / 筛选都不渲染，只留这一张表单。
     // 这样「有未保存改动」不可能悄悄发生（返回就是放弃），也用不着脏检查。
     const detailPage = () => {
       const d = form.draft
@@ -4056,7 +4117,7 @@ function apply(ctx) {
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
 
-    // 详情编辑页与设置页优先：打开时它们本身就是一屏，不必再往下走树 / 看板的组装。
+    // 详情编辑页与设置页优先：打开时它们本身就是一屏，不必再往下走树 / 报告的组装。
     // （浮球只在主视图那一个 return 里挂——详情页/设置页是整屏，浮球压在上面
     //   既不合适、也会挡住表单底部的字段。）
     if (form !== null) return detailPage()
@@ -4081,10 +4142,10 @@ function apply(ctx) {
           onClick: () => setViewPersist('todo'),
         }, '当前任务'),
         h('button', {
-          className: 'dsh-wb-vbtn' + (view === 'board' ? ' on' : ''),
-          title: '看板：每个计划占一列，待办摊成卡片',
-          onClick: () => setViewPersist('board'),
-        }, '看板'),
+          className: 'dsh-wb-vbtn' + (view === 'report' ? ' on' : ''),
+          title: '报告：这期完成了什么、卡在哪、接下来该动什么（可切日报 / 周报）',
+          onClick: () => setViewPersist('report'),
+        }, '报告'),
       ),
       h('div', { className: 'dsh-wb-headright' },
         // 这里不再有「＋ 新建」：新建的入口就是顶部那行 AI 输入（说一句，模型给草稿，
@@ -4169,7 +4230,10 @@ function apply(ctx) {
         onClick: () => store.set({ filter: state.filter === f.id ? 'all' : f.id }),
       }, f.label + ' ' + n))
     }
-    if (sum.hasPlan) rows.push(h('div', { className: 'dsh-wb-filters', key: 'filters' }, chips))
+    // 报告视图**不渲染筛选条**：报告是这段时间的账，套一层筛选会让「本期完成」
+    // 空掉，而那个空是筛选造成的、不是真的没完成。筛选本身**不清零**——切回
+    // 树 / 执行清单时它还在原地，用户不会发现自己的筛选被谁改了。
+    if (sum.hasPlan && view !== 'report') rows.push(h('div', { className: 'dsh-wb-filters', key: 'filters' }, chips))
 
     // 自定义视图（AI 清单存下来的）：和筛选按钮同一行语义——点了切换「看什么」。
     const savedViews = loadViews()
@@ -4226,8 +4290,8 @@ function apply(ctx) {
       }
     }
 
-    if (view === 'board') {
-      rows.push(renderBoard())
+    if (view === 'report') {
+      rows.push(renderReport())
       if (state.cwd !== '') rows.push(h('div', { className: 'dsh-wb-footer', key: 'f', title: state.cwd }, state.cwd))
       return h('div', { className: 'dsh-wb-wrap' }, rows)
     }
@@ -4505,9 +4569,9 @@ function apply(ctx) {
   // `{ sidebar, panel, tab }`——本插件只用 `tab.visible`（面板收起或非激活 tab 时为
   // false，用来暂停轮询/重算）。
   //
-  // **sessionId 不再由宿主给**：better-sidebar 的 tabProps.scope.sessionId 在官方
-  // 正文里没有对应物。而 WorkbenchPanel 的 sessionId 本来就是可选 prop，host 半的
-  // resolveCwd 在缺省时有自己的兜底，所以这里不传、让 host 走兜底路径。
+  // **sessionId 由宿主直接给**：dsh 0.1.7 的 sidebar.right.pane.tab scope 是 'session'，
+  // 宿主把 sessionId 作为直接 prop 注入（SessionStandardProps.sessionId）。WorkbenchTabBody
+  // 内部读取并传给 WorkbenchPanel，host 侧 resolveCwd 用它定位工作区。
   ctx.effect(() => slots.inject('sidebar.right.pane.tab', () => slots.register({
     name: 'sidebar.right.pane.tab',
     key: TAB_ID,
@@ -4530,16 +4594,19 @@ function apply(ctx) {
     // visible：面板收起或本 tab 非激活时为 false（官方契约），用来暂停轮询/重算。
     const info = typeof sp.useTabInfo === 'function' ? sp.useTabInfo() : undefined
     const visible = info === undefined || info === null ? undefined : info.tab.visible
-    // sessionId：**官方右栏不像 better-sidebar 那样把 scope.sessionId 交给正文**，
-    // 而数据面要靠它定位工作区（host 侧 resolveCwd）。这里从宿主标准 session prop
-    // `useSessions` 取当前会话——与 dsh-web-mobile 的 MobileDrawerFooter 同一读法
-    // （`useSessions((state) => state.current)`），是官方认可的取法。
-    //
-    // 取不到时传 undefined：面板会显示「拿不到当前会话 id」，而不是静默空转。
-    let sessionId
-    if (typeof sp.useSessions === 'function') {
+    // sessionId：dsh 0.1.7 的新契约——sidebar.right.pane.tab 的 scope 是 'session'，
+    // 宿主直接把 sessionId 作为 prop 传入（SessionStandardProps.sessionId）。
+    // 0.1.6 及更早版本用 useSessions hook，0.1.7 彻底移除。
+    // 所以：先读直接 prop，再 fallback 到 useSession hook（0.1.7 的新 hook），
+    // 最后 fallback 到 useSessions（0.1.6 及更早）。
+    let sessionId = sp.sessionId
+    if ((typeof sessionId !== 'string' || sessionId === '') && typeof sp.useSession === 'function') {
+      sessionId = sp.useSession((snapshot) => (snapshot === undefined || snapshot === null ? undefined : snapshot.id))
+    }
+    if ((typeof sessionId !== 'string' || sessionId === '') && typeof sp.useSessions === 'function') {
       sessionId = sp.useSessions((state) => (state === undefined || state === null ? undefined : state.current))
     }
+    // 取不到时传 undefined：面板会显示「拿不到当前会话 id」，而不是静默空转。
     return h(WorkbenchPanel, { sessionId, visible })
   }
 }

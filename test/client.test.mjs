@@ -1336,88 +1336,170 @@ test('语音按钮在 AI 输入框旁边，识别结果写进 AI 文本域', asy
   assert.equal(aiEntry(render()).props.value, '下周三前把台账补完')
 })
 
-// ============================================================ 看板视图
+// ============================================================ 报告视图（日报 / 周报）
 
-/** 切到「看板」：表头应有视图切换按钮，点一下渲染出分列的任务看板。 */
-test('视图切换按钮存在，点「看板」渲染出按计划分列的看板', async () => {
+/**
+ * 报告要的是「有时间戳的条目」——`doneAt` / `due` / `doing`。共享 fixture 里那五条
+ * 既没有 due 也没有 doneAt，报告对它是空的（那本身也值得测，见末尾的空状态用例）。
+ * 所以这里用 `hostCall` 建**自己的**工作区，而不是往共享 fixture 上加字段——
+ * 共享 fixture 一改，别的用例就跟着变。
+ */
+async function reportFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-wb-report-'))
+  const call = hostCall(root)
+  await call('plan_node_add', { title: '工作主线' })
+  await call('plan_node_add', { title: '做完的', parent: '工作主线' })
+  await call('plan_node_add', { title: '在做的', parent: '工作主线' })
+  await call('plan_node_add', { title: '欠着的', parent: '工作主线', due: '2020-01-01' })
+  // doneAt 由真 host 盖今天的 ISO 时间戳，所以它必然落在「今天」这个窗口里
+  await call('plan_todo_set', { todo: '做完的', status: 'done' })
+  await call('plan_todo_set', { todo: '在做的', status: 'doing' })
+  const shown = await call('plan_show')
+  return { root, plan: shown.plan, call }
+}
+
+const switchToReport = (view) => byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '报告')
+
+test('视图切换按钮存在，点「报告」渲染出报告（不再是按计划分列的看板）', async () => {
   const { render, view } = await mount()
-  const vbtn = byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板')
-  assert.ok(vbtn !== null, '表头应有「看板」切换按钮')
-
-  vbtn.props.onClick(ev())
-  const board = render()
-  // 共享 fixture：工作主线(计划) 含 子计划(计划) 与 表层待办，深层待办 在子计划下，
-  // 另有顶层待办「收件箱一条」——所以看板应有「工作主线」与「收件箱」两列。
-  const cols = byClass(board, 'dsh-wb-col')
-  assert.equal(cols.length, 2, '应有「工作主线」和「收件箱」两列')
-  assert.ok(byText(board, 'dsh-wb-coltitle', '工作主线') !== null, '应有计划列头')
-  assert.ok(byText(board, 'dsh-wb-cardtitle', '深层待办') !== null, '计划列里应有任务卡')
-  assert.ok(byText(board, 'dsh-wb-cardtitle', '收件箱一条') !== null, '收件箱列里应有游离待办')
-  // 深层待办挂在「子计划」下，卡片应显示所属子计划作为上下文路径。
-  const card = byText(board, 'dsh-wb-card', '深层待办')
-  assert.match(textOf(card), /子计划/)
+  const btn = switchToReport(view)
+  assert.ok(btn !== null, '表头应有「报告」切换按钮')
+  assert.equal(switchToReport(view) === null, false)
+  btn.props.onClick(ev())
+  const report = render()
+  assert.ok(byClass(report, 'dsh-wb-col').length === 0, '看板的列不能再出现')
+  assert.ok(firstByClass(report, 'dsh-wb-rhead') !== null, '应有报告头（日/周切换 + 日期范围）')
+  assert.ok(firstByClass(report, 'dsh-wb-rsum') !== null, '应有那行统计')
 })
 
-test('看板里勾选卡片同样走 /todo-set（与树共用写入路径）', async () => {
-  const { render, view } = await mount()
-  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
-  const card = byText(render(), 'dsh-wb-card', '表层待办')
-  assert.ok(card !== null)
-  requests = []
-  // 复选框嵌在 .dsh-wb-cardtop 里，要递归找，不能直接取卡片的子节点。
-  findAll(card, (c) => c.type === 'input')[0].props.onChange(ev())
-  assert.equal(requests.length, 1)
-  assert.equal(requests[0].path, '/api/workbench/todo-set')
-  assert.equal(requests[0].body.todo, idOf('表层待办'))
-})
-
-test('看板尊重筛选器：切到「重要度高」只留高优先级卡片（fixture 没有，故整板为空）', async () => {
-  const { render, view } = await mount()
-  byClass(view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
-  // fixture 的待办都是 normal，没有高优先级——通过 store 直接验证空状态渲染。
-  // 这里改为验证：切换视图后，列头计数仍是「未完成/总数」语义、且不白屏。
-  const col = firstByClass(render(), 'dsh-wb-col')
-  assert.ok(col !== null)
-  assert.match(textOf(col), /\d+\/\d+/, '列头应显示 未完成/总数')
-})
-
-test('看板只看叶子：没有叶子时整棵看板为空（「空计划」即收件箱待办）', async () => {
+test('报告默认是周报，可切到日报（切了之后统计窗口收窄到今天）', async () => {
   const keep = planPayload
-  // 类型派生后不存在「空计划」：无子项的节点就是收件箱里的一条待办。
-  planPayload = { schema: 2, version: 1, title: 't', nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
+  const fx = await reportFixture()
+  planPayload = fx.plan
   try {
-    const { render } = await mount()
-    byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
-    const board = render()
-    assert.ok(byClass(board, 'dsh-wb-col').length >= 1, '空计划 = 收件箱待办，会占一列')
+    const { render, view } = await mount()
+    switchToReport(view).props.onClick(ev())
+    let report = render()
+    // 档位是「日 / 周」两颗，默认落在**周**（用户确认过：默认周）
+    const isOn = (b) => /(^|\s)on(\s|$)/.test(String((b.props || {}).className || ''))
+    const segs = byClass(report, 'dsh-wb-rsegbtn')
+    assert.equal(segs.length, 2, '应有「周报」「日报」两颗')
+    assert.ok(segs.some((b) => textOf(b) === '周报' && isOn(b)), '默认应是周报')
+    assert.ok(segs.some((b) => textOf(b) === '日报' && !isOn(b)), '日报此时不该是选中态')
+    // 切到日报
+    byClass(report, 'dsh-wb-rsegbtn').find((b) => textOf(b) === '日报').props.onClick(ev())
+    report = render()
+    const segs2 = byClass(report, 'dsh-wb-rsegbtn')
+    assert.ok(segs2.some((b) => textOf(b) === '日报' && isOn(b)), '切了之后选中态要跟过去')
+    assert.ok(segs2.some((b) => textOf(b) === '周报' && !isOn(b)), '两颗不该同时亮')
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
+test('报告把做成的、在做的、欠着的分到各段，且段头带计数', async () => {
+  const keep = planPayload
+  const fx = await reportFixture()
+  planPayload = fx.plan
+  try {
+    const { render, view } = await mount()
+    switchToReport(view).props.onClick(ev())
+    const report = render()
+    const head = textOf(firstByClass(report, 'dsh-wb-rsum'))
+    assert.ok(head.indexOf('完成') >= 0, head)
+    assert.ok(firstByClass(report, 'dsh-wb-rsechead') !== null, '应有段头')
+    const titles = byClass(report, 'dsh-wb-rsectitle').map(textOf)
+    assert.ok(titles.indexOf('本期完成') >= 0, '应报出本期完成：' + titles.join(' / '))
+    assert.ok(titles.indexOf('该做没做') >= 0, '应报出逾期：' + titles.join(' / '))
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
+test('「本期完成」段不给勾选框（已经是过去式，再摆个可点的勾会误导）', async () => {
+  const keep = planPayload
+  const fx = await reportFixture()
+  planPayload = fx.plan
+  try {
+    const { render, view } = await mount()
+    switchToReport(view).props.onClick(ev())
+    const report = render()
+    const row = byText(report, 'dsh-wb-rrow', '做完的')
+    assert.ok(row !== null, '做完的该出现在本期完成段')
+    assert.equal(findAll(row, (c) => c.type === 'input').length, 0, '完成段不该有可点的勾')
+    // 但未完成的段有勾，且走的还是同一条写入路径
+    const open = byText(report, 'dsh-wb-rrow', '在做的')
+    assert.equal(findAll(open, (c) => c.type === 'input').length, 1, '未完成的行要给勾')
+    requests = []
+    findAll(open, (c) => c.type === 'input')[0].props.onChange(ev())
+    assert.equal(requests.length, 1)
+    assert.equal(requests[0].path, '/api/workbench/todo-set')
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
+test('报告不渲染筛选条：套一层筛选会让「本期完成」空掉，而那个空是假的', async () => {
+  const { render, view } = await mount()
+  // 树形里筛选条在（共享 fixture 有计划）
+  assert.ok(firstByClass(render(), 'dsh-wb-filters') !== null, '树形下筛选条应在')
+  switchToReport(view).props.onClick(ev())
+  assert.equal(firstByClass(render(), 'dsh-wb-filters'), null, '报告视图不该有筛选条')
+})
+
+test('报告里没有信号时给空状态而非白屏', async () => {
+  const keep = planPayload
+  planPayload = { schema: 2, version: 1, title: '空', nodes: [] }
+  try {
+    const { render, view } = await mount()
+    switchToReport(view).props.onClick(ev())
+    const report = render()
+    assert.match(textOf(firstByClass(report, 'dsh-wb-empty')), /还没有动静|没有完成的事/)
   } finally {
     planPayload = keep
   }
 })
 
-test('没有任何叶子时看板为空而非白屏', async () => {
+test('报告行能进详情（看到一条要改的，不该先切回树去找它）', async () => {
   const keep = planPayload
-  planPayload = { schema: 2, version: 1, title: 't', nodes: [] }
+  const fx = await reportFixture()
+  planPayload = fx.plan
   try {
-    const { render } = await mount()
-    byClass(render(), 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
-    const board = render()
-    assert.equal(byClass(board, 'dsh-wb-col').length, 0, '没有任何任务的看板应为空')
-    assert.match(textOf(firstByClass(board, 'dsh-wb-empty')), /还没有计划|没有可看/)
+    const { render, view } = await mount()
+    switchToReport(view).props.onClick(ev())
+    const row = byText(render(), 'dsh-wb-rrow', '在做的')
+    const edit = findAll(row, (c) => c.type === 'button' && /编辑全部信息/.test(c.props.title || ''))[0]
+    assert.ok(edit !== null, '报告行上要有编辑按钮')
+    edit.props.onClick(ev())
+    assert.ok(firstByClass(render(), 'dsh-wb-form') !== null, '点了应打开详情表单')
   } finally {
     planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
   }
 })
 
-test('视图偏好持久化到 localStorage，重新挂载后仍是看板', async () => {
+test('视图偏好持久化到 localStorage，重新挂载后仍是报告', async () => {
   const first = await mount()
-  byClass(first.view, 'dsh-wb-vbtn').find((b) => textOf(b) === '看板').props.onClick(ev())
+  switchToReport(first.view).props.onClick(ev())
   assert.ok(storage.has('dsh-workbench:view'), '视图偏好应落进 localStorage')
-  assert.equal(storage.get('dsh-workbench:view'), 'board')
+  assert.equal(storage.get('dsh-workbench:view'), 'report')
 
   const second = await mount()
-  assert.ok(firstByClass(second.view, 'dsh-wb-board') !== null, '重新挂载后默认仍是看板')
-  assert.ok(byText(second.view, 'dsh-wb-coltitle', '工作主线') !== null)
+  assert.ok(firstByClass(second.view, 'dsh-wb-rhead') !== null, '重新挂载后默认仍是报告')
+})
+
+test('旧的 board 偏好会迁到 report（否则用户的视图偏好被静默重置成树形）', async () => {
+  // 这台机器的 localStorage 里存的是上一版的 'board'
+  storage.set('dsh-workbench:view', 'board')
+  try {
+    const { render, view } = await mount()
+    assert.ok(firstByClass(view, 'dsh-wb-rhead') !== null, '旧值应迁到报告视图，而不是判非法回树形')
+  } finally {
+    storage.clear()
+  }
 })
 
 // ============================================================ 文件库关联（Obsidian）

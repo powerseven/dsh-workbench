@@ -55,7 +55,7 @@ test('client bundle 内联了纯逻辑函数（UI 直接引用闭包里的名字
     'function nodeType(', 'function progressOf(', 'function moveTargets(',
     'function inboxOf(', 'function planNodes(', 'function childrenOf(',
     'function evidenceLabel(', 'function evidenceList(', 'function unverifiedOf(',
-    'function paceText(', 'function boardColumns(',
+    'function paceText(', 'function reportOf(', 'function dayLabel(',
     'function parseCollapsed(', 'function serializeCollapsed(', 'function descendantCount(',
     'function isDescendantOf(', 'function dropTarget(',
     'function filesList(', 'function fileLabel(', 'function obsidianLink(',

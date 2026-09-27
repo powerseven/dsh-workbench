@@ -16,7 +16,7 @@ const {
   pct, barWidth, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr,
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
-  flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, boardColumns,
+  flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, reportOf,
   duplicateGroupsOf,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
@@ -500,73 +500,166 @@ test('summarize 带上筛选角标', () => {
   assert.equal(s.filters.overdue, 1)
 })
 
-// ---------------------------------------------------------------- 看板分列
+// ------------------------------------------------------------ 日报 / 周报
 
-test('boardColumns 按顶层计划分列，收件箱单列，列头带进度与计数', () => {
-  const cols = boardColumns(annotatedPlan(), 'all', '2026-09-14')
-  // annotatedPlan: g1(计划) > k1(子计划) > t1..t4 ；t9 顶层待办(收件箱)
-  assert.deepEqual(cols.map((c) => c.kind), ['plan', 'inbox'])
-  assert.equal(cols[0].title, 'Q4 计划')
-  assert.equal(cols[0].progress, 0.25)
-  // g1 名下共 4 张待办（t1..t4 都在 g1 子树里）；open = t1、t2（t3 完成、t4 放弃）
-  assert.equal(cols[0].total, 4)
-  assert.equal(cols[0].open, 2)
-  // 收件箱列把顶层待办归到一起，而不是每条顶层待办占一列
-  assert.equal(cols[1].kind, 'inbox')
-  assert.equal(cols[1].title, '收件箱')
-  assert.equal(cols[1].total, 1)
-})
-
-test('boardColumns 卡片带「所属子计划」上下文路径（列只代表顶层计划）', () => {
-  const cols = boardColumns(annotatedPlan(), 'all', '2026-09-14')
-  const t2 = cols[0].cards.find((c) => c.node.id === 't2')
-  assert.equal(t2.path, '子计划', 't2 在子计划 k1 下，路径应显示子计划标题')
-  // 顶层计划直接名下的待办（若有）路径应为空
-  const direct = boardColumns(annotatedPlan(), 'all', '2026-09-14')
-  const inboxCard = direct[1].cards[0]
-  assert.equal(inboxCard.path, '', '收件箱待办没有父级上下文')
-})
-
-test('boardColumns 全量态把已完成的沉到列底', () => {
-  const cols = boardColumns(annotatedPlan(), 'all', '2026-09-14')
-  const ids = cols[0].cards.map((c) => c.node.id)
-  // t1、t2 未完成排在前，t3(完成)、t4(放弃) 沉底
-  assert.deepEqual(ids, ['t1', 't2', 't3', 't4'])
-})
-
-test('boardColumns 尊重筛选器：只放命中筛选的待办进列', () => {
-  // 重要度高：t2、t9 命中（t3 已完成、t4 已放弃被排除）。
-  const cols = boardColumns(annotatedPlan(), 'high', '2026-09-14')
-  const g1 = cols.find((c) => c.kind === 'plan')
-  assert.deepEqual(g1.cards.map((c) => c.node.id), ['t2'])
-  const inbox = cols.find((c) => c.kind === 'inbox')
-  assert.deepEqual(inbox.cards.map((c) => c.node.id), ['t9'])
-})
-
-test('boardColumns：无子项的节点按收件箱待办占列（类型派生后没有「空计划」）', () => {
-  const plan = { nodes: [{ id: 'g1', type: 'plan', title: '空计划', status: 'active', children: [] }] }
-  const cols = boardColumns(plan, 'all')
-  assert.equal(cols.length, 1, '它是一条收件箱待办，占收件箱列')
-  assert.ok(cols[0].cards.some((c) => c.node.id === 'g1'))
-})
-
-test('boardColumns 对空计划与脏数据安全', () => {
-  assert.deepEqual(boardColumns(null), [])
-  assert.deepEqual(boardColumns({}), [])
-  assert.deepEqual(boardColumns({ nodes: 'nope' }), [])
-})
-
-test('boardColumns 多个顶层待办要并回收件箱一列，而不是各占一列', () => {
-  const plan = {
+/**
+ * 报告的固定 fixture。日期钉死：2026-09-17 是**周四**，于是「本周」
+ * = 09-14（周一）… 09-20（周日）——跨周、跨月的边界都测得到。
+ *
+ * 每条节点都故意踩一个边界，测试名里写着它防的是哪种错。
+ */
+function reportPlan() {
+  return {
     nodes: [
-      { id: 'g1', type: 'plan', title: 'P', status: 'active', children: [{ id: 'a', type: 'todo', title: '甲', status: 'todo' }] },
-      { id: 'i1', type: 'todo', title: '游离一', status: 'todo' },
-      { id: 'i2', type: 'todo', title: '游离二', status: 'todo' },
+      {
+        id: 'p1',
+        title: '工作主线',
+        status: 'active',
+        children: [
+          // ── 已结束：只有落在完成窗口里的才算「本期完成」
+          { id: 'a1', title: '周一做完的', status: 'done', doneAt: '2026-09-14T10:00:00.000Z' },
+          { id: 'a2', title: '今天做完的', status: 'done', doneAt: '2026-09-17T22:30:00.000Z' },
+          { id: 'a3', title: '上周做完的', status: 'done', doneAt: '2026-09-10T09:00:00.000Z' },
+          { id: 'a4', title: '做完了但没记时间', status: 'done' },
+          { id: 'a5', title: '放弃的', status: 'dropped', doneAt: '2026-09-16T09:00:00.000Z' },
+          // ── 未结束：四段互斥，优先级 逾期 > 落后 > 到期 > 进行中
+          { id: 'a6', title: '欠着的', status: 'todo', due: '2026-09-01', overdue: true },
+          { id: 'a7', title: '落后的', status: 'doing', behind: true, pace: { gap: 0.4 } },
+          { id: 'a8', title: '周日到期', status: 'todo', due: '2026-09-20' },
+          { id: 'a9', title: '下周一到期', status: 'todo', due: '2026-09-21' },
+          { id: 'a10', title: '手上在做的', status: 'doing' },
+        ],
+      },
+      { id: 'i1', title: '收件箱一条', status: 'todo', due: '2026-09-17' },
     ],
   }
-  const cols = boardColumns(plan, 'all')
-  assert.deepEqual(cols.map((c) => c.kind), ['plan', 'inbox'])
-  assert.equal(cols[1].total, 2, '两条顶层待办应并回收件箱一列')
+}
+const REPORT_TODAY = '2026-09-17'   // 周四
+const idsOf = (arr) => arr.map((x) => x.node.id).sort()
+
+test('reportOf 周报：完成窗口是「本周一 → 今天」，到期窗口是「今天 → 本周日」', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  // 完成：a1(周一) 与 a2(今天) 在窗口内；a3(上周) 与 a4(没记时间) 不算
+  assert.deepEqual(idsOf(rep.done), ['a1', 'a2'])
+  // 到期：a8(周日) 与 i1(今天) 在窗口内；a9(下周一) 还没到，a6 已归逾期段
+  assert.deepEqual(idsOf(rep.due), ['a8', 'i1'])
+  assert.equal(rep.mode, 'week')
+  assert.ok(rep.title.indexOf('9月14日') >= 0 && rep.title.indexOf('9月20日') >= 0, rep.title)
+})
+
+test('reportOf 日报：只看今天（完成与到期都收窄到今天）', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'day')
+  assert.deepEqual(idsOf(rep.done), ['a2'], '周一的 a1 不算今天的')
+  assert.deepEqual(idsOf(rep.due), ['i1'], '周日的 a8 不算今天的')
+  assert.equal(rep.mode, 'day')
+  assert.equal(rep.title, '9月17日 周四')
+})
+
+test('reportOf 四段互斥：表头那几个数不重复计同一条', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  // a7 同时是 doing 与 behind：只该落进更急的「落后」段，两段都收它就重复计数了
+  assert.deepEqual(idsOf(rep.behind), ['a7'])
+  assert.ok(!idsOf(rep.doing).includes('a7'), '落后的事不该又在进行中里出现一次')
+  // a6 逾期且早就过期：不能同时出现在到期段
+  assert.deepEqual(idsOf(rep.overdue), ['a6'])
+  assert.ok(!idsOf(rep.due).includes('a6'))
+  // 互斥的机械验算
+  const seen = [...rep.overdue, ...rep.behind, ...rep.due, ...rep.doing].map((x) => x.node.id)
+  assert.equal(new Set(seen).size, seen.length, '同一条被数进了两段')
+  // a9（下周一到期）**故意不在任何一段里**：报告讲的是「这一期」，下周一的事不属于
+  // 这一期。它也不该被塞进「进行中」——那个段读作「手上的事，且不欠账」。
+  assert.equal(seen.length, 5, 'a6 逾期 / a7 落后 / a8 i1 到期 / a10 进行中 —— 各归一段')
+  assert.ok(!seen.includes('a9'), '下周一到期不属于这一期（今天是周四、本周日 09-20）')
+})
+
+test('reportOf 没有 doneAt 的已完成**不算**本期完成（「完成」≠「本期完成」）', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  assert.ok(!idsOf(rep.done).includes('a4'), 'a4 是 done 但没有完成时间，不知道是哪天做的')
+})
+
+test('reportOf 放弃的只进计数，不进任何一段（放弃不是完成，也不是欠账）', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  assert.equal(rep.dropped, 1)
+  const all = [...rep.done, ...rep.doing, ...rep.overdue, ...rep.behind, ...rep.due]
+  assert.ok(!all.some((x) => x.node.id === 'a5'), '放弃的那条不该出现在任何一段里')
+})
+
+test('reportOf 完成段按完成时间倒序（刚做完的最先看见）', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  assert.deepEqual(rep.done.map((x) => x.node.id), ['a2', 'a1'])
+})
+
+test('reportOf 逾期与落后只读服务端标注：标了 false 就不重算', () => {
+  // 服务端明确说没逾期时，即使 due 早就过了也不判它逾期——口径只有 store.isOverdue
+  // 一处，客户端另算一套就会出现「面板说没逾期、简报说逾期」而没人知道哪个对。
+  const plan = { nodes: [{ id: 'x', title: '服务端说没逾期', status: 'todo', due: '2020-01-01', overdue: false }] }
+  assert.equal(reportOf(plan, REPORT_TODAY, 'week').overdue.length, 0, 'overdue:false 是服务端的判断')
+  // 落后同理：没有 behind 标注就不进落后段
+  const plan2 = { nodes: [{ id: 'y', title: '没标落后', status: 'doing' }] }
+  assert.equal(reportOf(plan2, REPORT_TODAY, 'week').behind.length, 0)
+  // 服务端标了才进
+  const plan3 = { nodes: [{ id: 'z', title: '标了的', status: 'doing', behind: true }] }
+  assert.equal(reportOf(plan3, REPORT_TODAY, 'week').behind.length, 1)
+})
+
+test('reportOf 服务端**没给**标注时才走客户端兜底（与 focusList 同一把尺）', () => {
+  // 这是刻意保留的降级路径：宿主太老、没下发 overdue 字段时，节点上就没有这个键。
+  // focusList 与 upcomingByDay 都是 `=== true || (=== undefined && 兜底)`，
+  // 三处必须同判，否则同一个节点在筛选器与报告里会被判出两种结果。
+  const plan = { nodes: [{ id: 'x', title: '没标注但确实过期', status: 'todo', due: '2020-01-01' }] }
+  assert.equal(reportOf(plan, REPORT_TODAY, 'week').overdue.length, 1, '缺标注才兜底')
+  const list = require('../src/client/logic.cjs')
+  assert.equal(list.focusList(plan, 'overdue', REPORT_TODAY).length, 1, 'focusList 同判')
+})
+
+test('reportOf 上下文路径报的是**标题**链，且去掉自己那段', () => {
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  assert.equal(rep.overdue[0].path, '工作主线', 'a6 在 p1 下，路径是父级标题，不含自己')
+  assert.equal(rep.due.find((x) => x.node.id === 'i1').path, '', '顶层待办没有父级上下文')
+})
+
+test('reportOf 容器到期用 end 兜底（与 upcomingByDay 同一把尺，不引 start）', () => {
+  const plan = {
+    nodes: [
+      { id: 'c1', title: '有 end 的计划', status: 'active', children: [{ id: 'c1a', title: '子', status: 'todo' }], end: '2026-09-19' },
+      { id: 'c2', title: '只有 start 的计划', status: 'active', children: [{ id: 'c2a', title: '子', status: 'todo' }], start: '2026-09-19' },
+    ],
+  }
+  const rep = reportOf(plan, REPORT_TODAY, 'week')
+  assert.ok(idsOf(rep.due).includes('c1'), 'end 在窗口内 → 算本期到期')
+  assert.ok(!idsOf(rep.due).includes('c2'), 'start 不是锚点（与 upcomingByDay 同一把尺）')
+})
+
+test('reportOf 对空计划与脏数据安全，且 empty 标记正确', () => {
+  for (const bad of [null, undefined, {}, { nodes: 'nope' }]) {
+    const rep = reportOf(bad, REPORT_TODAY, 'week')
+    assert.equal(rep.empty, true, JSON.stringify(bad))
+    for (const k of ['done', 'doing', 'overdue', 'behind', 'due']) {
+      assert.deepEqual(rep[k], [], k + ' 必须是空数组（渲染期直接 .length / .map）')
+    }
+    assert.equal(rep.dropped, 0)
+  }
+  // 非法 today 也不抛
+  const rep = reportOf(reportPlan(), '不是日期', 'week')
+  assert.ok(Array.isArray(rep.due) && Array.isArray(rep.done))
+})
+
+test('reportOf 没传 today 时退回今天（不因少一个参数就崩在窗口计算上）', () => {
+  const rep = reportOf(reportPlan(), undefined, 'week')
+  assert.equal(rep.mode, 'week')
+  assert.ok(Array.isArray(rep.done))
+})
+
+test('reportOf 本周一为一周之始：周日回退 6 天，其余回退 (getDay-1) 天', () => {
+  // 2026-09-20 是周日 → 本周一 09-14（不是 09-21，那会跑到下周、于是本周一条完成都没有）
+  const sun = reportOf(reportPlan(), '2026-09-20', 'week')
+  assert.ok(sun.title.indexOf('9月14日') >= 0, sun.title)
+  // 2026-09-14 是周一 → 回到自己
+  const mon = reportOf(reportPlan(), '2026-09-14', 'week')
+  assert.ok(mon.title.indexOf('9月14日') >= 0, mon.title)
+  // 跨月：2026-10-01 是周四 → 本周一 2026-09-28
+  const cross = reportOf(reportPlan(), '2026-10-01', 'week')
+  assert.ok(cross.title.indexOf('9月28日') >= 0, cross.title)
 })
 
 // ---------------------------------------------------------------- 归位候选
