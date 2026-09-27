@@ -13,10 +13,10 @@ import { createRequire } from 'node:module'
 
 const require = createRequire(import.meta.url)
 const {
-  pct, barWidth, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr,
+  pct, barWidth, statusLabel, sortNodes, summarize, toggleStatus, isOpen, todayStr, dayOfLocal,
   nodeType, childrenOf, planNodes, inboxOf, topPlans, typeLabel, progressOf,
   priorityLabel, priorityRank, nextPriority, delegateLabel, delegateText,
-  flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, reportOf,
+  flattenNodes, FILTERS, focusList, filterCounts, upcomingByDay, dayLabel, deferDate, moveTargets, reportOf, reportMarkdown,
   duplicateGroupsOf,
   EVIDENCE_KINDS, evidenceLabel, evidenceList, unverifiedOf, paceText,
   COLLAPSE_KEY, parseCollapsed, serializeCollapsed, descendantCount, isDescendantOf, dropTarget,
@@ -518,7 +518,9 @@ function reportPlan() {
         children: [
           // ── 已结束：只有落在完成窗口里的才算「本期完成」
           { id: 'a1', title: '周一做完的', status: 'done', doneAt: '2026-09-14T10:00:00.000Z' },
-          { id: 'a2', title: '今天做完的', status: 'done', doneAt: '2026-09-17T22:30:00.000Z' },
+          // 取 UTC 中午：报告窗口按**本地日期**比（见 dayOfLocal），晚一些的时刻在东八区
+          // 会滚到第二天、被 `day <= 今天` 判出窗口。UTC 正午在 -12..+11 的偏移下都是同一天。
+          { id: 'a2', title: '今天做完的', status: 'done', doneAt: '2026-09-17T12:00:00.000Z' },
           { id: 'a3', title: '上周做完的', status: 'done', doneAt: '2026-09-10T09:00:00.000Z' },
           { id: 'a4', title: '做完了但没记时间', status: 'done' },
           { id: 'a5', title: '放弃的', status: 'dropped', doneAt: '2026-09-16T09:00:00.000Z' },
@@ -660,6 +662,119 @@ test('reportOf 本周一为一周之始：周日回退 6 天，其余回退 (get
   // 跨月：2026-10-01 是周四 → 本周一 2026-09-28
   const cross = reportOf(reportPlan(), '2026-10-01', 'week')
   assert.ok(cross.title.indexOf('9月28日') >= 0, cross.title)
+})
+
+test('dayOfLocal 把 ISO 时间戳换算成本地日期（直接截前 10 位会差一天）', () => {
+  // 这是整条时间链的锚点：报告窗口、PLAN.md 的「完成于」、服务端的 todayStr
+  // 都必须是同一把**本地**尺。toISOString() 写的是 UTC，东八区凌晨时段截前 10 位
+  // 拿到的是昨天的日期。
+  assert.equal(dayOfLocal(new Date().toISOString()), todayStr(), '同一刻的两种取法必须一致')
+  // 纯日期串原样返回——不按 UTC 午夜重新解释，否则负偏移时区会把 09-17 退回 09-16
+  assert.equal(dayOfLocal('2026-09-17'), '2026-09-17')
+  assert.equal(dayOfLocal(''), '')
+  assert.equal(dayOfLocal(undefined), '')
+  assert.equal(dayOfLocal(null), '')
+  assert.equal(dayOfLocal('不是日期'), '不是日期'.slice(0, 10))
+})
+
+test('今天刚做完的进「本期完成」：周一早上不会因为它掉进上周而看不见', () => {
+  // 复现真实故障：doneAt 是 UTC ISO，周一凌晨截前 10 位得到上周日的日期，
+  // `day >= 本周一` 判假——今天做完的事一条都不报，报告里「完成 0」，
+  // 而读者明明刚在面板上勾了勾。
+  // 「今天」由**同一个时刻**推出，不让测试本身跨零点和实现抢时钟。
+  const now = new Date()
+  const t = dayOfLocal(now.toISOString())
+  const plan = { nodes: [{ id: 'n1', title: '刚做完', status: 'done', doneAt: now.toISOString() }] }
+  assert.deepEqual(idsOf(reportOf(plan, t, 'week').done), ['n1'], '本周窗口')
+  assert.deepEqual(idsOf(reportOf(plan, t, 'day').done), ['n1'], '日窗口')
+  assert.equal(reportOf(plan, t, 'week').empty, false)
+})
+
+// ---------------------------------------------------------------- 报告导出（Markdown）
+
+test('reportMarkdown 周报：标题、摘要、段序与面板逐字一致', () => {
+  const md = reportMarkdown(reportOf(reportPlan(), REPORT_TODAY, 'week'))
+  // 标题：周报 + 期间（周一 → 周日）
+  assert.ok(md.indexOf('# 周报 · ') === 0, md.split('\n')[0])
+  assert.ok(md.indexOf('9月14日') >= 0, '期间起点是本周一')
+  // 摘要行：完成 / 进行中 / 该做没做 / 落后于周期 / 本期到期 / 放弃 都在
+  assert.ok(md.indexOf('- 完成 ') >= 0, md)
+  assert.ok(md.indexOf(' · 进行中 ') >= 0, md)
+  assert.ok(md.indexOf(' · 该做没做 ') >= 0, md)
+  assert.ok(md.indexOf(' · 落后于周期 ') >= 0, md)
+  assert.ok(md.indexOf(' · 本期到期 ') >= 0, md)
+  assert.ok(md.indexOf(' · 放弃 ') >= 0, md)
+  // 段序：完成 → 该做没做 → 落后 → 到期 → 进行中
+  const idxOf = (s) => md.indexOf(s)
+  assert.ok(idxOf('## 本期完成') < idxOf('## 该做没做'), '完成在前')
+  assert.ok(idxOf('## 该做没做') < idxOf('## 落后于周期'), '逾期在落后之前')
+  assert.ok(idxOf('## 落后于周期') < idxOf('## 本期到期'), '落后在到期之前')
+  assert.ok(idxOf('## 本期到期') < idxOf('## 进行中'), '到期在进行中之前')
+})
+
+test('reportMarkdown 空段不写、段名与 UI 一致', () => {
+  // 造一个只有完成段的报告——其余段必须完全不出现，而不是「## xx（0）」占一行。
+  const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
+  const onlyDone = Object.assign({}, rep, {
+    overdue: [], behind: [], due: [], doing: [], dropped: 0,
+  })
+  const md = reportMarkdown(onlyDone)
+  assert.ok(md.indexOf('## 本期完成') >= 0, '有数据的段要出现')
+  assert.ok(md.indexOf('## 该做没做') < 0, '空段不该占行')
+  assert.ok(md.indexOf('## 落后于周期') < 0, md)
+  assert.ok(md.indexOf('## 本期到期') < 0, md)
+  assert.ok(md.indexOf('## 进行中') < 0, md)
+})
+
+test('reportMarkdown 完成的行打勾、未完成的留空（读者一看就懂）', () => {
+  const md = reportMarkdown(reportOf(reportPlan(), REPORT_TODAY, 'week'))
+  assert.ok(md.indexOf('- [x] a2 · 今天做完的') >= 0, '完成的是 [x]')
+  assert.ok(md.indexOf('- [ ] a6 · 欠着的') >= 0, '未完成的是 [ ]')
+  assert.ok(md.indexOf('- [ ] a7 · 落后的') >= 0, '进行中的也是 [ ]')
+})
+
+test('reportMarkdown 把上下文路径、日期与委派一起写出来', () => {
+  const md = reportMarkdown(reportOf(reportPlan(), REPORT_TODAY, 'week'))
+  // 上下文路径是**标题链**（不是 id 链），去掉自己那段——与 UI 的 path 显示同源。
+  assert.ok(md.indexOf('工作主线') >= 0, '父计划标题出现在行内')
+  // 到期日期用 dayLabel 渲染（月日 周X）
+  assert.ok(md.indexOf('9月20日') >= 0, '周日到期那条带日期')
+})
+
+test('reportMarkdown 落后段用百分比而不是原始小数（读者看得懂）', () => {
+  // fixture 里 a7 的 pace.gap = 0.4 → 「落后 40%」
+  const md = reportMarkdown(reportOf(reportPlan(), REPORT_TODAY, 'week'))
+  assert.ok(md.indexOf('落后 40%') >= 0, md)
+  assert.ok(md.indexOf('0.4') < 0, '不该出现原始小数')
+})
+
+test('reportMarkdown 带委派信息的条目把「委派给 X」写进行内', () => {
+  const plan = {
+    nodes: [{
+      id: 'p1', title: '主计划', status: 'active',
+      children: [{
+        id: 'a1', title: '等小王接', status: 'todo', due: '2026-09-01', overdue: true,
+        delegate: { to: '小王', status: 'accepted' },
+      }],
+    }],
+  }
+  const md = reportMarkdown(reportOf(plan, REPORT_TODAY, 'week'))
+  assert.ok(md.indexOf('委派给 小王（已接受）') >= 0, md)
+})
+
+test('reportMarkdown 空报告也给出摘要（不是一份空文件）', () => {
+  const md = reportMarkdown(reportOf({ nodes: [] }, REPORT_TODAY, 'week'))
+  assert.ok(md.indexOf('# 周报 · ') === 0, md)
+  assert.ok(md.indexOf('完成 0') >= 0, md)
+})
+
+test('reportMarkdown 对脏数据安全（null / 缺字段都不崩）', () => {
+  assert.equal(reportMarkdown(null), '', 'null 直接返回空串')
+  const md = reportMarkdown({ title: 'x', done: null, overdue: {}, doing: 'bad' })
+  assert.ok(typeof md === 'string' && md.length > 0, '形状不对也要出文本')
+  // 备注参数只在真的给了才追加——避免报告末尾多一条空分隔线。
+  assert.ok(reportMarkdown({ title: 'x' }).indexOf('---') < 0, '没传 note 不加分隔线')
+  assert.ok(reportMarkdown({ title: 'x' }, '这周重点做 A').indexOf('这周重点做 A') >= 0, '传了 note 会追加')
 })
 
 // ---------------------------------------------------------------- 归位候选

@@ -190,6 +190,26 @@ function todayStr() {
   return d.getFullYear() + '-' + m + '-' + day
 }
 
+/**
+ * 从 ISO 时间戳取**本地**日期（YYYY-MM-DD），与 `todayStr()` 同一把尺。
+ *
+ * 不能截前 10 位：`doneAt` 是 `toISOString()` 写出的 **UTC** 字符串，截前 10 位拿到的是
+ * UTC 日期。东八区凌晨时段，UTC 还在昨天——「刚做完的」就被算成上周的事，从
+ * 「本期完成」里整条消失（周一早上看周报最扎眼：今天做完的，一条都看不见）。
+ *
+ * 纯日期串（`due` / `end`，或老数据里已有的日期型 `doneAt`）原样返回、**不重新解析**：
+ * `new Date('2026-09-17')` 会按 UTC 午夜解释，在负偏移时区会被退回前一天。
+ */
+function dayOfLocal(v) {
+  if (typeof v !== 'string' || v === '') return ''
+  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v
+  var d = new Date(v)
+  if (isNaN(d.getTime())) return v.slice(0, 10)
+  var m = String(d.getMonth() + 1).padStart(2, '0')
+  var day = String(d.getDate()).padStart(2, '0')
+  return d.getFullYear() + '-' + m + '-' + day
+}
+
 /** 兜底逾期判定：只在服务端没给 `overdue` 标注时用。 */
 function overdueFallback(node, today) {
   var anchor = null
@@ -976,7 +996,9 @@ function weekStartOf(dateStr) {
  * **不吃筛选器**：报告是这段时间的账。套一层「我委派出去的」，「本期完成」会空掉，
  * 而那个空是筛选造成的、不是真的没完成——那是在骗人。所以报告视图不渲染筛选条。
  *
- * `doneAt` 取日期部分的方式与 host 的 `dayOf` 一致（截前 10 位），不引第二把尺。
+ * `doneAt` 取日期部分的方式与 host 的 `dayOf` 一致（都按**本地日期**，见 `dayOfLocal`），
+ * 不引第二把尺。这是真的坑过：`toISOString()` 写的是 UTC，直接截前 10 位在东八区
+ * 凌晨会比 `todayStr()` 早一天，「今天做完的」就整条掉出本期窗口。
  */
 function reportOf(plan, today, mode) {
   var t = (typeof today === 'string' && today !== '') ? today : todayStr()
@@ -1022,8 +1044,8 @@ function reportOf(plan, today, mode) {
     var finished = n.status === 'done' || n.status === 'dropped'
     if (n.status === 'dropped') dropped++
     if (finished) {
-      // 完成时间取前 10 位（与 host 的 dayOf 同一把尺），落在完成窗口里才算本期完成。
-      var day = typeof n.doneAt === 'string' ? n.doneAt.slice(0, 10) : ''
+      // 完成时间按**本地日期**取（dayOfLocal，与 host 的 dayOf 同口径），落在完成窗口里才算本期完成。
+      var day = dayOfLocal(n.doneAt)
       if (n.status === 'done' && day !== '' && day >= ws && day <= t) {
         done.push({ node: n, path: ctxOf(x), day: day })
       }
@@ -1081,6 +1103,104 @@ function reportOf(plan, today, mode) {
     empty: done.length === 0 && doing.length === 0 && overdue.length === 0
       && behind.length === 0 && due.length === 0,
   }
+}
+
+/**
+ * 把 reportOf 的结果序列化成**可直接贴给别人看的 Markdown**——这就是「报告」
+ * 能离开面板的那一步：点一下复制，粘到群里 / 粘给 agent 让它转成 docx。
+ *
+ * 三条口径与 reportOf 一致，不能各写各的：
+ *   1. 段序同 UI：本期完成 → 该做没做 → 落后于周期 → 本期到期 → 进行中。
+ *   2. 空段不写——与 UI 一样不占行。表头那五个数与报告口径同源，
+ *      加起来正好是本期动过的条目数，不会重复计数。
+ *   3. 不写状态机细节：Markdown 是给**读者**看的，不是给系统读的。
+ *
+ * 与 reportOf 分开的理由：reportOf 是纯分组（喂 UI 与单测），Markdown 是**渲染**
+ * （喂复制/导出）——将来加别的出口（HTML / docx）不必再来动分组。
+ */
+function reportMarkdown(rep, note) {
+  if (rep === null || rep === undefined) return ''
+  var mdOf = function (s) { return (typeof s === 'string') ? s : '' }
+
+  // 段名 → Markdown 小标题。段名与 UI 逐字相同（reportOf 的调用方是 renderReport），
+  // 复制出去后能对照面板逐段核对。
+  var titleOf = function (items, name) {
+    if (items.length === 0) return null
+    var head = '## ' + name + '（' + String(items.length) + '）'
+    return [head, '']
+  }
+
+  var rowOf = function (x, extra, done) {
+    var n = x.node
+    var box = done === true ? '[x] ' : '[ ] '
+    var bits = []
+    if (typeof extra === 'string' && extra !== '') bits.push(extra)
+    if (x.path !== '') bits.push(x.path)
+    // `- ` 不能省：没有它这一行就不是 markdown 列表项，粘到群里或喂给转 docx 的
+    // agent 时勾选框不会渲染出来，读者看到的是一排裸文本。
+    return '- ' + box + String(n.id) + ' · ' + mdOf(n.title)
+      + (bits.length > 0 ? '  ' + bits.join('；') : '')
+  }
+
+  // 委派状态用文字补一句：读者不该还得回面板才知道「这条在等谁接」。
+  var delegOf = function (n) {
+    var d = n.delegate
+    if (d === null || d === undefined || typeof d !== 'object') return ''
+    var out = mdOf(d.to || '')
+    if (out !== '') out = '委派给 ' + out
+    if (d.status === 'accepted') out += '（已接受）'
+    else if (d.status === 'returned') out += '（已交回）'
+    else if (d.status === 'declined') out += '（已拒绝）'
+    return out
+  }
+
+  var lines = []
+  var done = Array.isArray(rep.done) ? rep.done : []
+  var overdue = Array.isArray(rep.overdue) ? rep.overdue : []
+  var behind = Array.isArray(rep.behind) ? rep.behind : []
+  var due = Array.isArray(rep.due) ? rep.due : []
+  var doing = Array.isArray(rep.doing) ? rep.doing : []
+
+  lines.push('# ' + (rep.mode === 'day' ? '日报' : '周报') + ' · ' + mdOf(rep.title))
+  lines.push('')
+  lines.push('- 完成 ' + String(done.length)
+    + ' · 进行中 ' + String(doing.length)
+    + ' · 该做没做 ' + String(overdue.length)
+    + (behind.length > 0 ? ' · 落后于周期 ' + String(behind.length) : '')
+    + (due.length > 0 ? ' · 本期到期 ' + String(due.length) : '')
+    + (typeof rep.dropped === 'number' && rep.dropped > 0 ? ' · 放弃 ' + String(rep.dropped) : ''))
+
+  var pushSection = function (items, name, opts) {
+    var head = titleOf(items, name)
+    if (head === null) return
+    var o = opts === undefined || opts === null ? {} : opts
+    lines.push(head[0], head[1])
+    for (var i = 0; i < items.length; i++) {
+      var x = items[i]
+      var extra = ''
+      if (o.date === true && typeof x.date === 'string' && x.date !== '') {
+        extra = dayLabel(x.date)
+      } else if (o.pace === true && typeof x.gap === 'number') {
+        extra = '落后 ' + (x.gap >= 0 ? '' : '-') + Math.round(Math.abs(x.gap) * 100) + '%'
+      }
+      var dg = delegOf(x.node)
+      if (dg !== '') extra = (extra !== '' ? extra + '；' : '') + dg
+      lines.push(rowOf(x, extra, o.done === true))
+    }
+    lines.push('')
+  }
+
+  pushSection(done, '本期完成', { done: true, date: true })
+  pushSection(overdue, '该做没做', { date: true })
+  pushSection(behind, '落后于周期', { pace: true })
+  pushSection(due, '本期到期', { date: true })
+  pushSection(doing, '进行中')
+
+  if (typeof note === 'string' && note !== '') {
+    lines.push('---', '')
+    lines.push(note)
+  }
+  return lines.join('\n').replace(/\n{3,}/g, '\n\n')
 }
 
 // -------------------------------------------------------------- 归位候选
@@ -1333,6 +1453,7 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     toggleStatus: toggleStatus,
     isOpen: isOpen,
     todayStr: todayStr,
+    dayOfLocal: dayOfLocal,
     summarize: summarize,
     priorityLabel: priorityLabel,
     priorityRank: priorityRank,
@@ -1372,6 +1493,7 @@ if (typeof window === 'undefined' && typeof module !== 'undefined' && module.exp
     deferDate: deferDate,
     dayLabel: dayLabel,
     reportOf: reportOf,
+    reportMarkdown: reportMarkdown,
     moveTargets: moveTargets,
     COLLAPSE_KEY: COLLAPSE_KEY,
     parseCollapsed: parseCollapsed,

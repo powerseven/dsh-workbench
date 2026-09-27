@@ -315,6 +315,10 @@ const CSS = [
   '.dsh-wb-rsegbtn{padding:var(--wb-sp-1) var(--wb-sp-3);border:none;background:transparent;font:var(--wb-f3s);color:var(--wb-fg-2);cursor:pointer;}',
   '.dsh-wb-rsegbtn.on{background:var(--wb-accent-soft);color:var(--wb-fg);font-weight:600;}',
   '.dsh-wb-rspan{font:var(--wb-f3s);color:var(--wb-fg-2);font-variant-numeric:tabular-nums;}',
+  // 「复制 Markdown」：报告能离开面板的出口——粘到群里，或粘给 agent 转成 docx。
+  // 排在档期后面而不是塞进段控：它是「带走这份」的动作，不是「切换读法」。
+  '.dsh-wb-ract{margin-left:auto;flex:none;border:1px solid var(--wb-line-2);border-radius:var(--wb-pill);background:transparent;color:var(--wb-fg-2);font:var(--wb-f3s);padding:var(--wb-sp-1) var(--wb-sp-3);cursor:pointer;}',
+  '.dsh-wb-ract:hover{background:var(--wb-hover);color:var(--wb-fg);}',
   // 一行统计：完成 / 进行中 / 逾期 / 落后 四个数，各自带词，扫一眼就知道这期怎么样。
   '.dsh-wb-rsum{display:flex;flex-wrap:wrap;gap:var(--wb-sp-2) var(--wb-sp-4);padding-bottom:var(--wb-sp-2);border-bottom:1px solid var(--wb-line-2);margin-bottom:var(--wb-sp-2);}',
   '.dsh-wb-rsumitem{font:var(--wb-f3s);color:var(--wb-fg-2);white-space:nowrap;}',
@@ -3621,6 +3625,35 @@ function apply(ctx) {
      */
     const renderReport = () => {
       const rep = reportOf(plan, todayStr(), reportMode)
+
+      // 复制成 Markdown：把这份报告从面板里带出去——粘到群里，或粘给 agent 让它
+      // 转成 docx / 邮件。段名、计数、口径与面板逐字一致（同一份 reportOf 结果）。
+      //
+      // navigator.clipboard 只信任安全上下文（localhost / HTTPS）；DSH 常开在
+      // 自定义协议或非 localhost，所以降级到 execCommand——复制这一类一次性动作
+      // 不值得为「浏览器不允许」直接失败。
+      const copyReport = async () => {
+        const md = reportMarkdown(rep)
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) {
+            await navigator.clipboard.writeText(md)
+          } else {
+            const ta = document.createElement('textarea')
+            ta.value = md
+            ta.setAttribute('readonly', '')
+            ta.style.position = 'fixed'
+            ta.style.opacity = '0'
+            document.body.appendChild(ta)
+            ta.select()
+            document.execCommand('copy')
+            document.body.removeChild(ta)
+          }
+          flash((reportMode === 'day' ? '日报' : '周报') + '已复制，可直接贴给别人看')
+        } catch (e) {
+          store.set({ error: e instanceof Error ? e.message : String(e) })
+        }
+      }
+
       const seg = (id, label, title) => h('button', {
         className: 'dsh-wb-rsegbtn' + (reportMode === id ? ' on' : ''),
         key: id,
@@ -3647,6 +3680,12 @@ function apply(ctx) {
             seg('day', '日报', '只看今天'),
           ),
           h('span', { className: 'dsh-wb-rspan' }, rep.title),
+          h('button', {
+            className: 'dsh-wb-ract',
+            key: 'copy',
+            title: '复制成 Markdown：粘到群里，或粘给 agent 让它转成 docx',
+            onClick: copyReport,
+          }, '复制 Markdown'),
         ),
         h('div', { className: 'dsh-wb-rsum', key: 'sum' },
           sumItems.map(([label, n]) => h('span', { className: 'dsh-wb-rsumitem', key: label },

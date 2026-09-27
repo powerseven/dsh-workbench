@@ -1001,10 +1001,20 @@ export function controlSummary(plan, today = todayStr()) {
   }
 }
 
-/** 在 YYYY-MM-DD 或 ISO 时间戳上取日期部分。 */
+/**
+ * 在 YYYY-MM-DD 或 ISO 时间戳上取**本地**日期。
+ *
+ * ISO 是 `toISOString()` 写出的 UTC 字符串，直接截前 10 位拿到的是 UTC 日期——
+ * 东八区凌晨会比 `todayStr()` 早一天，「完成于今天」就印成昨天。纯日期串原样返回：
+ * `new Date('2026-09-17')` 按 UTC 午夜解释，在负偏移时区会被退回前一天。
+ */
 function dayOf(v) {
   const s = opt(v)
-  return s === undefined ? undefined : s.slice(0, 10)
+  if (s === undefined) return undefined
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s
+  const d = new Date(s)
+  if (isNaN(d.getTime())) return s.slice(0, 10)
+  return todayStr(d)
 }
 
 /**
