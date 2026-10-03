@@ -34,8 +34,8 @@ AI 干完活可以自己把任务标完成，进度不需要人工同步。任�
 
 ```sh
 node scripts/build.mjs        # 构建（产物在 lib/，lib/ 不入库）
-node --test test/*.test.mjs   # 跑测试（503 个，分五层见下）
-npm test                      # 构建 + 测试（537 个）
+node --test test/*.test.mjs   # 跑测试（547 个，分五层见下）
+npm test                      # 构建 + 测试（545 个）
 
 # 装到正在用的 web profile（首次或改动 manifest 后）
 dsh plugin --profile web add /Users/tinyseven/Documents/DSH/dsh-workbench
@@ -121,15 +121,16 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 - `starred`：`true`（可选布尔），「我正在做 / 接下来做」，只影响执行清单排序。
   故意不做成状态：进行中已经在 `status` 里有（doing），两套语义会打架。
   关掉就删键——磁盘上不出现 `starred:false` 的噪音。
-- `filed`：`true`（可选布尔），**已纳入工作计划**。收件箱里的顶层待办有两条出路：
-  **归位**到某个已有计划下当子项（`plan_node_move`），或者**纳入工作计划**——
-  不作为谁的子项，而是以独立条目出现在「工作计划」栏里（面板上那个常显的
-  「纳入计划」按钮走 `/node-set` 的 `filed`，agent 走 `plan_node_set` 的同名参数，
-  两者都走 DEP_PARAMS 通道——**零新增工具、零新增路由**）。由此 `inboxOf` 与
-  `workPlans` 互补：一个顶层节点要么在收件箱、要么在工作计划栏，不会两边都出现。
-  **只在顶层有意义**：`appendChild` 挂到别人下面时会清掉它，`normalizePlan` 读盘时
-  对非顶层节点也清一遍——留着的话，将来把这条挪回顶层会**凭空回到工作计划栏**，
-  静默发生且从界面上无从解释。关掉同样删键。
+- ~~`filed`~~ —— **已废弃**（提交 `589bf84`；本条 2026-10-03 才补记，之前这里还
+  在把它当在用功能讲）。它曾把顶层节点分成「收件箱 / 工作计划」两栏，现在是
+  **顶层一律平等**，`filed` 不再参与任何判断：`store.filedOf()` 恒返回 false、
+  `store.setFiled()` 是空实现（两处都**刻意保留**，好让「这个字段不存在」有个
+  显式落点，而不是每个调用点各判一次），`normalizePlan` 读盘时清掉老数据里的这个键。
+  兼容入口还开着，但**只为了报错时说人话**：`/node-set` 收到 `filed` 会抛一句
+  「顶层现在不分两栏，想让一条待办变成计划，直接给它加子项」；工具面静默忽略，
+  让还在传这个参数的老 agent 不至于整个调用失败。
+  **别再写新代码依赖它。** 顶层节点的出路只有一条：给它加子项，它就变成计划
+  （见下面「类型由结构派生」）。
 - `recur`：`{ kind: 'week' | 'month' }`，重复任务。完成带 recur 的待办时
   `spawnRecurring` 克隆一条新的挂回原处，截止顺推一期（month 落到月末截断）。
   克隆**要**：标题 / 负责人 / 优先级 / 备注 / 重复规则；克隆**不要**：
@@ -202,9 +203,12 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 不参与级联。手动标 `dropped`（放弃整个分支）不受影响。
 
 **写入路径唯一**：面板（HTTP 面）与 agent 工具都调用 `store.js` 的同一组函数
-（`applyFields` / `setStatus` / `setNodeType` / `setPriority` / `setDelegate` /
-`setReceipt` / `addEvidence`），谁都不另写一套；每一次写入都自动归档版本，
-所以没有「绕过留档」的路径。
+（`applyFields` / `applyStatus` / `setPriority` / `setDelegate` / `setDelegateExpectAt` /
+`setReceipt` / `addEvidence` / `removeEvidence` / `addFile` / `removeFile` /
+`addBlockedBy` / `setStar` / `setRecur` / `clearFields`），谁都不另写一套；
+每一次写入都自动归档版本，所以没有「绕过留档」的路径。
+（早先这里列过一个 `setNodeType`——那个函数**不存在**，「类型由结构派生」之后
+就没有「换型」这个动作了，换型的语义落在 `normalizeShape` 上。）
 
 **加能力的默认姿势是「不加工具、不加路由」**：落后预警是整个算出来的派生量，
 完成证据与文件关联的**写入**都是 `plan_node_set` / `plan_todo_set` 上的可选参数
@@ -213,7 +217,7 @@ plan.nodes[]                      顶层节点；其中 type=todo 的顶层节�
 新增任何通路**：它把十几个字段合成一次 `/node-set`（新建是 `/node-add`），
 字段清单由 `logic.cjs` 的 `formRequest` 统一产出。
 两处**有意识的破例**都与文件系统有关：读 vault（`plan_config_set` / `plan_file_read`，
-见上一段）与面板的 `/config-set` `/file-read`。现在 15 个工具、12 条路由。
+见上一段）与面板的 `/config-set` `/file-read`。现在 15 个工具、14 条路由。
 **工具面按节点组织这条线要守住**：每冒出一个概念就长一套 API，agent 花在
 「该用哪个」上的注意力迟早超过事情本身。
 
@@ -446,6 +450,12 @@ if (surface !== undefined && seed.target !== 'bottom') { /* 走 surface = 官方
 - **`children` 的 fold 上限更高**（`MAX_FOLD_CHILDREN` = 30，不是 `MAX_EDITS` = 10）：
   用户是把**一批**任务归到一个计划下面（真机上是十来条），用 10 会把用户明说的那批
   悄悄截断，而他看到卡上少了一半只会以为自己漏说了。
+- **截断必须等 mode 定案之后（2026-10-03 修）**：`normMerges` 只按宽上限截当兜底，
+  收窄统一交给 `capMergeFolds`，由 host 在下面那道兜底**改判完之后**调用。
+  顺序反了就是「漏填 mode → 按 merge 的 10 条截 → 兜底改判成 children 也救不回来」
+  ——当年「其余 10 条」事故的**残留根因**（上限当年调大了，但截断时机没跟着挪）。
+  截断时如实标 `foldTruncated` / `foldTotal` 并显示在卡上：悄悄少一半正是这个坑
+  最初难查的原因，用户只会以为自己没说完。
 - **成环要提前剔掉并说清原因**：keep 在某条 fold 底下时，把上级挪进自己的子孙会被
   `moveNode` 拒绝（面板点下去只会报错），所以 `matchMerges` 在这一层就剔掉，记进
   `skipped`（原因随卡片带回来）；本来就在 keep 底下的也不必再挪一次。
@@ -454,10 +464,13 @@ if (surface !== undefined && seed.target !== 'bottom') { /* 走 surface = 官方
   子任务」，JSON 里却没有 mode，落到 `merge` = 删掉那 10 条）。所以有两道：
   ① 提示词写明「**mode 必填，不写就按 merge（＝会删掉）处理**」；
   ② host 的 `mergeWantsChildren(用户原话)` 兜底——用户自己说了「作为子任务 / 子计划 /
-  合并成一个计划 / 挂到…下面」而模型没给 mode 时，按 children 下发，并把依据写进
-  `modeNote` 摆在卡上（改判是**按人那句话**改的模型判读，不说清就像 AI 擅自改主意）。
+  合并成一个计划 / 挂到…下面」时，按 children 下发，并把依据写进 `modeNote` 摆在卡上
+  （改判是**按人那句话**改的模型判读，不说清就像 AI 擅自改主意）。
   兜底必须**窄**：用户说的是「这两条是一件事」时不许改判——替用户改主意比不兜底更糟。
   判据只看**用户的话**，不猜模型的意图。
+  **注意兜底的作用域比「模型没给 mode」宽**：它对**模型明确写了 `merge`** 的组同样生效，
+  这不是疏忽而是刻意的——判错的方向不对称（猜 children 只是多一层嵌套，
+  猜 merge 是数据没了），所以宁可多兜一层。两种情况用 `modeNote` 区分回显给用户。
 
 **没有新增工具、没有新增路由**：edits 走详情表单（`/node-set`），merges 是
 「`/node-set` 改标题 → `/node-move` 逐个子项搬过去 → 证据/关联追加 → `/node-remove`」，
@@ -647,11 +660,11 @@ tasks**，转成带 `exists: true` 的 edits，卡片上写明「已经在计划
 - 注释和面向用户的文案用中文，标识符用英文。
 - **工具面按「节点」组织，不按「层级」组织。** 结构操作只有四个：
   `plan_node_add` / `plan_node_set` / `plan_node_move` / `plan_node_remove`，
-  作用在任意节点上，`type` 决定它是计划还是待办。不要再按层级加
-  `plan_goal_*` / `plan_kr_*` / `plan_task_*` 三套——三套 API 做同一件事，
+  作用在任意节点上（**不传 `type`**——它由结构派生，见上面「类型由结构派生」）。
+  不要再按层级加 `plan_goal_*` / `plan_kr_*` / `plan_task_*` 三套——三套 API 做同一件事，
   agent 每次都得先想「这东西算 goal 还是 kr」，而这些区分对人本就没有意义。
 - 新增工具时同步更新 `test/build.test.mjs` 里的工具清单断言（现在 15 个工具、
-  12 条 HTTP 路由）。
+  14 条 HTTP 路由）。
 - **跨半身重复的纯逻辑必须在测试里钉住一致性。** host 是 ESM、client 是 CJS，
   无法共享模块，像 `nextPriority` 这种映射只能各写一份——那就用断言把两份绑在一起
   （见 `test/logic.test.mjs`），否则改一侧忘另一侧，表现为「面板上点徽章跳到别的档」。

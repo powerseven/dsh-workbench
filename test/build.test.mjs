@@ -317,11 +317,51 @@ test('host 半身注册了完整的 plan_* 工具集（节点模型）', () => {
   }
 })
 
+test('工具守卫不许漏：清单外的工具名就是「新增工具忘了同步清单」', () => {
+  // 与下面路由守卫同一个道理，这里也补上反向检查（2026-10-03）。
+  // AGENTS.md 明写「新增工具时同步更新 test/build.test.mjs 里的工具清单断言」，
+  // 而单向断言只能挡住「清单里有、代码里没有」，挡不住反过来——
+  // 那正是工具面越长越容易出的错（agent 每次决策都多一个候选）。
+  const declared = [
+    'plan_show', 'plan_node_add', 'plan_node_set', 'plan_node_move', 'plan_node_remove',
+    'plan_todo_set', 'plan_priority_set',
+    'plan_delegate_set', 'plan_delegate_receipt', 'plan_delegated',
+    'plan_snapshot', 'plan_history', 'plan_restore',
+    'plan_config_set', 'plan_file_read',
+  ]
+  const found = [...host.matchAll(/ctx\.tools\.register\(makeTool\(\s*'([^']+)'/g)].map((m) => m[1])
+  assert.equal(found.length, declared.length,
+    'tools.register 的调用数与守卫清单对不上（' + found.length + ' vs ' + declared.length + '）——'
+    + '新增/删除工具请同步这条清单')
+  assert.deepEqual([...new Set(found)].sort(), [...declared].sort(),
+    '注册的工具集合与守卫清单不一致：' + found.join(', '))
+})
+
 test('host 半身暴露 /api/workbench 数据面', () => {
   assert.match(host, /'\/api\/workbench' \+ path/)
-  for (const route of ['/get', '/ai-parse', '/todo-set', '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot', '/history', '/config-set', '/file-read']) {
+  for (const route of ['/get', '/ai-parse', '/persona', '/persona-set', '/todo-set', '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot', '/history', '/config-set', '/file-read']) {
     assert.ok(host.includes("route('" + route + "'"), 'host 缺少路由 ' + route)
   }
+})
+
+test('路由守卫不许漏：清单外的 route() 就是「新增路由忘了同步清单」', () => {
+  // 2026-10-03 加。原来上面那个测试是**单向**的——只检查「清单里的都在」，
+  // 于是 `/persona` 与 `/persona-set` 加进去时没人拦，AGENTS.md 与这里的
+  // 数字一起停在 12 条（实际 14 条），而且破得静默。
+  //
+  // 加路由时漏改清单，是这里最容易犯又最难发现的错：功能是好的、测试是绿的，
+  // 只是「两个准绳的数字都不准了」。所以改成双向：清单外的 route() 直接失败。
+  const declared = ['/get', '/ai-parse', '/persona', '/persona-set', '/todo-set',
+    '/node-add', '/node-set', '/node-move', '/node-remove', '/init', '/snapshot',
+    '/history', '/config-set', '/file-read']
+  const found = [...host.matchAll(/route\('([^']+)'/g)].map((m) => m[1])
+  assert.deepEqual(
+    [...new Set(found)].sort(),
+    [...declared].sort(),
+    'host 的 route() 集合与守卫清单不一致——新增路由请同步这条清单（漏加会被这里抓住）',
+  )
+  // 顺带钉住条数：AGENTS.md 与 README 都按这个数写说明，数字漂移过一次。
+  assert.equal(declared.length, 14, '当前数据面是 14 条；改了这个数记得同步文档')
 })
 
 test('host 半身每个 src 文件都被拷进 lib（漏一个就是运行时「找不到模块」）', () => {
