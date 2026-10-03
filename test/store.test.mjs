@@ -1024,8 +1024,25 @@ test('applyStatus 在完成时记 doneAt，离开 done 时清掉', () => {
   assert.equal(task.doneAt, undefined, '离开 done 要清掉，否则周报会重复统计')
 })
 
-test('applyStatus 只在首次进入 doing 时记 startedAt', () => {
+test('applyStatus 在放弃时记 droppedAt，离开 dropped 时清掉（doneAt 的兄弟字段）', () => {
+  // 2026-10-03 补。droppedAt 一直缺着，于是报告里的「放弃 N」只能数全部历史，
+  // 而且**没法按窗口过滤**——不是漏了过滤，是根本没有可过滤的时间戳。
   const task = { status: 'todo' }
+  applyStatus(task, 'dropped', new Date('2026-09-14T10:00:00Z'))
+  assert.equal(task.droppedAt, '2026-09-14T10:00:00.000Z')
+  // 重复标记放弃不刷新时间，与 doneAt 同一把尺
+  applyStatus(task, 'dropped', new Date('2026-09-15T10:00:00Z'))
+  assert.equal(task.droppedAt, '2026-09-14T10:00:00.000Z')
+  // 撤回放弃 → 回到 todo，锚点要清掉，否则它会继续留在「本期放弃」里
+  applyStatus(task, 'todo')
+  assert.equal(task.droppedAt, undefined)
+  // 放弃 ≠ 完成：两边的时间戳互不串
+  const t2 = { status: 'todo' }
+  applyStatus(t2, 'done', new Date('2026-09-14T10:00:00Z'))
+  assert.equal(t2.droppedAt, undefined)
+})
+
+test('applyStatus 只在首次进入 doing 时记 startedAt', () => {  const task = { status: 'todo' }
   applyStatus(task, 'doing', new Date('2026-09-14T10:00:00Z'))
   assert.equal(task.startedAt, '2026-09-14T10:00:00.000Z')
   applyStatus(task, 'todo')

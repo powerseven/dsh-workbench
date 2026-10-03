@@ -577,6 +577,17 @@ export function applyStatus(node, status, now = new Date()) {
     delete node.doneAt
   }
   if (status === 'doing' && opt(node.startedAt) === undefined) node.startedAt = iso
+  // `droppedAt` 是 doneAt 的兄弟字段，**2026-10-03 补**。它一直缺着，于是报告里
+  // 的「放弃 N」只能是**全部历史**的总数——而那个数和「本期」并排显示在表头，
+  // 读起来像是这段时间放弃了这么多。更棘手的是没法「按窗口过滤」：真实的
+  // dropped 节点根本没有时间戳（上面对 done 也是离开就删），过滤无从下手。
+  // 语义与 doneAt 完全对称：进入时补（只在首次写入，重复 save 不会刷新成「刚刚」），
+  // 离开就删——留着会让「撤回放弃」的那一条继续留在本期放弃里。
+  if (status === 'dropped') {
+    if (opt(node.droppedAt) === undefined) node.droppedAt = iso
+  } else if (node.droppedAt !== undefined) {
+    delete node.droppedAt
+  }
   return node
 }
 

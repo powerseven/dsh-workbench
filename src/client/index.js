@@ -3866,8 +3866,13 @@ function apply(ctx) {
           h('span', { className: 'dsh-wb-rseccount' }, String(items.length)),
         ),
         items.map((item) => renderReportRow(item, {
-          checkable: o.checkable === true,
-          // 完成语义一体化：叶子计划（无子项）也能勾，只是通路不同（走 /node-set）。
+          // **有子项的计划不给勾选框**（2026-10-03 修）。它的完成是子项派生出来的，
+          // host 的 assertManualDoneAllowed 会拒绝手动标 done——原先这里不看有没有
+          // 子项就画框，点下去只会弹一句红错。树与执行清单早就用 canCheck 守住了
+          // （见 focusRow），唯独报告漏了：三个视图同一个约束，三处三种写法。
+          checkable: o.checkable === true && childrenOf(item.node).length === 0,
+          // 完成语义一体化：**叶子计划（无子项）也能勾**，只是通路不同——
+          // 待办走 /todo-set，无子项的计划走 /node-set（后者就是上面的 togglePlanDone）。
           isLeaf: nodeType(item.node) === 'todo',
           path: item.path,
           date: o.date === true ? (item.date === undefined ? '' : item.date) : '',
@@ -4531,8 +4536,13 @@ function apply(ctx) {
     if (sum.hasPlan && view !== 'report') rows.push(h('div', { className: 'dsh-wb-filters', key: 'filters' }, chips))
 
     // 自定义视图（AI 清单存下来的）：和筛选按钮同一行语义——点了切换「看什么」。
+    // 报告视图里**不渲染**（2026-10-03 修）：正文在 report 分支就 return 了，
+    // 而芯片的 onClick 切的是 state.custom、那份 payload 只在树/清单视图里被读——
+    // 于是报告里芯片看得见、点下去只换个高亮，正文纹丝不动。上面那行筛选条
+    // 早就加了 `view !== 'report'`，唯独这里漏了，同一个约束三处两种写法。
+    // **不清零 state.custom**：与「筛选不清零」同一条纪律，切回去时视图仍在。
     const savedViews = loadViews()
-    if (savedViews.length > 0) {
+    if (savedViews.length > 0 && view !== 'report') {
       rows.push(h('div', { className: 'dsh-wb-filters', key: 'views' },
         savedViews.map((v) => h('button', {
           key: v.name,

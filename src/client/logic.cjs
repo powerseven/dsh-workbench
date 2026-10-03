@@ -569,7 +569,16 @@ function todoList(plan, today) {
   var blocked = all.filter(function (x) { return x.blockers.length > 0 })
   var band = function (x) {
     if (overdueFallback(x.node, today)) return 0
-    if (dueWithin(x.node, 7, today)) return 1
+    // 「本周」这一档**读服务端标注 `dueSoon`**，与 `focusList` 的 week 档同一把尺
+    // （2026-10-03 修）。原先这里用本地 `dueWithin` 重算一遍，而那个重写漏了
+    // `start`：`store.anchorDate` 是 due ?? end ?? **start**，客户端只认前两个。
+    // 于是「只有 start 的节点」服务端算 dueSoon、客户端算出 null——同一条待办
+    // 在筛选角标里进「本周」，在执行清单里掉到最后一档，两处对不上且没人知道哪个对。
+    // 这正是「要算日期的派生量一律只读服务端标注」那条纪律要防的事。
+    // 服务端没给标注时（老 payload / 手写的测试 fixture）才退回本地估算，
+    // 与 overdueFallback 同一套降级思路。
+    if (x.node.dueSoon === true) return 1
+    if (x.node.dueSoon === undefined && dueWithin(x.node, 7, today)) return 1
     return 2
   }
   open.sort(function (a, b) {
@@ -1042,7 +1051,18 @@ function reportOf(plan, today, mode) {
     var x = nodes[f]
     var n = x.node
     var finished = n.status === 'done' || n.status === 'dropped'
-    if (n.status === 'dropped') dropped++
+    if (n.status === 'dropped') {
+      // **放弃也按本期算**（2026-10-03 改）。原先是无条件 `dropped++`，统计的是
+      // 全部历史——于是表头「放弃 4」和「本期完成 2」并排，读起来像这段时间
+      // 放弃了 4 条，其实其中三条是三年前的。更糟的是它不参与 empty 判定，
+      // 会出现「放弃 3」而正文五段全空的屏幕。
+      // 按窗口过滤以前做不到，因为 dropped 根本没有时间戳；store.js 现在给
+      // dropped 补了 `droppedAt`（applyStatus），这里才有锚点可判。
+      // 老数据里没有 droppedAt 的（都是补字段之前放弃的）**一律不计入**——
+      // 猜一个窗口等于编数据，宁可少报也不错报。
+      var dday = dayOfLocal(n.droppedAt)
+      if (dday !== '' && dday >= ws && dday <= t) dropped++
+    }
     if (finished) {
       // 完成时间按**本地日期**取（dayOfLocal，与 host 的 dayOf 同口径），落在完成窗口里才算本期完成。
       var day = dayOfLocal(n.doneAt)
@@ -1100,8 +1120,10 @@ function reportOf(plan, today, mode) {
     behind: behind,
     due: due,
     dropped: dropped,
+    // `dropped` 也要算进 empty（2026-10-03）：它是表头上真实显示的一个数，
+    // 不参与 empty 就会出现「表头写放弃 3、正文五段全空」这种自相矛盾的屏幕。
     empty: done.length === 0 && doing.length === 0 && overdue.length === 0
-      && behind.length === 0 && due.length === 0,
+      && behind.length === 0 && due.length === 0 && dropped === 0,
   }
 }
 

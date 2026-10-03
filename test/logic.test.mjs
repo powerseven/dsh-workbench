@@ -523,7 +523,12 @@ function reportPlan() {
           { id: 'a2', title: '今天做完的', status: 'done', doneAt: '2026-09-17T12:00:00.000Z' },
           { id: 'a3', title: '上周做完的', status: 'done', doneAt: '2026-09-10T09:00:00.000Z' },
           { id: 'a4', title: '做完了但没记时间', status: 'done' },
-          { id: 'a5', title: '放弃的', status: 'dropped', doneAt: '2026-09-16T09:00:00.000Z' },
+          { id: 'a5', title: '放弃的', status: 'dropped', droppedAt: '2026-09-16T09:00:00.000Z' },
+          // 放弃的锚点是 `droppedAt`（store 的 applyStatus 写它），不是 doneAt——
+          // 老 fixture 写的 doneAt 本身就是错的：applyStatus 离开 done 就删 doneAt，
+          // 从不给 dropped 写。也正因为 dropped 一直几何时戳都没有，
+          // 「放弃 N」才只能数全部历史（2026-10-03 才补上 droppedAt 并按窗口过滤）。
+          { id: 'a11', title: '很久以前放弃的', status: 'dropped', droppedAt: '2020-02-02T09:00:00.000Z' },
           // ── 未结束：四段互斥，优先级 逾期 > 落后 > 到期 > 进行中
           { id: 'a6', title: '欠着的', status: 'todo', due: '2026-09-01', overdue: true },
           { id: 'a7', title: '落后的', status: 'doing', behind: true, pace: { gap: 0.4 } },
@@ -581,9 +586,25 @@ test('reportOf 没有 doneAt 的已完成**不算**本期完成（「完成」�
 
 test('reportOf 放弃的只进计数，不进任何一段（放弃不是完成，也不是欠账）', () => {
   const rep = reportOf(reportPlan(), REPORT_TODAY, 'week')
-  assert.equal(rep.dropped, 1)
+  assert.equal(rep.dropped, 1, '只数**本期**放弃的——2020 年那条不算（它没有本期这件事）')
   const all = [...rep.done, ...rep.doing, ...rep.overdue, ...rep.behind, ...rep.due]
   assert.ok(!all.some((x) => x.node.id === 'a5'), '放弃的那条不该出现在任何一段里')
+})
+
+test('reportOf 放弃数参与 empty：表头有数就不该是「本期什么都没动」', () => {
+  // 只留一条**本期**放弃，其余全无 —— 表头会显示「放弃 1」，正文五段全空。
+  // 那时若 empty 为 true，界面就自相矛盾：数字在那儿，正文却说没有动静。
+  const plan = { nodes: [{ id: 'd1', title: '放弃的', status: 'dropped', droppedAt: '2026-09-16T09:00:00.000Z' }] }
+  const rep = reportOf(plan, REPORT_TODAY, 'week')
+  assert.equal(rep.dropped, 1)
+  assert.equal(rep.empty, false, '放弃 1 摆在表头上，就不能同时说「本期没动过」')
+})
+
+test('reportOf 老数据里没有 droppedAt 的放弃，不计入本期（宁可少报不错报）', () => {
+  // 补 droppedAt 之前放弃的那些节点，时间上无从判断——猜一个窗口等于编数据。
+  const plan = { nodes: [{ id: 'd2', title: '历史放弃', status: 'dropped' }] }
+  const rep = reportOf(plan, REPORT_TODAY, 'week')
+  assert.equal(rep.dropped, 0, '没有锚点就不算，不猜')
 })
 
 test('reportOf 完成段按完成时间倒序（刚做完的最先看见）', () => {
