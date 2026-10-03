@@ -220,8 +220,24 @@ const CSS = [
   // 留白表达——「不要只靠颜色拉开层级」。
   + '--wb-line:var(--dsw-alias-border-l3);'
   + '--wb-line-2:var(--dsw-alias-border-l4);'
+  // 收尾复盘区（.dsh-wb-shrow / .dsh-wb-shact）用的两个边框名（2026-10-03 补）。
+  // 它们原先**只在 var() 里被引用、从来没在别名层定义过**——而 var() 引用了一个
+  // 未定义的变量时，那条声明会在计算值阶段被整条丢弃、**不报错也不渲染**：
+  // 于是收尾复盘那一块的行分隔线与按钮边框静默消失，测试也全绿（build.test.mjs
+  // 只守「不许写硬编码色」，守不住「引用了不存在的 token」）。
+  // 现在按语义映射：分隔线用更轻的一级，按钮描边用 --wb-line-2 同款。
+  + '--wb-border-tertiary:var(--dsw-alias-border-l4);'
+  + '--wb-border-secondary:var(--dsw-alias-border-l4);'
+  // 空态里那句示例文案原先是**内联 style 里的 rgba(127,127,127,.95)**（2026-10-03 改）：
+  // 那是一条写死的颜色，明暗两态只对一半，而且 build.test.mjs 只扫 CSS 字符串、
+  // 扫不到 JSX 里的 style 对象——于是「只用宿主 token」这条纪律被绕过去了。
+  // 现在走样式表，与面板里其他二级文字同一枚 --wb-fg-2。
+  + '--wb-fg-ex:var(--dsw-alias-label-secondary);'
   + '--wb-hover:var(--dsw-alias-interactive-bg-hover);'
   + '--wb-active:var(--dsw-alias-interactive-bg-active);'
+  // 「已完成」的绿色同样悬空过。宿主有对应的一枚（state-success-primary），
+  // 所以照它映射，不自造颜色（见 AGENTS.md「只用 host token」那条）。
+  + '--wb-success:var(--dsw-alias-state-success-primary);'
   // 强调色只有一个来源：宿主的链接色。进度、选中、焦点环、复选框全用它，
   // 于是「蓝」在面板里恒等于「可交互 / 正在进行」，不再有第二、第三种含义。
   + '--wb-accent:var(--dsw-alias-link);'
@@ -636,6 +652,7 @@ const CSS = [
   '.dsh-wb-focus .dsh-wb-tasktitle{flex:1;}',
   '.dsh-wb-path{flex:none;font:var(--wb-f3);font-family:var(--ds-font-family-code);color:var(--wb-fg-2);}',
   '.dsh-wb-empty{padding:var(--wb-sp-5);text-align:center;color:var(--wb-fg-2);line-height:1.8;}',
+  + '.dsh-wb-emptyex{margin-top:var(--wb-sp-2);color:var(--wb-fg-ex);}',
   // ── 未来日程（按天分组）────────────────────────────────────────────
   // 日期标题比正文小一号、次级色：它是**分组标记**，不是内容；要一眼看得出
   // 「这几条属于同一天」，又不能和待办标题抢注意力。
@@ -4682,8 +4699,7 @@ function apply(ctx) {
         // （原来无条件写「点右下角那颗浮球」，而浮球在手机档已经没有了——
         //   用户会照着找一颗根本不存在的球。）
         h('div', null, isMobile ? '在下面的输入条说一句就行——' : '点右下角那颗浮球，跟 AI 说一句就行——'),
-        h('div', { style: { marginTop: '6px', color: 'rgba(127,127,127,.95)' } },
-          '「帮我把这个季度的工作拆成计划」'),
+        h('div', { className: 'dsh-wb-emptyex', key: 'ex' }, '「帮我把这个季度的工作拆成计划」'),
         h('div', { style: { marginTop: '8px', fontSize: '11px' } },
           '计划会落在 ' + (state.dir || '<工作区>/plan') + '；需要 vault / AI 人设请点右上角「设置」'),
       ))

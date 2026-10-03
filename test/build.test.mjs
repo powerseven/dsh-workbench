@@ -106,6 +106,24 @@ test('面板样式只认宿主 design token，不自造颜色', () => {
   assert.doesNotMatch(rules, /\brgba?\(/, 'CSS 里出现了 rgb()/rgba() 颜色')
 })
 
+test('面板引用的每一个 --wb-* token 都真的定义了（否则整条声明静默消失）', () => {
+  // 2026-10-03 加。这条守的是上一条守不住的失效模式：
+  // 上面只管「不许写死颜色」，管不了「引用了一个不存在的变量」。
+  // 而 var(--wb-x) 在 --wb-x 未定义时，那条声明会在**计算值阶段被整条丢弃**——
+  // 不报错、不渲染、测试全绿。当时就中过三枚：
+  // --wb-border-tertiary / --wb-border-secondary / --wb-success，
+  // 收尾复盘那一块的分隔线、按钮边框与「完成」绿因此全部没画出来。
+  const { flat } = cssBlock()
+  const used = new Set()
+  for (const m of flat.matchAll(/var\(\s*(--wb-[a-z0-9-]+)/g)) used.add(m[1])
+  const defined = new Set()
+  for (const m of flat.matchAll(/(--wb-[a-z0-9-]+)\s*:/g)) defined.add(m[1])
+  const missing = [...used].filter((t) => !defined.has(t)).sort()
+  assert.deepEqual(missing, [],
+    '这些 --wb-* token 被 var() 引用但从未定义——那条 CSS 会被静默丢弃：' + missing.join(', '))
+  assert.ok(used.size > 0, '一条都没抓到说明 cssBlock() 取错了范围，测试在空转')
+})
+
 test('别名层落在面板自己的根上，不在 :root', () => {
   // var() 是在「声明它的那个元素」上完成替换的：写在 :root(html) 会按 html 的
   // 浅色算死，body[data-ds-dark-theme] 的暗色映射传不下来——这正是「换了主题
