@@ -256,6 +256,10 @@ const CSS = [
   // 语义色里只有 danger 在白底够 4.5:1，可以直接上文字；warn 只有 2.8:1、
   // success 只有 2.3:1，所以它俩只做软底，文字一律走中性。
   + '--wb-danger:var(--dsw-alias-state-error-primary);'
+  // 删除类确认键的描边色（2026-10-03 补，与 --wb-danger 同族）。
+  // 别名层里必须真的存在——`var()` 引用一个没定义的变量会让**整条声明**在计算值
+  // 阶段被丢弃，那条边框就静默不渲染（见 PITFALLS #44）。
+  + '--wb-danger-line:var(--dsw-alias-state-error-tertiary);'
   + '--wb-danger-soft:var(--dsw-alias-interactive-bg-hover-danger);'
   + '--wb-warn-soft:var(--dsw-alias-state-warn-tertiary);'
   // 间距与圆角取宿主侧栏组件的既有标尺（间距 2/4/6/8/12，圆角 4/6/8/999）。
@@ -586,6 +590,12 @@ const CSS = [
   // 对比度由宿主配色保证，不自己造色，明暗两态自动跟随，也不与宿主抢约定。
   '.dsh-wb-aibtn.primary{background:var(--wb-btn-fill);color:var(--wb-btn-fg);font-weight:600;}',
   '.dsh-wb-aibtn.primary:hover:not(:disabled){background:var(--wb-btn-hover);color:var(--wb-btn-fg);}',
+  // 删除类的确认键（2026-10-03 加，配合总览上的「全部删掉这 N 条」）。
+  // 刻意**不做实心**——主按钮已经是实心那颗（见 .primary），两个实心并排会把
+  // 「都做掉」和「先逐条过」的主次颠倒过来。用 danger 色的**描边**键：
+  // 一眼分得出来，又不抢主按钮。颜色仍取宿主 token，不自造。
+  '.dsh-wb-aibtn.danger{border:1px solid var(--wb-danger-line);color:var(--wb-danger);background:transparent;}',
+  '.dsh-wb-aibtn.danger:hover:not(:disabled){background:var(--wb-danger-soft);}',
   // **每张 AI 建议卡上那一个主动作**：整行铺满、按钮撑满、点击区 44px。
   //
   // 为什么单独一类：.dsh-wb-movepick 还在服务**多选**的那些行（归入候选、可选项），
@@ -1347,6 +1357,12 @@ function apply(ctx) {
     // 桌面档不走向导（浮球里空间小、卡片本来就是一列），保持原样——
     // 两边共享同一批卡片函数，只是**排版策略**不同，不各自漂移。
     const [aiStep, setAiStep] = React.useState(0)
+    // **已处理几条**（2026-10-03 加）。为什么不能只靠 aiStep：
+    // 采纳会把那一条从队列里移除，队列随之变短，而 aiStep 是队列里的**下标**——
+    // 于是「第 N / M 条」里的 N 在删除之后不再等于「处理到第几条」。
+    // 真机上就出现过：删掉一条后表头回到「第 1 / 2 条」，像是退回了上一步。
+    // 进度条要说的是「这一轮我处理了几件」，那得单独记一个计数。
+    const [aiHandled, setAiHandled] = React.useState(0)
     // 多条建议时，进来先给**总览屏**（还没进逐条）。
     //
     // 依据移动端调研：GOV.UK 的「Complete multiple tasks」模式是**先给任务清单页**
@@ -1477,6 +1493,7 @@ function apply(ctx) {
             // 显示——用户看到的是「第 5 / 2 条」这种对不上的进度（因为新的队列
             // 可能只有两条）。每轮建议都是**独立的一轮**，索引必须跟着重置。
             setAiStep(0)
+            setAiHandled(0)
             setAiShowOverview(true)
           }
         })
@@ -1494,7 +1511,15 @@ function apply(ctx) {
     }
 
     /** 清空这次会话（不写盘——它本来就只在内存里）。 */
-    const aiClear = () => { setAiTurns([]); setAiTasks([]); setAiEdits([]); setAiMerges([]); setAiDeletes([]); setAiList(null) }
+    const aiClear = () => {
+      setAiTurns([]); setAiTasks([]); setAiEdits([]); setAiMerges([]); setAiDeletes([])
+      setAiList(null)
+      // 进度要跟着队列一起归零：否则清空后重新来一轮，表头会从「第 7 / 7 条」起步
+      // （aiHandled 是累加的，不重置就永远是上一轮的末尾）。
+      setAiStep(0)
+      setAiHandled(0)
+      setAiShowOverview(true)
+    }
 
     /** 把 AI 清单存成自定义视图（localStorage，与折叠 / 视图偏好同类：本机偏好）。 */
     const saveAiView = () => {
@@ -1697,6 +1722,38 @@ function apply(ctx) {
       await write('node-remove', { node: node.id })
       flash('已删除「' + String(node.title) + '」')
       return true
+    }
+
+    /**
+     * **一次删掉这一轮的全部删除建议**（2026-10-03 加）。
+     *
+     * **为什么必须有**：手机上多条建议走**向导**，而向导刻意不给勾选与批量条
+     * （见下面那段 `isMobile && queue.length > 1` 的注释，理由是「勾它再点批量
+     * 等于多点两次」）；总览上那颗「全部就这么定」又只在**全是新任务**时才有
+     * （`canApplyAll` 要求 `unsureCount === 0 && otherKinds === 0`）。于是
+     * 「把现在的任务都删掉吧」这种**明确的批量删除请求**，在手机上只能一条一条点：
+     * 真机上 10 条要点 10 次，还因为上面那个下标 bug 只删掉一半。
+     *
+     * **为什么只给「删除」开这个口，改动/合并仍然逐条**：
+     *   · **删除** —— 用户的话本身就是「都删掉」，而且总览上**每条都按名字列出来了**，
+     *     这一屏本身就是确认页，再逐条问一遍是多余的。
+     *   · **改动 / 合并** —— 动的是已有数据且需要判断（合并的两种 mode 后果差着量级，
+     *     见 aiMergeCard 上那行固定文案），逐条确认是必要的。
+     *
+     * 逐条 `await applyDelete` —— **不另写一条批量删路径**（与批量采纳同一条纪律）：
+     * 另写一条的话，单点那条修好了、批量这条没修，用户看到的现象是
+     * 「批量一按就少了一件事」，而两处代码长得很像、排查时却都要看。
+     * 串行是必须的：每条都是一次写盘 + 一次留档，并发会互相踩版本号。
+     */
+    const aiApplyAllDeletes = async () => {
+      const todo = aiDeletes.filter((d) => d.ok === true)
+      const missed = aiDeletes.length - todo.length
+      if (todo.length === 0) {
+        flash('这一轮没有对得上计划里条目的删除建议，没动任何东西')
+        return
+      }
+      for (const d of todo) await applyDelete(d)
+      flash('已删除 ' + todo.length + ' 条' + (missed > 0 ? '，另有 ' + missed + ' 条没对上、留在原处' : ''))
     }
 
     /**
@@ -2595,6 +2652,8 @@ function apply(ctx) {
       else if (at.kind === 'edit') setAiEdits((prev) => prev.filter((e) => e.key !== at.item.key))
       else if (at.kind === 'merge') setAiMerges((prev) => prev.filter((m) => m.key !== at.item.key))
       else setAiDeletes((prev) => prev.filter((d) => d.key !== at.item.key))
+      setAiHandled((n) => n + 1)
+      setAiHandled((n) => n + 1)
       flash('已去掉这条')
     }
 
@@ -2626,6 +2685,9 @@ function apply(ctx) {
       // 且全是新任务（aiApplyAll 只新建 tasks，混了改动/合并就不能叫「全部」）。
       const otherKinds = queue.filter((q) => q.kind !== 'task').length
       const canApplyAll = unsureCount === 0 && otherKinds === 0
+      // 删除建议的条数：决定总览上要不要给「全部删掉这 N 条」（2026-10-03 加）。
+      // 只数**对得上**的——没对上计划的那些点了也删不掉，不该被算进承诺里。
+      const deleteCount = queue.filter((q) => q.kind === 'delete' && q.item.ok === true).length
       const line = (r) => {
         const isTask = r.q.kind === 'task'
         // 归组（合并成计划、不删东西）在总览上要与「并掉重复」分开标——
@@ -2686,6 +2748,19 @@ function apply(ctx) {
                 setAiShowOverview(false)
               },
             }, unsureCount > 0 ? '先看有疑问的 ' + unsureCount + ' 件' : '逐条确认这几件'),
+          // 「全部删掉这些」：**队列里有删除建议**时才出现（2026-10-03 加）。
+          // 原来删除只能逐条点：手机上多条走向导、而「全部就这么定」只覆盖新任务，
+          // 于是「把现在的任务都删掉吧」这种明确的批量请求没有对应的批量入口。
+          // 敢把它放在主按钮旁边，是因为**总览这一屏就是确认页**——每条都按名字
+          // 列出来了，用户看得见要删的是哪几条；而删错了还有版本留档可回滚。
+          deleteCount > 0
+            ? h('button', {
+              className: 'dsh-wb-aibtn danger',
+              title: '一次删掉这 ' + deleteCount + ' 条（上面每条都按名字列出来了）。'
+                + '删除不可撤销，但每次改动前都会自动留档，删错了能回滚',
+              onClick: () => aiApplyAllDeletes(),
+            }, '全部删掉这 ' + deleteCount + ' 条')
+            : null,
           h('button', {
             className: 'dsh-wb-chip',
             title: '一条一条过（含已确定的那些）',
@@ -2703,7 +2778,7 @@ function apply(ctx) {
       const at = aiStep >= total ? null : queue[aiStep]
       const head = h('div', { className: 'dsh-wb-wizhead', key: 'wh' },
         h('span', { className: 'dsh-wb-wizstep' },
-          at === null ? '都处理完了' : '第 ' + (aiStep + 1) + ' / ' + total + ' 条'),
+          at === null ? '都处理完了' : '第 ' + (aiHandled + 1) + ' / ' + (aiHandled + total) + ' 条'),
         // 分类说明：用户看到「改动」两个字就知道这条动的是已有数据，
         // 而不是又新建一条——两类建议的风险完全不同。
         at === null ? null : h('span', { className: 'dsh-wb-wizkind' }, KIND_LABEL[at.kind]),
@@ -2713,7 +2788,10 @@ function apply(ctx) {
         h('button', {
           className: 'dsh-wb-chip',
           disabled: aiStep === 0,
-          onClick: () => setAiStep((n) => Math.max(0, n - 1)),
+          onClick: () => {
+            setAiStep((n) => Math.max(0, n - 1))
+            setAiHandled((n) => Math.max(0, n - 1))
+          },
         }, '上一条'),
         // 回总览：NN/g 要求 wizard「让用户知道还有多少、并表达心智模型」——
         // 逐条走到第 5 条时，用户常常想再看一眼全局（还有几件、都在哪）。
@@ -2726,7 +2804,12 @@ function apply(ctx) {
           className: 'dsh-wb-chip',
           disabled: at === null,
           title: '这条先放着，之后还能用「上一条」回来找它',
-          onClick: () => setAiStep((n) => Math.min(total, n + 1)),
+          onClick: () => {
+            // 这条**留在队列里**（不是采纳），所以队列不会前移——必须显式 +1。
+            // 采纳那条不这么做，正是因为它会把条目移走。
+            setAiStep((n) => Math.min(total, n + 1))
+            setAiHandled((n) => n + 1)
+          },
         }, '先放着'),
         // **区分「先放着」与「不是这件事」**（移动端调研指出的一个真缺口）。
         //
@@ -2757,13 +2840,42 @@ function apply(ctx) {
         )
       }
       // 采纳后自动前进：这正是「下一步」的那一步，不必再多点一次按钮。
-      const advance = () => setAiStep((n) => n + 1)
+      //
+      // **但前进不是无脑 +1**（2026-10-03 修）：采纳会把那一条从队列里**移除**
+      // （`applyDelete` / `aiEditNow` / `applyMerge` / `aiAddNow` 都这么做），
+      // 于是后面整体前移一位——而 `aiStep` 是**下标**。原来无条件 +1 的后果是
+      // **每处理一条就跳过一条**：10 条队列删掉 A 之后 aiStep=1 指向的已经是 C，
+      // B 从没被显示过；删到第 5 条时 aiStep 恰好等于剩下的长度，于是向导报
+      // 「都处理完了」，而另外 5 条**从未被看过**。
+      // 真机反馈原话：「逐条确认之后，删了 5 条之后又没有了」——就是这个。
+      //
+      // 所以判据是「**这条还在不在队列里**」：还在（写失败了、或只是被跳过）就 +1；
+      // 已经不在了，说明下一条已经挪到这个位置了——**停在原地**。
+      // 「不是这件事」也是同一个道理：它移除条目后本来就故意不前进。
+      //
+      // **采纳之后不要动下标**——这是这次修复的全部要害（2026-10-03）。
+      // 四条采纳路径（aiAddNow / aiEditNow / applyMerge / applyDelete）**都**会把
+      // 那一条从队列里移除，于是后面整体前移一位；而 aiStep 是队列里的**下标**。
+      // 原来无条件 +1，于是**每处理一条就跳过一条**：10 条删掉第 1 条后 aiStep=1
+      // 指向的已经是第 3 条，第 2 条从没被显示过；删到第 5 条时 aiStep 恰好等于
+      // 剩下的长度，向导便报「都处理完了」——另外 5 条**从未被看过**。
+      // 真机反馈原话：「逐条确认之后，删了 5 条之后又没有了」。
+      //
+      // 下面那两个坑都踩过，别再走回去：
+      //   ① 在 advance 里调 `aiAdviceQueue()` 判断「这条还在不在」——**无效**。
+      //      它读的是当前 render 的闭包，而 setAiDeletes 还没生效，那条永远「还在」。
+      //   ② 改成用 `aiHandled` 之类的计数器去推位置——同样无效，计数器与下标
+      //      不是一回事（先放着的那条仍在队列里，却已经算处理过）。
+      //
+      // 所以规则只有一条：**采纳 = 这条从队列里没了 = 下标不用动**；
+      // 只有「先放着」（条目留着）才需要 +1。
+      const done = () => setAiHandled((n) => n + 1)
       // 合并卡的第二个参数是 onDismiss（忽略这条），第三个才是 onDone（采纳后前进）——
       // 它比别的卡多一个口子，所以这里显式传 undefined 占住第二位。
-      const body = at.kind === 'task' ? aiTaskCard(at.item, advance)
-        : at.kind === 'edit' ? aiEditCard(at.item, advance)
-          : at.kind === 'merge' ? aiMergeCard(at.item, undefined, advance)
-            : aiDeleteCard(at.item, advance)
+      const body = at.kind === 'task' ? aiTaskCard(at.item, done)
+        : at.kind === 'edit' ? aiEditCard(at.item, done)
+          : at.kind === 'merge' ? aiMergeCard(at.item, undefined, done)
+            : aiDeleteCard(at.item, done)
       return h('div', { className: 'dsh-wb-wiz', key: 'wiz' }, head, h('div', { className: 'dsh-wb-wizbody' }, body), foot)
     }
 
@@ -2799,6 +2911,8 @@ function apply(ctx) {
         setAiEdits([])
         setAiMerges([])
         setAiDeletes([])
+        setAiStep(0)
+        setAiHandled(0)
         setAiList(null)
         setAiPicked([])
       }

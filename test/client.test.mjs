@@ -2194,8 +2194,120 @@ test('多条建议才走向导：有进度、可跳过', async () => {
   }
 })
 
-test('等待块：超过 10 秒的等待有中断入口（Nielsen 硬要求）', async () => {
+/** 建一个真有三条待办的计划（删除建议要能匹配上，fixture 必须是真的）。 */
+async function planWithThreeTodos() {
+  const tmp = await mkdtemp(join(tmpdir(), 'dsh-wb-del-'))
+  const call = hostCall(tmp)
+  await call('plan_node_add', { title: '待删甲', type: 'todo' })
+  await call('plan_node_add', { title: '待删乙', type: 'todo' })
+  await call('plan_node_add', { title: '待删丙', type: 'todo' })
+  const shown = await call('plan_show')
+  return { tmp, plan: shown.plan }
+}
+
+/**
+ * 三条删除建议，**按 host 的 matchDeletes 真实产物**给全字段（id / ok / children）。
+ *
+ * 测试装置的 /ai-parse 是直接把 `aiReply` 塞进响应体的，**不经过 host 的匹配**，
+ * 所以 ok 与 id 必须在这儿补上——否则卡片一律走「没对上」分支，连「确认删除」
+ * 都不渲染，下面的断言就全成了空断言（而它们照样会红，红得很费解）。
+ */
+function threeDeletes(plan) {
+  const flat = []
+  const walk = (list) => { for (const n of list) { flat.push(n); walk(n.children || []) } }
+  walk(plan.nodes)
+  return ['待删甲', '待删乙', '待删丙'].map((target) => {
+    const hit = flat.find((n) => n.title === target)
+    return {
+      target,
+      title: hit === undefined ? '' : hit.title,
+      why: '不做了',
+      id: hit === undefined ? null : String(hit.id),
+      children: 0,
+      ok: hit !== undefined,
+    }
+  })
+}
+
+test('向导采纳一条后要停在「下一条」，不能跨过它（2026-10-03 回归）', async () => {
+  // **每处理一条就跳过一条**——真机反馈：「逐条确认之后，删了 5 条之后又没有了」。
+  // 根因：采纳会把那一条从队列里移除，后面整体前移一位，而 aiStep 是**下标**；
+  // 原来无条件 +1，于是删掉第 1 条后 aiStep=1 指向的已经是第 3 条。
+  // 删到第 5 条时 aiStep 恰好等于剩下的长度 → 向导报「都处理完了」，
+  // 而另外几条**从未被显示过**。10 条建议只删掉 5 条。
   const restore = stubCoarse(true)
+  const { tmp, plan } = await planWithThreeTodos()
+  const keep = planPayload
+  planPayload = plan
+  try {
+    withAi()
+    aiReply = { reply: '读出 3 条要删的。', deletes: threeDeletes(plan) }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '把现在的任务都删掉吧' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    // 多条 → 先总览；进逐条。
+    byClass(render(), 'dsh-wb-chip').find((b) => textOf(b) === '逐条看').props.onClick()
+    await flush()
+    assert.match(textOf(render()), /第 1 \/ 3 条/, '先看第 1 条')
+
+    // 采纳第 1 条 → **下一张必须是第 2 条**，而不是第 3 条。
+    const delBtn = () => byClass(render(), 'dsh-wb-aibtn')
+      .find((b) => textOf(b) === '确认删除')
+    assert.ok(delBtn() !== undefined, '删除卡要有「确认删除」')
+    delBtn().props.onClick()
+    await settle()
+
+    // **只看卡片本体**：整段文字里还含 AI 回复的摘要（「待删甲中待删乙中待删丙」），
+    // 在那一段上做 indexOf 断言恒为真——bug 存在时也照样绿（踩过一次）。
+    // 进度条说的是「这一轮处理到第几条」，不是「队列里的下标」：删掉一条之后
+    // 队列从 3 变 2，但人已经处理过 1 件，所以是「第 2 / 3 条」而不是「第 1 / 2 条」。
+    assert.match(textOf(render()), /第 2 \/ 3 条/, '进度按已处理数走，删除后不回退')
+    const card = textOf(firstByClass(render(), 'dsh-wb-wizbody'))
+    assert.match(card, /删除：「待删乙」/, '现在看到的必须是**紧接着的那一条**')
+    assert.doesNotMatch(card, /待删丙/, '丙还没轮到，不该出现在这一屏')
+  } finally {
+    planPayload = keep
+    restore()
+  }
+})
+
+test('手机档多条时也给「全部删掉这 N 条」：批量删除请求不能只能逐条点', async () => {
+  // 真机反馈：「没有全部一次删除的按钮」。原来手机上多条走向导、刻意不给勾选，
+  // 而总览那颗「全部就这么定」只在**全是新任务**时才有——队列里全是删除时
+  // 它退化成「逐条确认这几件」，于是「都删掉吧」这种明确的批量请求没有批量入口。
+  const restore = stubCoarse(true)
+  const { tmp, plan } = await planWithThreeTodos()
+  const keep = planPayload
+  planPayload = plan
+  try {
+    withAi()
+    aiReply = { reply: '读出 3 条要删的。', deletes: threeDeletes(plan) }
+    const { view, render } = await mount()
+
+    firstByClass(view, 'dsh-wb-aiinput').props.onChange({ target: { value: '把现在的任务都删掉吧' } })
+    firstByClass(render(), 'dsh-wb-send').props.onClick(ev())
+    await flush()
+
+    const bulk = byClass(render(), 'dsh-wb-aibtn').find((b) => /全部删掉这 3 条/.test(textOf(b)))
+    assert.ok(bulk !== undefined, '总览上要有一次删掉全部的入口')
+    // 它必须**明说不可撤销 + 有留档可回滚**，而不是一个不带解释的「全部」。
+    assert.match(bulk.props.title, /不可撤销/, '批量删除按钮要说清风险')
+    assert.match(bulk.props.title, /留档|回滚/, '要说清删错了能回滚')
+
+    bulk.props.onClick()
+    await settle()
+    const names = byClass(render(), 'dsh-wb-ovrow').map((r) => textOf(r))
+    assert.equal(names.length, 0, '三条都删完之后总览不该还列着它们')
+  } finally {
+    planPayload = keep
+    restore()
+  }
+})
+
+test('等待块：超过 10 秒的等待有中断入口（Nielsen 硬要求）', async () => {  const restore = stubCoarse(true)
   try {
     withAi()
     const { view, render } = await mount()
