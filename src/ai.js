@@ -830,7 +830,19 @@ export function normMerges(raw) {
       .filter((x) => isStr(x))
       .map((x) => String(x).trim().slice(0, 200))
       .filter((x) => x !== '' && x !== keep)
-      .slice(0, mode === 'children' ? MAX_FOLD_CHILDREN : MAX_EDITS)
+      // 这里只按**两者里宽的那个**（MAX_FOLD_CHILDREN）截一道当兜底上限，
+      // **不**按 mode 收窄到 MAX_EDITS——那是 `capMergeFolds` 的活。
+      //
+      // 为什么不能在这里就按 mode 截（2026-10-03 修）：`mode` 此时来自
+      // `normMergeMode(item.mode)`，模型漏填就落 merge，于是这里按 MAX_EDITS
+      // 砍到 10 条。而 host 的 `mergeWantsChildren` 兜底（看**用户自己的话**
+      // 「作为子计划」）是在 `parseAiReply` **之后**才把 merge 改判成 children 的——
+      // 等它改判时，那 10 条已经被砍掉、标题再也找不回来了。
+      //
+      // 这正是当初「其余 10 条」事故的残留根因：上限调大了，但截断的**时机**
+      // 仍然早于 mode 定案，于是漏填 mode 这条路径上等于没调过。
+      // 收窄统一交给 host 改判完之后的 `capMergeFolds`（见该函数注释）。
+      .slice(0, MAX_FOLD_CHILDREN)
     if (fold.length === 0) continue
     out.push({
       keep,
@@ -847,6 +859,27 @@ export function normMerges(raw) {
     if (out.length >= MAX_EDITS) break
   }
   return out
+}
+
+/**
+ * 按**定案后的** mode 收窄每条 merge 的 fold，并在截断时留下痕迹。
+ *
+ * 必须在 host 的 `mergeWantsChildren` 兜底**之后**调用：`normMerges` 只按宽上限
+ * （MAX_FOLD_CHILDREN）截，那道兜底会把 `merge` 改判成 `children`，而改判前
+ * 按 MAX_EDITS 截掉的标题已经找不回来了（见 normMerges 里那段的注释）。
+ *
+ * 截断会**如实标 `foldTruncated` / `foldTotal`**，由卡片显示出来——
+ * 「悄悄少一半」正是这个坑最初难查的原因：用户只会以为自己没说完。
+ */
+export function capMergeFolds(merges) {
+  if (!Array.isArray(merges)) return []
+  return merges.map((m) => {
+    if (m === null || typeof m !== 'object') return m
+    const fold = Array.isArray(m.fold) ? m.fold : []
+    const cap = m.mode === 'children' ? MAX_FOLD_CHILDREN : MAX_EDITS
+    if (fold.length <= cap) return m
+    return { ...m, fold: fold.slice(0, cap), foldTruncated: true, foldTotal: fold.length }
+  })
 }
 
 /**

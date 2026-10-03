@@ -98,6 +98,7 @@ import {
   aiSystemPrompt,
   aiUserText,
   attachSuggestions,
+  capMergeFolds,
   collectText,
   historyText,
   mergeWantsChildren,
@@ -248,13 +249,41 @@ const EVIDENCE_PARAMS = {
       + '给了就在这次调用里追加一条证据；文件路径相对工作区解析，且会被核验是否存在',
   },
   evidenceNote: { type: 'string', description: '可选：这条证据的说明' },
+  // 2026-10-03 补：与 FILE_PARAMS 的 fileRemove 对称。原先工具面**只能加不能删**，
+  // 而 HTTP 面的 /node-set 早就有 evidenceRemove——同一件事两个写入面能力不对等，
+  // 后果是 agent 记错了证据**没法改**，只能进详情页让人代劳。
+  evidenceRemove: {
+    type: 'string',
+    description: '可选：传入要移除的证据 ref（可配 evidenceKind 一起定位），即从该节点摘掉这条证据。'
+      + '一次一条，要删多条就调多次',
+  },
 }
 
-/** 从入参里抽一条证据；没给 evidenceRef 就返回 undefined（完全不动现有证据）。 */
-function evidenceInputOf(args) {
+/**
+ * 从入参里抽一条证据意图：给了 evidenceRemove 就摘；否则给了 evidenceRef 就加。
+ * 与 fileInputOf 同一把尺（两个写入面、两种素材都用「remove 优先」的写法）。
+ */
+function evidenceIntentOf(args) {
+  const remove = optStr(args?.evidenceRemove)
+  if (remove !== undefined) return { op: 'remove', ref: remove, kind: args?.evidenceKind }
   const ref = optStr(args?.evidenceRef)
   if (ref === undefined) return undefined
-  return { kind: args?.evidenceKind, ref, note: args?.evidenceNote }
+  return { op: 'add', kind: args?.evidenceKind, ref, note: args?.evidenceNote }
+}
+
+/**
+ * 把一条证据意图落到节点上（加或摘）。返回有没有真的动：
+ * 摘一条不存在的证据算「没动」，调用方据此决定要不要写盘。
+ *
+ * 四个写入点（plan_node_set / plan_todo_set / /todo-set / /node-set）共用它，
+ * 与文件关联的 fileInputOf + if/else 同一把尺——两个写入面必须能力对等，
+ * 否则就会出现「面板能纠错、agent 不能」这种只在一侧成立的能力。
+ */
+function applyEvidence(node, intent) {
+  if (intent === undefined) return false
+  if (intent.op === 'remove') return removeEvidence(node, intent.ref, intent.kind)
+  addEvidence(node, intent)
+  return true
 }
 
 /**
@@ -661,8 +690,9 @@ export function apply(ctx) {
       const depReasons = applyDeps(plan, node, dep)
       const spawned = spawnIfRecurring(plan, node, beforeStatus, todayStr())
       // 证据在状态之后追加：先落成 done 再挂凭据，两者是同一次改变的原子结果。
-      const evidence = evidenceInputOf(args)
-      if (evidence !== undefined) addEvidence(node, evidence)
+      // 摘证据同理（op-aware，2026-10-03 见 applyEvidence）。
+      const evidence = evidenceIntentOf(args)
+      const evidenceChanged = applyEvidence(node, evidence)
       // 文件关联（与证据刻意分开）：资料是「做这件事要看的」，文件夹也行，
       // 跟完没完成无关，不进「无证据完成项」那条审查线。
       const file = fileInputOf(args)
@@ -673,7 +703,7 @@ export function apply(ctx) {
       const type = typeOf(node)
       await store.save(plan, {
         reason: type + '-set'
-          + (evidence !== undefined ? '+evidence' : '')
+          + (evidenceChanged ? '+evidence' + (evidence.op === 'remove' ? '-rm' : '') : '')
           + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '')
           + depReasons.map((r) => '+' + r).join('')
           + (spawned !== null ? '+recur-spawn' : '')
@@ -761,15 +791,15 @@ export function apply(ctx) {
       const dep = depInputOf(args)
       const depReasons = applyDeps(plan, found.node, dep)
       const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
-      const evidence = evidenceInputOf(args)
-      if (evidence !== undefined) addEvidence(found.node, evidence)
+      const evidence = evidenceIntentOf(args)
+      const evidenceChanged = applyEvidence(found.node, evidence)
       const file = fileInputOf(args)
       if (file !== undefined) {
         if (file.op === 'remove') removeFile(found.node, file.ref)
         else addFile(found.node, file)
       }
       await store.save(plan, { reason: 'todo-' + found.node.status
-        + (evidence !== undefined ? '+evidence' : '')
+        + (evidenceChanged ? '+evidence' + (evidence.op === 'remove' ? '-rm' : '') : '')
         + (file !== undefined ? '+file' + (file.op === 'remove' ? '-rm' : '') : '')
         + depReasons.map((r) => '+' + r).join('')
         + (spawned !== null ? '+recur-spawn' : '')
@@ -1266,6 +1296,11 @@ export function apply(ctx) {
             : '模型没写明合并方式，按你话里的「作为子计划」按「保留为子任务」执行（不删除）'
         }
       }
+      // 兜底改判完了，mode 才算**定案**——这时才按它收窄 fold 的条数。
+      // 顺序不能反：早一步就按 merge 的窄上限（10）截掉，用户说的那批子任务
+      // 会被悄悄砍掉一半，而上面那道兜底改成的 children 也救不回来（见 ai.js
+      // normMerges 与 capMergeFolds 的注释）。截断会在卡片上显示「只取前 N 条」。
+      parsed.merges = capMergeFolds(parsed.merges)
       // **兜住「模型把『挪出来』只做成改名」**：用户原话「我要把它从 DDI 治理里面
       // 单独出来」，真机上模型给回来的却只有一条标题改动，卡片点下去只能改名。
       // 根因是 `plan` 白名单曾经把空串丢掉，「挪到顶层」没有值可写（见 normPlanTarget）。
@@ -1564,8 +1599,8 @@ export function apply(ctx) {
       const dep = depInputOf(body)
       const depReasons = applyDeps(plan, found.node, dep)
       const spawned = spawnIfRecurring(plan, found.node, beforeStatus, todayStr())
-      const evidence = evidenceInputOf(body)
-      if (evidence !== undefined) addEvidence(found.node, evidence)
+      const evidence = evidenceIntentOf(body)
+      const evidenceChanged = applyEvidence(found.node, evidence)
       const file = fileInputOf(body)
       if (file !== undefined) {
         if (file.op === 'remove') removeFile(found.node, file.ref)
@@ -1573,7 +1608,7 @@ export function apply(ctx) {
       }
       await store.save(plan, {
         reason: 'todo-' + found.node.status
-          + (evidence === undefined ? '' : '+evidence')
+          + (evidenceChanged ? '+evidence' + (evidence.op === 'remove' ? '-rm' : '') : '')
           + (file === undefined ? '' : '+file' + (file.op === 'remove' ? '-rm' : ''))
           + depReasons.map((r) => '+' + r).join('')
           + (spawned !== null ? '+recur-spawn' : '')
@@ -1650,9 +1685,6 @@ export function apply(ctx) {
         // 返回实际清掉的条数：没改动就不记这一条 reason，避免留一版空快照。
         if (clearFields(found.node, body.clear) > 0) reasons.push('node-clear')
       }
-      if (optStr(body.evidenceRemove) !== undefined) {
-        if (removeEvidence(found.node, body.evidenceRemove, body.evidenceKind)) reasons.push('evidence-rm')
-      }
       // 委派：换人 → setDelegate（回执作废）；只是挪期望时间 → 保留回执。
       // 不区分的话，每次保存表单都会把对方「已接受」打回「待接受」。
       if (optStr(body.to) !== undefined) {
@@ -1670,10 +1702,12 @@ export function apply(ctx) {
         setReceipt(found.node, body.receipt, { expectAt: body.expectAt, note: body.note })
         reasons.push('delegate-' + found.node.delegate.status)
       }
-      const evidence = evidenceInputOf(body)
-      if (evidence !== undefined) {
-        addEvidence(found.node, evidence)
-        reasons.push('evidence')
+      // 证据的加与摘走同一条分支（evidenceIntentOf + applyEvidence）：
+      // 早先这里「摘」在前、委派中间、「加」在后，两处各写一遍，
+      // 工具面因此只长出了「加」——面板能纠错而 agent 不能。
+      const evidence = evidenceIntentOf(body)
+      if (applyEvidence(found.node, evidence)) {
+        reasons.push(evidence.op === 'remove' ? 'evidence-rm' : 'evidence')
       }
       const file = fileInputOf(body)
       if (file !== undefined) {
@@ -1729,7 +1763,16 @@ export function apply(ctx) {
       const plan = await store.load()
       const title = optStr(body.title) ?? plan.title
       // 保留节点，只重置标题等元信息。
-      const next = { ...emptyPlan(title), nodes: plan.nodes, version: plan.version }
+      // **vaultPath 必须带上**（2026-10-03 修）：它是机器相关的顶层字段（plan.json），
+      // 而 emptyPlan() 不含它——早先这里直接展开 emptyPlan，于是调一次 /init
+      // 就把 Obsidian vault 配置悄悄抹掉了，而「文件关联」的核验与 obsidian:// 链接
+      // 全靠它。没有配 vault 时它是 undefined，带上去等于没带，所以直接透传。
+      const next = {
+        ...emptyPlan(title),
+        nodes: plan.nodes,
+        version: plan.version,
+        ...(plan.vaultPath === undefined ? {} : { vaultPath: plan.vaultPath }),
+      }
       await store.save(next, { reason: 'init' })
       json(res, { ok: true, plan: withProgress(next, store.root) })
     })

@@ -24,6 +24,7 @@ import {
   aiSystemPrompt,
   aiUserText,
   attachSuggestions,
+  capMergeFolds,
   collectText,
   extractJson,
   historyText,
@@ -31,6 +32,7 @@ import {
   editWantsDetach,
   mergeWantsChildren,
   normDeletes,
+  normMerges,
   normPlanTarget,
   parseAiReply,
   planOutline,
@@ -216,8 +218,51 @@ test('children 模式的 fold 上限更高：用户是把一批任务归到一�
   for (let i = 0; i < MAX_FOLD_CHILDREN + 8; i++) many.push('任务' + i)
   const asGroup = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many, mode: 'children' }] }))
   assert.equal(asGroup.merges[0].fold.length, MAX_FOLD_CHILDREN, 'children 模式按 MAX_FOLD_CHILDREN 截')
-  const asMerge = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many }] }))
-  assert.equal(asMerge.merges[0].fold.length, MAX_EDITS, 'merge 模式仍按 MAX_EDITS（那是「一条条过」的数量，不是这批事的规模）')
+
+  // 漏填 mode 时**这里不能按 merge 的窄上限截**（2026-10-03 修）：
+  // host 的 `mergeWantsChildren` 兜底是在 parseAiReply **之后**才看用户原话、
+  // 把 merge 改判成 children 的；早一步截掉的那几条，改判也救不回来——
+  // 而这正是当初「其余 10 条」被悄悄砍掉一半的根因。收窄统一交给 capMergeFolds。
+  const noMode = parseAiReply(JSON.stringify({ merges: [{ keep: '总计划', fold: many }] }))
+  assert.equal(noMode.merges[0].fold.length, MAX_FOLD_CHILDREN,
+    'parseAiReply 只按宽上限截——mode 要等 host 兜底改判完才算定案')
+})
+
+test('capMergeFolds：按定案后的 mode 收窄，并如实标出截断了多少', () => {
+  const many = []
+  for (let i = 0; i < MAX_FOLD_CHILDREN + 8; i++) many.push('任务' + i)
+
+  // merge（=要删掉那些条目）仍按 MAX_EDITS 收窄，但**必须留痕**：
+  // 悄悄少一半正是这个坑最初难查的原因，用户只会以为自己没说完。
+  const asMerge = capMergeFolds(normMerges([{ keep: '总计划', fold: many }]))
+  assert.equal(asMerge[0].fold.length, MAX_EDITS)
+  assert.equal(asMerge[0].foldTruncated, true, '截断了就要说出来')
+  assert.equal(asMerge[0].foldTotal, MAX_FOLD_CHILDREN)
+
+  // children（一条都不删）保住全部宽上限内的条目。
+  const asGroup = capMergeFolds(normMerges([{ keep: '总计划', fold: many, mode: 'children' }]))
+  assert.equal(asGroup[0].fold.length, MAX_FOLD_CHILDREN)
+  assert.equal(asGroup[0].foldTruncated, undefined, '没截断就不标')
+
+  // 没超上限时原样返回，不多写键。
+  const small = capMergeFolds(normMerges([{ keep: 'A', fold: ['B', 'C'], mode: 'children' }]))
+  assert.equal(small[0].fold.length, 2)
+  assert.equal(small[0].foldTruncated, undefined)
+})
+
+test('回归：用户说了「作为子计划」而模型漏填 mode，那批任务一条都不能少', () => {
+  // 整条链路（normMerges → 兜底改判 → capMergeFolds），这三条按顺序才对。
+  const many = Array.from({ length: 20 }, (_, i) => '子任务' + i)
+  const parsed = normMerges([{ keep: '总计划', fold: many }])   // 模型漏填 mode
+  assert.ok(mergeWantsChildren('我要把这批合并成一个计划，其余全部作为它的子任务'),
+    '用户原话本身要能命中兜底')
+
+  for (const m of parsed) { if (m.mode !== 'children') m.mode = 'children' }
+  const capped = capMergeFolds(parsed)
+
+  assert.equal(capped[0].mode, 'children')
+  assert.equal(capped[0].fold.length, 20, '20 条一条都不能少——少了就是那个事故')
+  assert.equal(capped[0].foldTruncated, undefined)
 })
 
 test('提示词把两种 mode 都讲清楚，并明说不要反过来要用户列全清单', () => {

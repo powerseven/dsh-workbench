@@ -794,6 +794,40 @@ test('plan_node_set 传错证据类型时报错，不写半截数据', async () 
   )
 })
 
+test('agent 能删证据（evidenceRemove）：原先工具面只能加不能删', async () => {
+  // 2026-10-03 补。原先 evidenceRemove 只长在 HTTP 面的 /node-set 上，
+  // 于是「记错了一条证据」这件事只有人能纠——面板能改，agent 改不了。
+  await call('plan_node_add', { title: '要撤销证据的待办', type: 'todo' })
+  await call('plan_node_set', { node: '要撤销证据的待办', evidenceKind: 'link', evidenceRef: 'https://example.com/错的' })
+  await call('plan_node_set', { node: '要撤销证据的待办', evidenceKind: 'note', evidenceRef: '对的这条' })
+
+  const before = flatNodes((await readPlan()).nodes).find((n) => n.title === '要撤销证据的待办')
+  assert.equal(before.evidence.length, 2)
+
+  await call('plan_node_set', { node: '要撤销证据的待办', evidenceKind: 'link', evidenceRemove: 'https://example.com/错的' })
+
+  const after = flatNodes((await readPlan()).nodes).find((n) => n.title === '要撤销证据的待办')
+  assert.equal(after.evidence.length, 1, '只摘掉指定的那一条')
+  assert.equal(after.evidence[0].ref, '对的这条')
+  assert.equal(after.evidence[0].kind, 'note', '另一条不受影响')
+})
+
+test('摘证据摘到空时不留空数组（与 removeEvidence 的既有语义一致）', async () => {
+  await call('plan_node_add', { title: '唯一一条证据', type: 'todo' })
+  await call('plan_node_set', { node: '唯一一条证据', evidenceKind: 'note', evidenceRef: '只有这条' })
+  await call('plan_node_set', { node: '唯一一条证据', evidenceKind: 'note', evidenceRemove: '只有这条' })
+  const saved = flatNodes((await readPlan()).nodes).find((n) => n.title === '唯一一条证据')
+  assert.equal(saved.evidence, undefined, '摘空之后删键，不留 evidence: []')
+})
+
+test('摘一条不存在的证据不算「改动了」，不留下空快照', async () => {
+  await call('plan_node_add', { title: '摘不到东西', type: 'todo' })
+  const r = await call('plan_node_set', { node: '摘不到东西', evidenceRemove: '压根没有这条' })
+  assert.ok(r.ok, '不该报错——摘不存在的东西是无操作，不是错误')
+  const saved = flatNodes((await readPlan()).nodes).find((n) => n.title === '摘不到东西')
+  assert.equal(saved.evidence, undefined)
+})
+
 test('HTTP /todo-set 也能附证据（工具与数据面走同一条路径）', async () => {
   const added = await post('/node-add', { sessionId: SESSION_ID, title: '面板上带证据完成' })
   const id = added.payload.node.id
