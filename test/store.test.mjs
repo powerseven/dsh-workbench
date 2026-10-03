@@ -9,7 +9,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { existsSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -33,6 +33,7 @@ import {
   controlSummary,
   delegateState,
   delegatedList,
+  diffActivity,
   emptyPlan,
   evidenceOf,
   evidenceWarnings,
@@ -703,6 +704,119 @@ test('save 落盘 plan.json 与 PLAN.md，并自增版本号', async () => {
 
     await store.save(plan, { reason: 'test2' })
     assert.equal(plan.version, 2)
+  })
+})
+
+// -------------------------------------------------------------- 变更流水
+
+test('diffActivity 分出增 / 删 / 改，每条按节点归组（不是每个字段一条）', () => {
+  const before = {
+    nodes: [
+      { id: 'n1', title: '旧标题', status: 'todo', priority: 'normal' },
+      { id: 'n2', title: '要删的', status: 'todo' },
+    ],
+  }
+  const after = {
+    nodes: [
+      // n1 同时改了标题和状态——应当只出一条 update，里面挂两个 changes。
+      // 按字段拆成两条的话，「完成了一件事」会被读成「做了两件事」。
+      { id: 'n1', title: '新标题', status: 'done', priority: 'normal' },
+      { id: 'n3', title: '新加的', status: 'todo' },
+    ],
+  }
+  const events = diffActivity(before, after)
+  const byAction = (a) => events.filter((e) => e.action === a)
+  assert.equal(byAction('add').length, 1)
+  assert.equal(byAction('remove').length, 1)
+  assert.equal(byAction('update').length, 1)
+  assert.equal(byAction('update')[0].nodeId, 'n1')
+  assert.deepEqual(
+    byAction('update')[0].changes.map((c) => c.k).sort(),
+    ['status', 'title'],
+  )
+  // 没变的字段不进 changes：priority 两边都是 normal，不该出现在流水里。
+  assert.ok(!byAction('update')[0].changes.some((c) => c.k === 'priority'))
+  assert.equal(byAction('add')[0].title, '新加的')
+  assert.equal(byAction('remove')[0].title, '要删的')
+})
+
+test('diffActivity 没有实质变化时返回空数组（不写噪音流水）', () => {
+  const plan = { nodes: [{ id: 'n1', title: '一样', status: 'todo' }] }
+  assert.deepEqual(diffActivity(plan, plan), [])
+  // 版本号 / updatedAt / lastReason 每次写入都变，比了就是噪音——跳过它们。
+  const touched = {
+    nodes: [{ id: 'n1', title: '一样', status: 'todo' }],
+    version: 99,
+    updatedAt: '2026-10-03T00:00:00.000Z',
+    lastReason: 'whatever',
+  }
+  assert.deepEqual(diffActivity(plan, touched), [])
+})
+
+test('save 把增 / 改 / 删写进 activity.jsonl，recentActivity 倒序读回', async () => {
+  await withTemp(async (dir) => {
+    const store = new PlanStore(dir)
+    const plan = await store.load()
+    const a = makeNode(plan, { title: '第一条' })
+    plan.nodes.push(a)
+    await store.save(plan, { reason: 'init' })
+
+    // 改一条
+    applyFields(a, { title: '第一条（改名）', due: '2026-10-10' })
+    await store.save(plan, { reason: 'edit' })
+
+    // 加一条
+    plan.nodes.push(makeNode(plan, { title: '第二条' }))
+    await store.save(plan, { reason: 'add' })
+
+    // 删一条
+    removeNode(plan, 'n1')
+    await store.save(plan, { reason: 'del' })
+
+    assert.ok(existsSync(store.activity), '应当写出 activity.jsonl')
+
+    const recent = await store.recentActivity(50)
+    // 最新在前
+    assert.equal(recent[0].action, 'remove')
+    assert.equal(recent[0].nodeId, 'n1')
+    assert.equal(recent[1].action, 'add')
+    assert.equal(recent[2].action, 'update')
+    assert.equal(recent[2].title, '第一条（改名）')
+    // 改的字段要能被读出来（这是「改了什么」的全部依据）
+    const ks = recent[2].changes.map((c) => c.k).sort()
+    assert.deepEqual(ks, ['due', 'title'])
+    // 每条都有时间戳，且是 ISO 串
+    for (const ev of recent) assert.match(ev.at, /^\d{4}-\d{2}-\d{2}T/)
+  })
+})
+
+test('没有变化时不追加流水（避免空文件 / 空事件）', async () => {
+  await withTemp(async (dir) => {
+    const store = new PlanStore(dir)
+    const plan = await store.load()
+    plan.nodes.push(makeNode(plan, { title: 'X' }))
+    await store.save(plan, { reason: 'a' })
+    const first = await readFile(store.activity, 'utf8')
+    // 原样再存一次：内容没变，不该多出一行
+    await store.save(plan, { reason: 'b' })
+    assert.equal(await readFile(store.activity, 'utf8'), first)
+  })
+})
+
+test('readActivity 文件不存在返回空数组，坏行被跳过而不是整体失败', async () => {
+  await withTemp(async (dir) => {
+    const store = new PlanStore(dir)
+    assert.deepEqual(await store.recentActivity(10), [])
+    await mkdir(store.dir, { recursive: true })
+    await writeFile(store.activity, [
+      '{"at":"2026-10-01T00:00:00.000Z","action":"add","nodeId":"n1","title":"好行"}',
+      '这不是 JSON',
+      '{"at":"2026-10-02T00:00:00.000Z","action":"update","nodeId":"n2","title":"另一行"}',
+      '',
+    ].join('\n'), 'utf8')
+    const recent = await store.recentActivity(10)
+    assert.equal(recent.length, 2, '坏行要跳过，两条好行都要读出来')
+    assert.equal(recent[0].nodeId, 'n2', '倒序：最新的在前')
   })
 })
 

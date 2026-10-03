@@ -219,7 +219,38 @@ export function aiContext(plan, today = todayStr(), options = {}) {
     }
   }
 
+  // ⑧ 最近变更流水：加了什么、改了什么、删了什么。「近期做了什么」最直接的
+  //    答案——⑤「最近完成」只看得见**完成**的，看不见「加了又删的」「改了截止
+  //    又改回来的」「这周新建了哪几条」。这段由调用方把 store.recentActivity()
+  //    的结果传进来（options.recent），aiContext 本身保持纯函数、可单测。
+  if (Array.isArray(options.recent) && options.recent.length > 0) {
+    out.push('')
+    out.push('【最近的改动（流水，新→旧）】')
+    for (const ev of options.recent.slice(0, Math.min(limit, 15))) {
+      out.push('- ' + activityText(ev))
+    }
+  }
+
   return out.join('\n')
+}
+
+/** 把一条流水事件写成一句人话（给模型看，别把裸 JSON 丢给它）。 */
+function activityText(ev) {
+  const when = typeof ev?.at === 'string' ? ev.at.slice(5, 10).replace('-', '/') : ''
+  const title = typeof ev?.title === 'string' && ev.title !== '' ? ev.title : '（无标题）'
+  if (ev?.action === 'add') return (when ? when + ' ' : '') + '新增「' + title + '」'
+  if (ev?.action === 'remove') return (when ? when + ' ' : '') + '删除「' + title + '」'
+  // update：把变的字段列出来。字段名对模型已经够用，不做中英映射——
+  // 多一张映射表就多一处会漂移的地方，而模型读 status/due 本来就认得。
+  const parts = []
+  for (const c of Array.isArray(ev?.changes) ? ev.changes : []) {
+    if (c?.k === 'title') { parts.push('改了标题'); continue }
+    if (c?.k === 'status') { parts.push('状态→' + String(c.to ?? '')); continue }
+    if (c?.k === 'due') { parts.push('截止→' + String(c.to ?? '')); continue }
+    parts.push(String(c?.k ?? ''))
+  }
+  const what = parts.length > 0 ? '（' + parts.join('、') + '）' : '（有改动）'
+  return (when ? when + ' ' : '') + '「' + title + '」' + what
 }
 
 /** 上下文每段最多列多少条：再多 token 吃不消，也超过人能消化的量。 */
@@ -353,7 +384,11 @@ export function aiSystemPrompt(outline, today = todayStr(), options = {}) {
     '3. due 只有**明确说了时间**才填（「下周三」「9月20日前」都要换算成具体日期）；没说就留空。',
     '4. priority 只有明确说了「重要/紧急/必须」才填 high，「有空再做」才填 low，其余留空。',
     '5. plan 从上面【可归入的计划】里**原样抄一个标题**；都不合适就填一个新计划名；',
-    '   判断不了就留空（先待在顶层，之后可以再归位）。',
+    '   **不打算定归属，就不要写 plan 这个键**（留空会被当成「挪到顶层」，见 5a）。',
+    '5a. 用户要把**已经在计划里的**条目挪出来单独放着（「把这两条从X里单独出来」',
+    '   「这两个不属于那个计划，拆出来」），用 **edits** 给每一条 patch 写 {"plan":"顶层"}；',
+    '   **不要放进 tasks**——那是新建，会多出一模一样的重复条目。',
+    '   只有用户明确说「拆出来**组成一个计划**」才用 merges 的 children 模式。',
     '6. advice：**以计划专家的身份**给一条意见，必须引用【当前全貌】或【历史相似任务】里的',
     '   具体名字（例如「与手上的「补台账」几乎重复」「历史上「台区排查」从开工到完成用了 12 天」）。',
     '   没有依据就留空——不要写正确的废话。',
@@ -655,6 +690,46 @@ export function normStatus(v) {
 }
 
 /**
+ * 归属的口径 → 内部唯一的说法。
+ *
+ * 之前 `normEdits` 用 `String(src.plan).trim() !== ''` 把空串直接丢掉，于是
+ * **「把某条从它现在的计划里挪出来单独放着」根本表达不出来**——那是这份
+ * 白名单里最常被要的一个动作，却没有对应的值。真机上就撞过一次：用户说
+ * 「把这两条从 DDI 治理里面单独出来」，模型只能给一条改标题，卡片点下去
+ * 只能改名（用户原话：「点了之后只能改名」）。
+ *
+ * 所以这里把「挪到顶层」收成一个**有名字的值** `'顶层'`，所有同义说法
+ * （含空串）都归到它。判据只看用户/模型**明确写了归属**——**没写 plan 这个键
+ * 就一个字都不动**，那条「不传就不动」不许因为这次改动破例。
+ */
+export function normPlanTarget(v) {
+  if (typeof v !== 'string') return ''
+  const t = v.trim()
+  if (t === '') return '顶层'
+  if (/^(顶层|收件箱|无|独立|单独|单独一条|none|top|root)$/i.test(t)) return '顶层'
+  return t.slice(0, 100)
+}
+
+/**
+ * 用户是不是在说「把已经在计划里的这几条**拆出来单独放着**」。
+ *
+ * 与 `mergeWantsChildren` 同一个套路：模型经常理解了人话却**没把意思落到字段上**
+ * （或者只给了一条改标题），所以 host 按**用户自己的话**兜一道，并把依据回显到卡上。
+ *
+ * **必须窄**，且与 merges 互斥：用户说的是「拆出来**组成一个计划**」时，那归
+ * `mergeWantsChildren` 的 children 模式管（建计划 + 挂子项），不是这里。
+ * 只认**带方向的动宾结构**（单独出来 / 拆出来 / 挪回顶层…），不认裸的
+ * 「拿出来」「分出来」——那两个词在别的句子里太常见（「拿出方案」「分部分析」），
+ * 误判一次就是把别人的任务莫名挪到顶层。
+ */
+export function editWantsDetach(userText) {
+  if (!isStr(userText)) return false
+  const t = String(userText)
+  if (mergeWantsChildren(t)) return false
+  return /单独(出来|列出|拉出来|拎出来|拎出|成一条|成任务|另开|另立)|拆出来|摘出来|移出来|挪出来|剥离出来|独立出来|挪回顶层|放回顶层|归到顶层|提到顶层/.test(t)
+}
+
+/**
  * **改动已有任务**：{ target: 已有标题, patch: 只放要改的字段, why }。
  *
  * target 是**标题**不是 id——与 tasks.plan / list.items 同一条纪律：模型复述的 id
@@ -674,7 +749,7 @@ export function normEdits(raw) {
     if (src.due !== undefined) { const d = normDue(src.due); if (d !== '') patch.due = d }
     if (src.priority !== undefined) { const p = normPriority(src.priority); if (p !== '') patch.priority = p }
     if (src.note !== undefined && isStr(src.note)) patch.note = String(src.note).trim().slice(0, 500)
-    if (src.plan !== undefined && isStr(src.plan) && String(src.plan).trim() !== '') patch.plan = String(src.plan).trim().slice(0, 100)
+    if (src.plan !== undefined) { const t = normPlanTarget(src.plan); if (t !== '') patch.plan = t }
     // 状态 / 负责人 / 周期：同样是「说一句就能改」的东西（「这条标完成」「归张三」
     // 「下周一开始月底结束」）。白名单放宽的前提是**改动一律先过表单**——人确认那一下
     // 才是安全边界，不是字段个数。
@@ -779,7 +854,7 @@ export function normMerges(raw) {
 export function mergeWantsChildren(userText) {
   if (!isStr(userText)) return false
   const t = String(userText)
-  return /子任务|子计划|子项|挂到.{0,8}下面|合并成一个计划|合成一个计划|收成一个计划|作为一个计划/.test(t)
+  return /子任务|子计划|子项|挂到.{0,8}下面|(合并|合成|组成|收成|归成|做成|整理|拆出|拆出来|归拢|攒成|并成|新建|开)一个.{0,12}计划|作为一个计划/.test(t)
 }
 
 /**

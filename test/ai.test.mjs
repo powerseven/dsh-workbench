@@ -28,8 +28,10 @@ import {
   extractJson,
   historyText,
   matchPlan,
+  editWantsDetach,
   mergeWantsChildren,
   normDeletes,
+  normPlanTarget,
   parseAiReply,
   planOutline,
 } from '../src/ai.js'
@@ -243,6 +245,68 @@ test('mergeWantsChildren：只看用户自己说的话，且宁可判不中也�
   assert.equal(mergeWantsChildren(undefined), false)
 })
 
+// ── 「从某个计划里单独出来」：这个动作曾经根本表达不出来 ──────────────────
+//
+// 真机原话：「我要把它从 DDI 治理里面单独出来」。模型回了一条只改标题的改动，
+// 卡片点下去**只能改名**（用户原话）。根因不是模型读不懂，是 `normEdits` 当年
+// 用 `trim() !== ''` 把空串丢掉了，于是「挪到顶层」在白名单里没有值可写。
+
+test('normPlanTarget：所有同义说法收成一个「顶层」，普通计划名原样留', () => {
+  assert.equal(normPlanTarget(''), '顶层', '空串 = 明确挪到顶层')
+  assert.equal(normPlanTarget('   '), '顶层')
+  assert.equal(normPlanTarget('顶层'), '顶层')
+  assert.equal(normPlanTarget(' 收件箱 '), '顶层')
+  assert.equal(normPlanTarget('无'), '顶层')
+  assert.equal(normPlanTarget('低电压治理攻坚'), '低电压治理攻坚')
+  // **没传**与「传了空串」必须分得开——前者是「不改」，后者是「挪到顶层」。
+  assert.equal(normPlanTarget(undefined), '')
+  assert.equal(normPlanTarget(null), '')
+  assert.equal(normPlanTarget(123), '')
+})
+
+test('normEdits：plan 留空要落成「顶层」，不写 plan 这个键则一个字段都不动', () => {
+  const parsed = parseAiReply(JSON.stringify({
+    reply: '这两条挪出来',
+    edits: [
+      { target: '召开全局可靠性会议', patch: { plan: '' } },
+      { target: '印发小区电缆沟相关文件', patch: { plan: '独立', title: '印发小区电缆沟相关文件' } },
+      { target: '只改标题', patch: { title: '只改标题' } },
+    ],
+  }))
+  assert.equal(parsed.edits.length, 3)
+  assert.equal(parsed.edits[0].patch.plan, '顶层', '空串不能再被丢掉')
+  assert.equal(parsed.edits[1].patch.plan, '顶层', '同义说法归一')
+  assert.equal(parsed.edits[1].patch.title, '印发小区电缆沟相关文件', '别的字段不动')
+  assert.equal(parsed.edits[2].patch.plan, undefined, '没写 plan 就不许凭空加一个（不传就不动）')
+})
+
+test('editWantsDetach：只认带方向的动宾结构，且与 merges 的 children 互斥', () => {
+  assert.equal(editWantsDetach('我要把它从DDI治理里面单独出来'), true)
+  assert.equal(editWantsDetach('把这两条拆出来'), true)
+  assert.equal(editWantsDetach('这两个不属于那个计划，摘出来'), true)
+  assert.equal(editWantsDetach('挪回顶层'), true)
+  // **互斥**：「拆出来组成一个计划」是建计划 + 挂子项，归 merges 管。
+  assert.equal(editWantsDetach('拆出来组成一个叫可靠性专项的计划'), false)
+  assert.equal(editWantsDetach('把它们组成一个计划'), false)
+  assert.equal(editWantsDetach('作为子计划'), false)
+  // 宁可判不中：裸的「拿出来 / 分出来」在别的句子里太常见，误判一次就是
+  // 把别人的任务莫名挪到顶层。
+  assert.equal(editWantsDetach('把这条拿来看看'), false)
+  assert.equal(editWantsDetach('分部分析一下'), false)
+  assert.equal(editWantsDetach('单独做一张表'), false)
+  assert.equal(editWantsDetach('单独一个计划'), false)
+  assert.equal(editWantsDetach(''), false)
+  assert.equal(editWantsDetach(undefined), false)
+})
+
+test('提示词教得会「单独出来」，并说清不写 plan 与写空串的区别', () => {
+  const p = aiSystemPrompt(planOutline(fixture()), '2026-09-15')
+  assert.match(p, /单独出来/, '要有一条例外讲清怎么挪出原计划')
+  assert.match(p, /"plan":"顶层"/, '要给出确切的写法')
+  assert.match(p, /不要写 plan 这个键/, '「拿不准不写」与「写空串＝顶层」必须分开说')
+  assert.match(p, /不要放进 tasks/, '新建会多出重复条目，必须堵死')
+})
+
 test('只有改动或只有合并，也算一次成功的解析（不能判成失败）', () => {
   // 这条是坑 #25 的又一次执行：给模型加新产出时，**旧的「成功判据」要回头看**。
   // 「把 X 挪到某计划下」既不需要新任务、也不需要回答——漏了就会把它判成失败。
@@ -401,6 +465,28 @@ test('aiContext 给出「当前 + 归纳」：方向、手上的活、逾期、�
   // 上下文里绝不出现 id：模型看到 id 就会复述 id，而我们无法校验它编的。
   assert.equal(/\bp1\b|\bt1\b/.test(ctx), false, '上下文只给标题与状态，不给 id')
   assert.equal(aiContext({ nodes: [] }, '2026-09-15').includes('【方向'), false, '空计划不产生空段落')
+})
+
+test('aiContext 把变更流水单独成段——「最近完成」看不见加了又删的那些', () => {
+  // ⑤「最近完成」只读 done + doneAt，所以「这周加了哪几条」「改了哪条截止」
+  // 在它里面根本不存在。流水那一段补的就是这个缺口。
+  const ctx = aiContext(contextFixture(), '2026-09-15', {
+    recent: [
+      { at: '2026-09-14T02:00:00.000Z', action: 'add', nodeId: 'n9', title: '新加的活' },
+      { at: '2026-09-13T02:00:00.000Z', action: 'update', nodeId: 'n4', title: '改过的活', changes: [{ k: 'due', from: '2026-09-20', to: '2026-09-30' }] },
+      { at: '2026-09-12T02:00:00.000Z', action: 'remove', nodeId: 'n5', title: '删掉的活' },
+    ],
+  })
+  assert.match(ctx, /【最近的改动（流水，新→旧）】/)
+  assert.match(ctx, /新增「新加的活」/)
+  assert.match(ctx, /「改过的活」（截止→2026-09-30）/, '要看出改的是哪个字段、改成了什么')
+  assert.match(ctx, /删除「删掉的活」/)
+  // 不传 recent 就不产生这段——aiContext 保持纯函数，由调用方决定喂不喂
+  assert.equal(
+    aiContext(contextFixture(), '2026-09-15').includes('【最近的改动'),
+    false,
+    '没给 recent 就不该凭空造一段',
+  )
 })
 
 test('aiContext 每段最多 CONTEXT_LIMIT 条，超出要报还剩几条', () => {

@@ -119,10 +119,20 @@ const fakeReact = createFakeReact()
 
 // ------------------------------------------------------- DOM / window 替身
 
+// head 真的按 id 记账，这样「重复注入复用同一个 <style>」（坑 #38）才能被测到：
+// 一个只会 createElement 的替身会让 getElementById 恒返回 null，幂等分支永远走不到。
+const headEls = new Map()
 globalThis.document = {
-  createElement: () => ({ textContent: '', remove: () => {} }),
-  head: { appendChild: () => {} },
+  createElement: (tag) => ({
+    tag,
+    id: '',
+    textContent: '',
+    remove() { headEls.delete(this.id) },
+  }),
+  getElementById: (id) => headEls.get(id) || null,
+  head: { appendChild: (el) => { if (el.id) headEls.set(el.id, el) } },
 }
+globalThis.__headEls = headEls
 
 const storage = new Map()
 globalThis.window = {
@@ -420,6 +430,23 @@ function idOf(title) {
 }
 
 // ============================================================ 渲染冒烟
+
+test('样式表在 apply 后在 head 里，且重复 apply 复用同一个元素（坑 #38）', async () => {
+  // 钉住「面板有内容、没样式」那个坑的两半：
+  //   ① 注入后 <style> 真的在 head 里（不是建完就丢）
+  //   ② apply 再跑一次不堆第二份，而是复用同一个 id
+  // 清理函数那一半在 build.test.mjs 用产物断言守（它测不了运行时 DOM）。
+  __headEls.clear()
+  await mount()
+  const first = __headEls.get('dsh-workbench-style')
+  assert.ok(first, 'apply 之后 head 里应当有一份面板样式表')
+  assert.match(first.textContent, /dsh-wb-wrap/, '样式表内容应是面板 CSS')
+  const afterFirst = __headEls.size
+  await mount()
+  assert.equal(__headEls.size, afterFirst, '重复 apply 不得再堆一份 <style>')
+  assert.equal(__headEls.get('dsh-workbench-style'), first, '应当复用同一个元素')
+  __headEls.clear()
+})
 
 test('面板渲染出计划树、收件箱与设置入口（不白屏）', async () => {
   const { view } = await mount()
@@ -1633,6 +1660,161 @@ test('设置页收拢 vault 与 AI 人设（与当前视图无关）', async () 
 
 const taskRow = (view, title) => byClass(view, 'dsh-wb-task').find((r) => textOf(r).includes(title)) ?? null
 const planRow = (view, title) => byClass(view, 'dsh-wb-planhead').find((r) => textOf(r).includes(title)) ?? null
+
+// ------------------------------------------------------- 计划的完成框（同层级对齐）
+
+/**
+ * 自带 fixture：三条顶层计划各处于一种完成状态，外加一条**同深度的待办**。
+ * **用真 host 建**而不是手写 payload——手写的 payload 少一个派生字段，面板就会
+ * 静默走兜底分支，于是这个用例悄悄退化成什么都没测。
+ *
+ * 每条计划都带**两个**子项且互不共享：子项全 done 时级联会把父标成 done，
+ * 所以「零完成」与「半完成」必须各留一个没做完的子项，否则它们会被级联带成
+ * done，三种状态就撞成一类（写这个 fixture 时真撞过一次）。
+ */
+async function planBoxFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-wb-planbox-'))
+  const call = hostCall(root)
+  await call('plan_node_add', { title: '零完成' })
+  await call('plan_node_add', { title: '零甲', parent: '零完成' })
+  await call('plan_node_add', { title: '零乙', parent: '零完成' })
+  await call('plan_node_add', { title: '半完成' })
+  await call('plan_node_add', { title: '半甲', parent: '半完成' })
+  await call('plan_node_add', { title: '半乙', parent: '半完成' })
+  await call('plan_todo_set', { todo: '半甲', status: 'done' })
+  await call('plan_node_add', { title: '全完成' })
+  await call('plan_node_add', { title: '全甲', parent: '全完成' })
+  await call('plan_node_add', { title: '全乙', parent: '全完成' })
+  await call('plan_todo_set', { todo: '全甲', status: 'done' })
+  await call('plan_todo_set', { todo: '全乙', status: 'done' })
+  // 与三条计划同深度的待办——要验的就是这种混排
+  await call('plan_node_add', { title: '同深度待办' })
+  const shown = await call('plan_show')
+  return { root, plan: shown.plan }
+}
+
+/** dropped 不算完成：与 store 侧 allChildrenDone 的 `every(c => c.status === 'done')` 同一把尺。 */
+async function planBoxDropFixture() {
+  const root = await mkdtemp(join(tmpdir(), 'dsh-wb-planboxdrop-'))
+  const call = hostCall(root)
+  await call('plan_node_add', { title: '一成一弃' })
+  await call('plan_node_add', { title: '弃甲', parent: '一成一弃' })
+  await call('plan_node_add', { title: '弃乙', parent: '一成一弃' })
+  await call('plan_todo_set', { todo: '弃甲', status: 'done' })
+  await call('plan_todo_set', { todo: '弃乙', status: 'dropped' })
+  await call('plan_node_add', { title: '全弃' })
+  await call('plan_node_add', { title: '全弃甲', parent: '全弃' })
+  await call('plan_node_add', { title: '全弃乙', parent: '全弃' })
+  await call('plan_todo_set', { todo: '全弃甲', status: 'dropped' })
+  await call('plan_todo_set', { todo: '全弃乙', status: 'dropped' })
+  const shown = await call('plan_show')
+  return { root, plan: shown.plan }
+}
+
+const boxOf = (view, planTitle) => {
+  const head = planRow(view, planTitle)
+  return head === null ? null : byClass(head, 'dsh-wb-cbplan')[0] ?? null
+}
+
+test('计划行有一个灰色完成框，三态随子项完成情况变（空 / 半 / 勾）', async () => {
+  const keep = planPayload
+  const fx = await planBoxFixture()
+  planPayload = fx.plan
+  try {
+    const { render } = await mount()
+    const b0 = boxOf(render(), '零完成')
+    const b1 = boxOf(render(), '半完成')
+    const bAll = boxOf(render(), '全完成')
+    assert.ok(b0 !== null, '计划行必须有完成框')
+    assert.ok(b1 !== null && bAll !== null, '每条计划都要有完成框')
+
+    // 1) 子项一个都没完成 → 灰空框
+    assert.doesNotMatch(String(b0.props.className), /\bhalf\b|\bdone\b/, '零完成不该是半满或已完成')
+    assert.equal(b0.children.length, 0, '零完成时框里不画勾')
+    assert.match(String(b0.props.title), /0\/2/, 'tooltip 要写明 0/2')
+
+    // 2) 完成一部分 → 半满
+    assert.match(String(b1.props.className), /\bhalf\b/, '一半完成要画成半满')
+    assert.equal(b1.children.length, 0, '半满时框里不画勾')
+    assert.match(String(b1.props.title), /1\/2/, 'tooltip 要写明 1/2')
+
+    // 3) 全部完成 → 打勾
+    assert.match(String(bAll.props.className), /\bdone\b/, '全完成要画成 done')
+    assert.equal(bAll.children.length, 1, '全完成时框里有一个勾')
+    assert.equal(bAll.children[0].type, 'svg', '勾是内联 SVG，不是文字字形')
+    assert.match(String(bAll.props.title), /2\/2/, 'tooltip 要写明 2/2')
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
+test('完成框不可点：它是 span，没有 input / button，也没有任何 handler', async () => {
+  const keep = planPayload
+  const fx = await planBoxFixture()
+  planPayload = fx.plan
+  try {
+    const { render } = await mount()
+    for (const title of ['零完成', '半完成', '全完成']) {
+      const box = boxOf(render(), title)
+      assert.ok(box !== null, title + ' 应该有完成框')
+      assert.equal(box.type, 'span', title + ' 的完成框必须是 span（画成 input 就是邀请一个点不动的按钮）')
+      assert.equal(box.props.onClick, undefined, title + ' 的完成框不许有 onClick')
+      assert.equal(box.props.onChange, undefined, title + ' 的完成框不许有 onChange')
+      assert.equal(box.props.disabled, undefined, title + ' 的完成框不是可交互控件')
+    }
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
+test('dropped 不算完成：1 个 done + 1 个 dropped 是半满，不是完成', async () => {
+  const keep = planPayload
+  const fx = await planBoxDropFixture()
+  planPayload = fx.plan
+  try {
+    const { render } = await mount()
+    const half = boxOf(render(), '一成一弃')
+    assert.match(String(half.props.className), /\bhalf\b/, '1 done + 1 dropped 应是半满')
+    assert.doesNotMatch(String(half.props.className), /\bdone\b/, 'dropped 不该被当成完成')
+    assert.match(String(half.props.title), /1\/2/)
+    const empty = boxOf(render(), '全弃')
+    assert.doesNotMatch(String(empty.props.className), /\bhalf\b|\bdone\b/, '全 dropped 应是空框')
+    assert.match(String(empty.props.title), /0\/2/)
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
+test('同深度的计划与待办用同一个缩进——不再有「计划 33px 待办」的错位', async () => {
+  const keep = planPayload
+  const fx = await planBoxFixture()
+  planPayload = fx.plan
+  try {
+    const { render } = await mount()
+    const view = render()
+    const todo = taskRow(view, '同深度待办')
+    assert.ok(todo !== null, '应该有那条同深度待办')
+    for (const title of ['零完成', '半完成', '全完成']) {
+      const head = planRow(view, title)
+      assert.ok(head !== null, title + ' 应该有计划行')
+      // 结构性保证：两者的行缩进来自同一个函数。剩下的「框/勾选框同宽」由 CSS 钉住
+      // （--wb-cb），见 build.test.mjs。原先待办行是 `10 + depth*16`、计划头是
+      // `depth*16` 且没有左内边距，于是首字差 33px（真机反馈「左边没对齐」）。
+      assert.equal(
+        head.props.style.marginLeft,
+        todo.props.style.marginLeft,
+        title + ' 与同深度待办的行缩进必须一致',
+      )
+    }
+  } finally {
+    planPayload = keep
+    await rm(fx.root, { recursive: true, force: true })
+  }
+})
+
 /** 行内动作按钮的稳定定位：按钮里的字形已换成内联 SVG（没有文字了），
  *  所以按 title 兜住——这样调用点继续写 '★' / '↳' / '＋' 也不必逐个改。 */
 const ACT_TITLE = { '★': '星标', '↳': '归位到', '＋': '加子项', '×': '删除' }
@@ -2865,6 +3047,7 @@ test('合并卡：明写会删掉哪条；采纳后依次走既有的写入口�
       keep: '表层待办',
       keepId: idOf('表层待办'),
       keepTitle: '表层待办',
+      ok: true,
       fold: ['深层待办'],
       folds: [{ id: idOf('深层待办'), title: '深层待办' }],
       title: '表层待办（含深层）',
@@ -2906,6 +3089,7 @@ test('归组卡（mode=children）：明写「不会删任何条目」；采纳�
       keep: '表层待办',
       keepId: idOf('表层待办'),
       keepTitle: '表层待办',
+      ok: true,
       keepKids: 0,
       fold: ['收件箱一条', '深层待办'],
       folds: [{ id: idOf('收件箱一条'), title: '收件箱一条' }, { id: idOf('深层待办'), title: '深层待办' }],
@@ -2989,27 +3173,47 @@ test('浮层只有一个关闭入口：标题行那颗 ✕（重复的「收起�
   assert.ok(!labels.includes('收起'), '不再有与 ✕ 重复的「收起」按钮')
 })
 
-test('每次点开浮层都是全新的：输入框、上一轮问答、上一轮草稿全部清掉', async () => {
-  // 用户原话：「下次再点开的时候应该自动清空之前那个任务，不然话又堆在一起；
+test('输入框每次都是全新的，但这一轮没点完的建议留着', async () => {
+  // 用户原话（输入那半）：「下次再点开的时候应该自动清空之前那个任务，不然话就堆在一起；
   // 每次点开那个应该是一个全新的。」——它是件输入工具，不是一本对话记录。
   // 不清的话最直接的症状是：上次没发出去的那句话还躺在输入框里，接着用输入法
   // 说话就会**接在后面**。
+  //
+  // 用户原话（建议那半）：「点其中一个建议时，这个窗口就退出了，不能再点第二个建议。」
+  // 浮层会因为「把草稿交给表单」而关掉（表单整块替换面板），可这一轮的建议不是
+  // 一次性输入——扔掉等于强迫他把刚才那句话重新说一遍才能点第二条。
+  // 所以判据是「这一轮还有没有东西」，**不留任何标记位**去记它。
   withAi()
-  aiReply = { reply: '没什么要紧的。', tasks: [{ title: '补台账', due: '', priority: '', note: '', plan: '', candidates: [] }] }
+  aiReply = {
+    reply: '两条。',
+    tasks: [
+      { title: '补台账', due: '', priority: '', note: '', plan: '', candidates: [] },
+      { title: '交电费', due: '', priority: '', note: '', plan: '', candidates: [] },
+    ],
+  }
   const { render, view } = await mountAi()
   aiEntry(view).props.onChange({ target: { value: '把台账补完' } })
   aiBtn(render(), '↑').props.onClick(ev())
   await settle()
   assert.ok(firstByClass(render(), 'dsh-wb-chat') !== null, '这一轮有问答')
-  assert.ok(firstByClass(render(), 'dsh-wb-aitask') !== null, '这一轮有草稿卡')
+  assert.equal(byClass(render(), 'dsh-wb-aitask').length, 2, '这一轮有两张草稿卡')
 
   // 收起再点开
   firstByClass(render(), 'dsh-wb-fabclose').props.onClick(ev())
   firstByClass(render(), 'dsh-wb-fabball').props.onClick(ev())
   const reopened = render()
-  assert.equal(firstByClass(reopened, 'dsh-wb-chat'), null, '上一轮问答不该留到下一次')
-  assert.equal(firstByClass(reopened, 'dsh-wb-aitask'), null, '上一轮草稿不该留到下一次')
-  assert.equal(aiEntry(reopened).props.value, '', '输入框必须是空的')
+  assert.equal(aiEntry(reopened).props.value, '', '输入框必须是空的（否则语音会接在后面）')
+  assert.equal(byClass(reopened, 'dsh-wb-aitask').length, 2, '没点完的建议不该被丢掉——还要能点第二个')
+
+  // 这一轮处理完之后，再打开就是全新一屏。
+  for (const btn of byClass(render(), 'dsh-wb-aibtn')) {
+    if (btn.props.title === '丢弃这条') btn.props.onClick(ev())
+  }
+  firstByClass(render(), 'dsh-wb-fabclose').props.onClick(ev())
+  firstByClass(render(), 'dsh-wb-fabball').props.onClick(ev())
+  const third = render()
+  assert.equal(firstByClass(third, 'dsh-wb-aitask'), null, '这一轮空了就该是干净的一屏')
+  assert.equal(firstByClass(third, 'dsh-wb-chat'), null, '上一轮问答不该留到下一次')
 })
 
 test('纯输入框（宿主没模型）提交后自动收起——不用再点一次', async () => {
@@ -3024,4 +3228,167 @@ test('纯输入框（宿主没模型）提交后自动收起——不用再点�
   assert.equal(firstByClass(after, 'dsh-wb-fabsheet'), null, '浮层已经收起')
   assert.match(textOf(firstByClass(after, 'dsh-wb-flash')), /已记下/)
 })
+
+
+// ── 整组勾选 + 批量处理 + 单独点一条不许关窗口 ───────────────────────────
+//
+// 用户原话：「这里面的整条任务，首先要给一个整体可以选择的框。如果我们都确认了，
+// 就按批量处理；也可以单独点，但单独点的时候，窗口不能退出。」
+
+test('勾选：每张卡左边一颗框，整组一颗全选 + 一颗批量处理（两条以上才出）', async () => {
+  withAi()
+  aiReply = {
+    reply: '两条。',
+    edits: [
+      { target: '表层待办', id: idOf('表层待办'), ok: true, patch: { plan: '顶层' }, options: [], why: '' },
+      { target: '收件箱一条', id: idOf('收件箱一条'), ok: true, patch: { plan: '顶层' }, options: [], why: '' },
+    ],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把这两条单独出来' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const checks = byClass(render(), 'dsh-wb-aicheck')
+  assert.equal(checks.length, 2, '每张卡一颗勾——四张卡共用同一个包法，不各自写一套')
+  assert.ok(firstByClass(render(), 'dsh-wb-aibatch') !== null, '两条以上要有整组的那条')
+
+  // 全选 → 两颗勾都亮，按钮上的数跟着走。
+  // 定位**只在批量条内部找**：`.dsh-wb-chip` 这一屏里还有快捷问法与向导按钮，
+  // 全屏 find 会命中错的那一颗，而症状是「点了没反应」。
+  // byClass 只认**单个**类名（它 split 空白后 includes），所以「选中态的勾」自己过滤。
+  const onChecks = () => byClass(render(), 'dsh-wb-aicheck')
+    .filter((c) => classesOf(c).includes('on')).length
+  const chipIn = () => findAll(firstByClass(render(), 'dsh-wb-aibatch'),
+    (x) => x.type === 'button' && classesOf(x).includes('dsh-wb-chip'))
+  const all = chipIn().find((b) => textOf(b).indexOf('全选') >= 0)
+  assert.ok(all !== undefined, '要有全选')
+  all.props.onClick(ev())
+  await settle()
+  assert.equal(onChecks(), 2, '全选后两颗都选中')
+  assert.match(textOf(findAll(firstByClass(render(), 'dsh-wb-aibatch'), (x) => x.type === 'button').at(-1)),
+    /2 条批量处理/, '批量按钮要写清几条')
+
+  // 全中之后「全选」变成「取消全选」，否则没法一键退回去
+  const off = chipIn().find((b) => textOf(b).indexOf('取消全选') >= 0)
+  assert.ok(off !== undefined, '全中后要能一键取消')
+  off.props.onClick(ev())
+  await settle()
+  assert.equal(onChecks(), 0)
+})
+
+test('批量处理：逐条走各自的写入口，且删除排在最后', async () => {
+  withAi()
+  aiReply = {
+    reply: '三条。',
+    edits: [
+      { target: '表层待办', id: idOf('表层待办'), ok: true, patch: { plan: '顶层' }, options: [], why: '' },
+      { target: '收件箱一条', id: idOf('收件箱一条'), ok: true, patch: { plan: '顶层' }, options: [], why: '' },
+    ],
+    deletes: [{ target: '深层待办', id: idOf('深层待办'), ok: true, children: 0, why: '' }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '前两条挪出来，废弃的删掉' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  for (const c of byClass(render(), 'dsh-wb-aicheck')) c.props.onClick(ev())
+  requests = []
+  const batch = byClass(render(), 'dsh-wb-aibatch')[0]
+  findAll(batch, (x) => x.type === 'button' && textOf(x).indexOf('批量处理') >= 0).at(0).props.onClick(ev())
+  await settle()
+
+  const moves = requests.filter((r) => String(r.path).endsWith('/node-set'))
+  assert.equal(moves.length, 2, '两条改动各写一次')
+  for (const m of moves) assert.equal(m.body.parent, '', '「挪到顶层」= parent 空串')
+  const rm = requests.find((r) => String(r.path).endsWith('/node-remove'))
+  assert.ok(rm !== undefined, '删掉的也要处理')
+  // 顺序：不可逆的删除必须排在最后。
+  assert.ok(requests.indexOf(rm) > requests.indexOf(moves[0]), '删除不能在别的写入之前发生')
+  assert.match(textOf(firstByClass(render(), 'dsh-wb-flash')), /已按选中处理 3 条/)
+})
+
+test('单独点一条建议：窗口不退出，剩下的还能接着点', async () => {
+  withAi()
+  aiReply = {
+    reply: '两条。',
+    edits: [
+      { target: '表层待办', id: idOf('表层待办'), ok: true, patch: { plan: '顶层' }, options: [], why: '' },
+      { target: '收件箱一条', id: idOf('收件箱一条'), ok: true, patch: { plan: '顶层' }, options: [], why: '' },
+    ],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把这两条单独出来' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  const card = byClass(render(), 'dsh-wb-aitask')[0]
+  findAll(card, (x) => x.type === 'button' && textOf(x).startsWith('就这么办')).at(0).props.onClick(ev())
+  await settle()
+  assert.equal(firstByClass(render(), 'dsh-wb-fabball'), null, '采纳一条不该把浮层收起')
+  assert.equal(byClass(render(), 'dsh-wb-aitask').length, 1, '还剩一条，可以接着点')
+})
+
+test('合并卡按下去也不关浮层（它原先在两个分支里都调了 setFabOpen(false)）', async () => {
+  withAi()
+  aiReply = {
+    reply: '合并一下。',
+    merges: [{
+      keep: '表层待办',
+      keepId: idOf('表层待办'),
+      keepTitle: '表层待办',
+      ok: true,
+      folds: [{ id: idOf('收件箱一条'), title: '收件箱一条' }],
+      mode: 'children',
+      patch: {},
+      title: '',
+      why: '',
+      modeNote: '',
+      missing: [],
+      skipped: [],
+      keepKids: 0,
+    }],
+    edits: [{ target: '工作主线', id: idOf('工作主线'), ok: true, patch: { plan: '顶层' }, options: [], why: '' }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '合并成一个计划' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+
+  // **按内容找那张卡，不按位置取第几张**：队列顺序是 新建 → 改动 → 合并 → 删除，
+  // 改动卡排在合并卡前面，取 [0] 抓到的是改��卡，症状是「找不到那颗按钮」。
+  // findAll 只吃**单个节点**（对数组它读不到 .children，等于什么都没搜），
+  // 所以要对每张卡分别搜一遍再挑出命中的那颗。
+  const cards = byClass(render(), 'dsh-wb-aitask')
+  const mergeBtn = cards
+    .map((c) => findAll(c, (x) => x.type === 'button' && textOf(x).indexOf('合并') >= 0)[0])
+    .filter((b) => b !== undefined)[0]
+  assert.ok(mergeBtn !== undefined, '合并卡上要有「按这个合并」')
+  mergeBtn.props.onClick(ev())
+  await settle()
+  assert.equal(firstByClass(render(), 'dsh-wb-fabball'), null, '按合并不该把浮层收起')
+})
+
+test('改动卡上要写明「按你话里的『单独出来』」这条依据', async () => {
+  withAi()
+  aiReply = {
+    reply: '挪出来。',
+    edits: [{
+      target: '表层待办',
+      id: idOf('表层待办'),
+      ok: true,
+      patch: { plan: '顶层' },
+      options: [],
+      why: '',
+      detachNote: '按你话里的「单独出来」，这条已从原计划挪到顶层',
+    }],
+  }
+  const { render, view } = await mountAi()
+  aiEntry(view).props.onChange({ target: { value: '把表层待办单独出来' } })
+  aiBtn(render(), '↑').props.onClick(ev())
+  await settle()
+  assert.match(textOf(render()), /按你话里的「单独出来」，这条已从原计划挪到顶层/,
+    '改判是按人那句话改的模型判读，不说清就像 AI 擅自改主意')
+})
+
 

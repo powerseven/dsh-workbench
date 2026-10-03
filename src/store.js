@@ -6,6 +6,13 @@
  *   <workspace>/plan/plan.json      结构化真相（唯一可写源）
  *   <workspace>/plan/PLAN.md        由 plan.json 生成的只读视图（给人看 / 进 git diff）
  *   <workspace>/plan/.versions/     每次变更前的快照（版本留档）
+ *   <workspace>/plan/activity.jsonl 变更流水（append-only，一行一条事件）
+ *
+ * activity.jsonl 是**给人看、给 agent 看**的时间线，不是真相源：
+ * 真相永远是 plan.json，流水只由它推导。这一点很重要——若让流水可独立写入，
+ * 就会出现「流水说完成了、计划里其实没完成」的第二真相源漂移。流水只追加、不改写，
+ * 与 .versions/（整版快照，可回滚）分工不同：快照回答「当时整棵树什么样」，
+ * 流水回答「谁在什么时候动了哪一条」。
  *
  * 为什么是「JSON 为真相 + Markdown 为视图」而不是直接编辑 Markdown：
  * 计划是一棵需要被程序增删改查的树（进度汇总、按 id 定位、版本回滚）。
@@ -59,6 +66,18 @@ export const PLAN_DIR = 'plan'
 export const PLAN_FILE = 'plan.json'
 export const VIEW_FILE = 'PLAN.md'
 export const VERSIONS_DIR = '.versions'
+export const ACTIVITY_FILE = 'activity.jsonl'
+/** 流水最多留多少行。超了从头截——最近的行为才是有用的，旧的 agent 读不动。 */
+export const ACTIVITY_MAX_LINES = 5000
+
+/**
+ * diff 时**不比**的顶层键：它们每次写入都会变，比了就是噪音。
+ * updatedAt / version / lastReason 是落盘时自己写的，activity 是派生字段。
+ */
+const DIFF_SKIP_KEYS = new Set(['updatedAt', 'version', 'lastReason', 'activity'])
+
+/** 一条流水事件的形状（写进 activity.jsonl 的一行）。 */
+export const ACTIVITY_ACTIONS = ['add', 'update', 'remove']
 
 /** 数据结构版本：1 = 老的三层树（goals/krs/tasks + inbox），2 = 递归树（nodes）。 */
 export const SCHEMA = 2
@@ -1922,6 +1941,126 @@ export function renderMarkdown(plan) {
   return lines.join('\n')
 }
 
+// ------------------------------------------------------------- 变更流水
+//
+// 一条流水 = 「某时刻，节点 X 被加了/改了/删了，其中字段 f 从 a 变成 b」。
+//
+// **为什么在 save() 边界做前后 diff，而不是在每个 mutation 里插桩**：
+// 计划有四十多个写函数，还带级联（完成子项会 autoCompleteAncestors 一串父、
+// 完成重复任务会 spawnRecurring）。插桩意味着每个写点都要记得记一笔，漏一个
+// 就是一条静默的空洞——而「流水漏了一条」恰好是它最不该出的错（它存在的意义
+// 就是回答「近期做了什么」）。而 save() 是**唯一的写收敛点**：面板表单与 agent
+// 工具全都经过它。于是一份 diff 同时覆盖两种来源、含级联、且漏不掉。
+//
+// 为什么 diff 要**按节点分组**再产出事件，而不是每个变化字段一条：完成一个待办
+// 会同时改 status / doneAt / reason 三四个字段，按字段出事件会把一件事读成四件。
+
+/** 把一棵计划按 id 摊平成 { id: node }，用于比对增删改。 */
+function flattenById(plan) {
+  const map = new Map()
+  for (const node of planNodes(plan)) {
+    if (node && node.id !== undefined) map.set(String(node.id), node)
+  }
+  return map
+}
+
+/** 深比较两个值是否相等（结构化的、纯 JSON 值）。用于只报真正变了的字段。 */
+function sameValue(a, b) {
+  if (a === b) return true
+  if (a === undefined || b === undefined || a === null || b === null) return false
+  if (typeof a !== 'object' || typeof b !== 'object') return false
+  return JSON.stringify(a) === JSON.stringify(b)
+}
+
+/**
+ * 比对两份计划，产出一组流水事件（不含时间戳——由调用方补）。
+ * 纯函数，可单测。返回 [] 表示没有实质变化（不写流水）。
+ * @param {object} before 变更前
+ * @param {object} after 变更后
+ * @returns {{action:string,nodeId:string,title:string,changes:{k:string,from:*,to:*}[]}[]}
+ */
+export function diffActivity(before, after) {
+  const beforeMap = flattenById(before ?? { nodes: [] })
+  const afterMap = flattenById(after ?? { nodes: [] })
+  const events = []
+
+  // 先报新增，再报删除，最后报修改——读流水的人按时间顺序看，
+  // 但同一时刻内的顺序也要稳定（先加后删再改，语义上更顺）。
+  for (const [id, node] of afterMap) {
+    if (beforeMap.has(id)) continue
+    events.push({
+      action: 'add',
+      nodeId: id,
+      title: typeof node.title === 'string' ? node.title : '',
+      changes: [],
+    })
+  }
+  for (const [id, node] of beforeMap) {
+    if (afterMap.has(id)) continue
+    events.push({
+      action: 'remove',
+      nodeId: id,
+      title: typeof node.title === 'string' ? node.title : '',
+      changes: [],
+    })
+  }
+  for (const [id, afterNode] of afterMap) {
+    const beforeNode = beforeMap.get(id)
+    if (!beforeNode) continue
+    // 逐个顶层键比，跳过 DIFF_SKIP_KEYS 里那些每次都变的元数据。
+    const changes = []
+    for (const key of Object.keys(afterNode)) {
+      if (DIFF_SKIP_KEYS.has(key)) continue
+      if (sameValue(beforeNode[key], afterNode[key])) continue
+      changes.push({ k: key, from: beforeNode[key], to: afterNode[key] })
+    }
+    // 只改了标题本身时，title 已经等于新标题，不需要再单独报一条 title change。
+    if (changes.length === 0) continue
+    events.push({
+      action: 'update',
+      nodeId: id,
+      title: typeof afterNode.title === 'string' ? afterNode.title : '',
+      changes,
+    })
+  }
+  return events
+}
+
+/** 拼一行流水（去掉值为 undefined 的字段，省 token 也更好读）。 */
+function activityLine(event) {
+  const out = { at: event.at, action: event.action, nodeId: event.nodeId }
+  if (event.title !== '') out.title = event.title
+  if (Array.isArray(event.changes) && event.changes.length > 0) out.changes = event.changes
+  if (typeof event.reason === 'string' && event.reason !== '') out.reason = event.reason
+  return JSON.stringify(out)
+}
+
+/**
+ * 读流水文件，返回按时间倒序（最新在前）的事件数组。
+ * 文件不存在返回 []；坏行跳过而不是整体失败（流水是辅助信息，不该拖垮读）。
+ */
+export async function readActivity(file, limit = 200) {
+  if (!existsSync(file)) return []
+  let raw
+  try {
+    raw = await readFile(file, 'utf8')
+  } catch (e) {
+    return []
+  }
+  const lines = raw.split('\n').filter((l) => l.trim() !== '')
+  const out = []
+  // 文件是追加的（最旧在前），倒着扫就是最新在前；limit 可以早停。
+  for (let i = lines.length - 1; i >= 0 && out.length < limit; i--) {
+    try {
+      const ev = JSON.parse(lines[i])
+      if (ev && typeof ev === 'object' && typeof ev.at === 'string') out.push(ev)
+    } catch (e) {
+      // 坏行跳过。
+    }
+  }
+  return out
+}
+
 // -------------------------------------------------------------------- Store
 
 /** 一个计划文件（一个工作区一份）。 */
@@ -1934,6 +2073,58 @@ export class PlanStore {
     this.file = join(this.dir, PLAN_FILE)
     this.view = join(this.dir, VIEW_FILE)
     this.versions = join(this.dir, VERSIONS_DIR)
+    this.activity = join(this.dir, ACTIVITY_FILE)
+  }
+
+  /**
+   * 读磁盘上的上一版计划（只为算 diff）。不存在返回 null。
+   * 读不动也返回 null——拿不到「之前长什么样」时，宁可少记一条，
+   * 也不能让一次写入因为历史文件损坏而失败。
+   */
+  async #readDiskPlan() {
+    if (!existsSync(this.file)) return null
+    try {
+      const raw = await readFile(this.file, 'utf8')
+      const parsed = JSON.parse(raw)
+      if (parsed === null || typeof parsed !== 'object') return null
+      return parsed
+    } catch (e) {
+      return null
+    }
+  }
+
+  /**
+   * 把一组事件追加进流水文件，并按 ACTIVITY_MAX_LINES 截断。
+   * **绝不抛**：流水是辅助信息，写不进去不该让计划保存失败。
+   */
+  async #appendActivity(events, reason) {
+    if (!Array.isArray(events) || events.length === 0) return
+    const at = new Date().toISOString()
+    try {
+      await mkdir(this.dir, { recursive: true })
+      const lines = events.map((ev) => activityLine({ ...ev, at, reason }))
+      // 先读现有行数，超了就整体重写（截掉最旧的）；否则追加。
+      let existing = []
+      if (existsSync(this.activity)) {
+        const raw = await readFile(this.activity, 'utf8')
+        existing = raw.split('\n').filter((l) => l.trim() !== '')
+      }
+      const merged = existing.concat(lines)
+      const kept = merged.length > ACTIVITY_MAX_LINES
+        ? merged.slice(merged.length - ACTIVITY_MAX_LINES)
+        : merged
+      await writeFile(this.activity, kept.join('\n') + (kept.length > 0 ? '\n' : ''), 'utf8')
+    } catch (e) {
+      // 故意吞掉：见函数说明。
+    }
+  }
+
+  /**
+   * 最近的活动（最新在前）。供 plan_show / AI 上下文 / 面板读取。
+   * @param {number} limit 最多返回多少条
+   */
+  async recentActivity(limit = 200) {
+    return await readActivity(this.activity, limit)
   }
 
   /**
@@ -1967,6 +2158,10 @@ export class PlanStore {
    */
   async save(plan, opts = {}) {
     const archive = opts.archive !== false
+    // 变更流水：**在写盘之前**拿磁盘上的上一版做 diff。取磁盘版而不是传入的
+    // plan，是因为调用方传进来的对象可能已经被就地改过了——只有磁盘上那份
+    // 才是「这次写入之前」的真实状态。读不到就 null，本次不记流水（见 #readDiskPlan）。
+    const prevDisk = await this.#readDiskPlan()
     if (archive && existsSync(this.file)) {
       // 归档标签取「被归档版本自己写入时的原因」（plan.lastReason），
       // 而不是本次改动的原因——否则标签描述的是即将发生的事，
@@ -1991,6 +2186,9 @@ export class PlanStore {
     if (typeof opts.reason === 'string' && opts.reason !== '') plan.lastReason = opts.reason
     await writeFile(this.file, JSON.stringify(plan, null, 2) + '\n', 'utf8')
     await writeFile(this.view, renderMarkdown(plan), 'utf8')
+    // 流水排在 plan.json 之后写：计划写成功了才记它。反过来的话会记下一条
+    // 「加了 X」而 plan.json 里根本没有 X，流水就成了第二个真相源。
+    await this.#appendActivity(diffActivity(prevDisk, plan), opts.reason)
     return plan
   }
 
@@ -2050,8 +2248,9 @@ export class PlanStore {
     const raw = await readFile(target, 'utf8')
     const plan = normalizePlan(JSON.parse(raw))
     await mkdir(this.dir, { recursive: true })
-    await writeFile(this.file, JSON.stringify(plan, null, 2) + '\n', 'utf8')
-    await writeFile(this.view, renderMarkdown(plan), 'utf8')
-    return plan
+    // 回滚也走 save()，而不是自己写盘：这样它同样会被记进流水。否则一次回滚
+    // 会让树整个变回去而流水一片空白——「近期做了什么」就此失真，而失真是静默的。
+    // 归档已经在上面打过 before-restore，所以 save 里要关掉自动归档，避免多留一版。
+    return await this.save(plan, { archive: false, reason: 'restore:' + name })
   }
 }

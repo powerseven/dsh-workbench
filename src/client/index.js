@@ -74,6 +74,58 @@ const icon = (name, size) => h('svg', {
   'aria-hidden': 'true',
 }, h('path', { d: ICONS[name] }))
 
+/** 每一级的缩进量（px）。 */
+const INDENT_STEP = 16
+
+/**
+ * 缩进到**行首**（行的左边缘）：深度 × 每级步长，仅此一条规则。
+ * 百分比上限兜住窄屏——缩进不能吃掉标题该有的宽度。
+ *
+ * **不要再叠别的偏移**。待办行原本是 `10 + depth*16`、计划头是 `depth*16`，
+ * 而两者的行内边距与「有没有复选框列」又不同，于是同深度的计划与待办首字
+ * 差 33px，看着就是「左边没对齐」（真机反馈）。凡是要「往里缩一点」的地方，
+ * 一律改成调 depth，不要在行样式上再加常数。
+ */
+const indent = (depth) => 'min(' + (depth * INDENT_STEP) + 'px, 12%)'
+
+/**
+ * 缩进到**标题列**（越过行内边距与复选框/完成框那一列）。
+ * 给「本身没有复选框、却仍要与标题左边缘对齐」的次级行用——计划的
+ * 负责人/周期那一行。它是 `calc()` 而不是写死数字：越过的那一列宽度由
+ * `--wb-sp-2` + `--wb-cb` + `--wb-sp-3` 三个 token 决定，token 一改就跟着动。
+ */
+const indentTitle = (depth) =>
+  'calc(' + indent(depth) + ' + var(--wb-sp-2) + var(--wb-cb) + var(--wb-sp-3))'
+
+/**
+ * 计划的完成框。
+ *
+ * **为什么计划也要有一个框**：有子项的计划不能手动完成（`assertManualDoneAllowed`
+ * 拦），所以它那一格是空的；而待办的复选框把标题往右顶一格。不给计划占住这同一列，
+ * 同深度的计划与待办首字就差一整格，看着就是「左边没对齐」（真机反馈）。
+ * 这同时是白捡的信息量：树的第三层开始，计划的标题早就和它下面的子项分属两行，
+ * 「这个计划做到哪了」原来只能靠右侧那个百分比读。
+ *
+ * **三态看直接子项，不看 `progress`**：有 metric 的计划里 `progress` 量的是量化
+ * 指标，而这个框回答的是「我下面那些事做完了没有」——两件事，用同一个数会把
+ * 「指标走到 40%」画成「四成子项做完了」。`dropped` 不算完成：放弃就是没做完。
+ *
+ * 它是纯展示，所以是 `<span>` 不是 `<input>`：画成真的就等于邀请一个点不动的按钮。
+ * 状态对读屏是冗余的（子项全完成时级联已经把父标成 done、标题带删除线），
+ * 所以 `aria-hidden`，避免同一件事被念两遍。
+ */
+const planBox = (node) => {
+  const kids = childrenOf(node)
+  if (!Array.isArray(kids) || kids.length === 0) return null
+  const done = kids.filter((k) => k !== null && k !== undefined && k.status === 'done').length
+  const all = done === kids.length
+  const cls = 'dsh-wb-cbplan' + (all ? ' done' : (done > 0 ? ' half' : ''))
+  const tip = all ? '子项已全部完成（' + done + '/' + kids.length + '）'
+    : '子项完成 ' + done + '/' + kids.length
+  return h('span', { className: cls, title: tip, 'aria-hidden': 'true' },
+    all ? icon('check', 9) : null)
+}
+
 /**
  * 官方右侧栏的引导页胶囊要的是**组件类型**（`ComponentType<IconProps>`），
  * 不是 icon() 返回的元素，所以这里包一个。
@@ -194,6 +246,12 @@ const CSS = [
   // 命名出来是为了让「不许写随手值」这条能被一眼检查。
   + '--wb-sp-1:2px;--wb-sp-2:4px;--wb-sp-3:6px;--wb-sp-4:8px;--wb-sp-5:12px;'
   + '--wb-r-1:4px;--wb-r-2:6px;--wb-r-3:8px;--wb-pill:999px;'
+  // 复选框列宽（无头 Chrome 实测浏览器默认值就是 13×13）。
+  // 它是一**列**，不是「某个元素碰巧多宽」：同一视觉层级里有的行有复选框、有的没有
+  // （有子项的计划不能手动完成，按钮根本不出现），不占住这一列的话两种行的首字
+  // 就差一格，看着就是「左边没对齐」（真机反馈）。宽度取自这一个变量、复选框与
+  // 占位块共用，所以两侧不可能各自漂移。
+  + '--wb-cb:13px;'
   // 字号别名：面板只用到宿主的 11/12/13 三档，而宿主手机档的正文是 14/16——
   // 于是面板在手机上恒定「小一号」（真机反馈：装了 zen 的手机适配插件后更明显，
   // 因为 zen 只改宿主自己的类名，碰不到第三方插件的类）。抬一档放在别名层做，
@@ -354,7 +412,24 @@ const CSS = [
   '.dsh-wb-plan{margin-bottom:var(--wb-sp-2);}',
   // 标题与紧跟其后的进度条是一个视觉单元，所以下边距收到 0：让进度条贴住标题，
   // 「谁属于谁」靠贴合表达，比靠留白表达更省纵向空间，也更清楚。
-  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);margin:var(--wb-sp-1) 0 0;}',
+  // padding 与 `.dsh-wb-task` 一字不差：两行都从「行内边距 + 复选框列」起算，
+  // 同深度的计划与待办首字才会落在同一条竖线上。原先这里没有 padding，于是计划
+  // 的框比待办的勾靠左 4px，两种行怎么排都对不齐（真机反馈「左边没对齐」）。
+  '.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);margin:var(--wb-sp-1) 0 0;}',
+  // **计划的完成框**：与待办的复选框同尺寸、同列，但灰色且不可点。
+  // 它是纯展示——有子项的计划不能手动完成（`assertManualDoneAllowed` 拦），
+  // 所以这里绝不能画成一个真的 input：画成真的就等于邀请一个点不动的按钮。
+  // 三态取自**直接子项**的完成情况，不走 `progress`：`progress` 在有 metric 的
+  // 计划上量的是量化指标，而这个框问的是「我下面那些事做完了没有」。
+  // 不用灰底打勾是因为要一个「底色」的灰去挖空勾，而面板行底跟着宿主侧栏变，
+  // 挖空色未必对得上；留在描边框里画一个灰勾，三态都只需要框与线。
+  // **不加 `pointer-events:none`**：它连 `title` 提示一起吞掉，而这个框的三态
+  // 单看形状是有歧义的（半满那一格），「子项完成 2/5」得能读到。不可点靠的是
+  // 它本来就是 `<span>`、没有 handler、也不在 tab 序列里，不需要再挡指针。
+  '.dsh-wb-cbplan{flex:none;display:flex;align-items:center;justify-content:center;'
+  + 'box-sizing:border-box;width:var(--wb-cb);height:var(--wb-cb);margin:var(--wb-sp-1) 0 0;'
+  + 'border:1px solid var(--wb-line-2);border-radius:3px;cursor:default;color:var(--wb-fg-2);}',
+  '.dsh-wb-cbplan.half{background:linear-gradient(to right,var(--wb-line) 0 50%,transparent 50%);}',
   // 标题 + 展开箭头一组。标题**不伸张**（flex:0 1 auto），于是箭头紧跟在最后一个字后面；
   // 撑开行宽交给这层 wrap。
   '.dsh-wb-planwrap{flex:1 1 auto;min-width:0;display:flex;align-items:baseline;gap:var(--wb-sp-2);}',
@@ -377,7 +452,10 @@ const CSS = [
   // 与宿主自己的列表同一套行高标尺。
   '.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);padding:var(--wb-sp-1) var(--wb-sp-2);border-radius:var(--wb-r-2);margin:0;transition:background var(--wb-dur) var(--wb-ease);}',
   '.dsh-wb-task:hover{background:var(--wb-hover);}',
-  '.dsh-wb-task input{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);}',
+  // 显式钉住宽高：这一列的宽度必须与 `.dsh-wb-cbplan` 的框**逐像素相等**，
+  // 否则同深度的计划与待办首字还是会差那几像素。不钉的话它跟着浏览器默认值走，
+  // 而默认值的来源（UA 样式表）我们看不见也改不动。
+  '.dsh-wb-task input[type=checkbox]{margin:var(--wb-sp-1) 0 0;flex:none;cursor:pointer;accent-color:var(--wb-accent);box-sizing:border-box;width:var(--wb-cb);height:var(--wb-cb);}',
   '.dsh-wb-tasktitle{flex:1;word-break:break-word;cursor:pointer;}',
   // 标题之后的元信息 + 动作按钮。宽屏上它是一段不收缩的尾部（与以前一样），
   // 窄屏上整体折成第二行（见下面的媒体查询）。
@@ -508,6 +586,25 @@ const CSS = [
   '.dsh-wb-aipic{display:inline-flex;align-items:center;gap:var(--wb-sp-1);max-width:14em;overflow:hidden;}',
   '.dsh-wb-aipic > button{border:none;background:transparent;color:inherit;cursor:pointer;font:inherit;padding:0 var(--wb-sp-1);}',
   '.dsh-wb-aitask{padding:var(--wb-sp-3) 0;border-top:1px dashed var(--wb-line-2);}',
+  // 勾选行：卡片左边留出一列**和树上完成框同宽**的位置（--wb-cb）。
+  // 「一张建议 = 一个可勾的东西」要有稳定的落点，否则多张卡叠起来勾会飘。
+  '.dsh-wb-airow{display:flex;align-items:flex-start;gap:var(--wb-sp-3);}',
+  '.dsh-wb-airow > .dsh-wb-aitask{flex:1;min-width:0;}',
+  '.dsh-wb-aicheck{flex:none;position:relative;width:var(--wb-cb);height:var(--wb-cb);margin-top:calc(var(--wb-sp-3) + 2px);',
+  'padding:0;border:1px solid var(--wb-line-2);border-radius:3px;background:transparent;',
+  'display:flex;align-items:center;justify-content:center;cursor:pointer;color:var(--wb-fg-2);}',
+  // **看得见的框还是 13px，点得着的地方有 31px**。两者分开：框要和树上那个
+  // 完成框一模一样（同一种语言、同一个尺寸），而 13px 在触摸上是点不中的
+  // （手指接触面约 40px）。所以用一层透明的 ::after 把点击区撑开，
+  // **不动框本身的尺寸** —— 把框画大就等于又造了一个控件。
+  '.dsh-wb-aicheck::after{content:"";position:absolute;top:-9px;right:-9px;bottom:-9px;left:-9px;}',
+  '.dsh-wb-aicheck.on{border-color:var(--wb-btn-fill);background:var(--wb-btn-fill);color:var(--wb-btn-fg);}',
+  '.dsh-wb-airow.on > .dsh-wb-aitask{border-top-color:var(--wb-accent);}',
+  // 批量条：与上面那条「建议：…」摘要同层，靠横向留白和卡片分隔线区分，不加底色。
+  '.dsh-wb-aibatch{display:flex;gap:var(--wb-sp-2);align-items:center;flex-wrap:wrap;',
+  'padding:var(--wb-sp-2) 0;border-top:1px dashed var(--wb-line-2);}',
+  '.dsh-wb-aibatch .dsh-wb-aibtn{margin-left:auto;min-height:36px;font:var(--wb-f2s);border-radius:var(--wb-r-2);}',
+  '.dsh-wb-aibatch .dsh-wb-aibtn[disabled]{opacity:.5;cursor:default;}',
   // AI 点名了一个对不上的标题（清单/改动/合并都会出现）：**压暗但不隐藏**。
   // 藏起来用户只会觉得「它没反应」，压暗 + 明写「没对上」才看得出是模型抄错了名字。
   '.dsh-wb-aitask.miss{opacity:.55;}',
@@ -811,11 +908,24 @@ function saveView(v) {
   try { window.localStorage.setItem(VIEW_KEY, v) } catch (e) { /* 忽略 */ }
 }
 
+// 面板样式表在 head 里的稳定标识。带 id 是为了**重复注入幂等**：client 重载时
+// apply 可能跑第二次，届时复用同一个 <style>，而不是堆一份同样的 CSS。
+const STYLE_ID = 'dsh-workbench-style'
+
+// 故意**不返回「把元素删掉」的清理函数**（见 docs/PITFALLS.md#38）：
+// 这份 CSS 的每条选择器都锚在 .dsh-wb-* 上，面板不在时一条也匹配不到，
+// 留着对全站零影响；而一旦跟着 effect 卸载被摘掉、client 重载又没重新
+// apply，样式就永久丢失——表现是「面板有内容、但整份 CSS 不生效」，
+// 而 host 自己的样式照常，排查时极易误判成 CSS 写错了。
 function injectStyles(css) {
-  const el = document.createElement('style')
-  el.textContent = css
-  document.head.appendChild(el)
-  return () => { el.remove() }
+  let el = document.getElementById(STYLE_ID)
+  if (el === null) {
+    el = document.createElement('style')
+    el.id = STYLE_ID
+    document.head.appendChild(el)
+  }
+  if (el.textContent !== css) el.textContent = css
+  return () => {}
 }
 
 /**
@@ -1188,6 +1298,11 @@ function apply(ctx) {
     const [aiMerges, setAiMerges] = React.useState([])
     // 删除建议：AI 提议删掉哪几条。**只是提议**——用户点确认才真的删。
     const [aiDeletes, setAiDeletes] = React.useState([])
+    // 勾选中的建议（存 key，不存整个对象——卡片会在这一轮里被改写）。
+    // 用户原话：「这里面的整条任务，首先要给一个整体可以选择的框。如果我们都确认了，
+    // 就按批量处理；也可以单独点。」所以「批量」不是一个额外的按钮族，
+    // 而是**每张卡都有的一个勾**，勾完共用一颗「按选中的 N 条批量处理」。
+    const [aiPicked, setAiPicked] = React.useState([])
     // 被忽略掉的「标题重复」组（客户端查出来的，本地记住即可——它每次都由计划派生）。
     const [dupHidden, setDupHidden] = React.useState([])
     const [aiTurns, setAiTurns] = React.useState([])  // [{ role, text }] 本次会话的问答
@@ -1560,15 +1675,120 @@ function apply(ctx) {
      */
     const applyDelete = async (item) => {
       const node = nodeById(item.id)
-      if (node === null) { flash('这条不在了（刚被改过？），刷新再看看'); return }
+      if (node === null) { flash('这条不在了（刚被改过？），刷新再看看'); return false }
       setAiDeletes((prev) => prev.filter((d) => d.key !== item.key))
       await write('node-remove', { node: node.id })
       flash('已删除「' + String(node.title) + '」')
+      return true
+    }
+
+    /**
+     * 这一轮的建议队列。**一个地方**产出，四处复用：卡片列表、批量执行、
+     * 「全选」的总量、以及手机向导——它们看的必须是同一份、同一顺序。
+     *
+     * 顺序有讲究：新建 → 改动 → 合并 → **删除**。批量执行按这个顺序逐条 await，
+     * 删除永远排在最后——它是唯一不可逆的一类，排在前面的话一旦前面某条失败，
+     * 用户还没来得及看完卡就先被删掉了几条。
+     */
+    const aiAdviceQueue = () => {
+      const queue = []
+      for (const t of aiTasks) queue.push({ kind: 'task', item: t })
+      for (const e of aiEdits) queue.push({ kind: 'edit', item: e })
+      for (const m of aiMerges) queue.push({ kind: 'merge', item: m })
+      for (const d of aiDeletes) queue.push({ kind: 'delete', item: d })
+      return queue
+    }
+
+    const aiPickedOf = (queue) => {
+      const keys = new Set(aiPicked)
+      return queue.filter((q) => keys.has(q.item.key))
+    }
+
+    const aiPickToggle = (key) => {
+      setAiPicked((prev) => (prev.indexOf(key) >= 0 ? prev.filter((k) => k !== key) : prev.concat([key])))
+    }
+
+    /**
+     * **批量处理**：把勾上的那几条按 `aiAdviceQueue` 的顺序逐条走**各自的写入口**。
+     *
+     * 「各自」是关键：这里**不另写一条批量写路径**，而是调 `aiAddNow` /
+     * `aiEditNow` / `applyMerge` / `applyDelete` —— 与单点「就这么办」完全同源。
+     * 另写一条的后果很具体：单点路径修好了、批量路径没修，而用户看到的现象是
+     * 「批量一按就少了一件事」，排查时两边都要看。
+     *
+     * **必须逐条 await**：合并的 children 模式要先建计划拿回 id 才能挂下一条，
+     * 并发执行会把它们全塞进同一个（或各自的）计划里。
+     *
+     * 收尾**关闭浮层**：批量就是「这些我都看过了、都同意了」的意思，
+     * 这时把窗口留着只是让结果被新内容顶掉。
+     */
+    const aiApplyPicked = async () => {
+      const picked = aiPickedOf(aiAdviceQueue())
+      if (picked.length === 0) { flash('先勾选要处理的建议'); return }
+      let done = 0
+      for (const q of picked) {
+        const ok = q.kind === 'task' ? await aiAddNow(q.item)
+          : q.kind === 'edit' ? await aiEditNow(q.item)
+            : q.kind === 'merge' ? await applyMerge(q.item)
+              : await applyDelete(q.item)
+        if (ok === true) done++
+      }
+      setAiPicked([])
+      setFabOpen(false)
+      flash(done === 0 ? '选中的 ' + picked.length + ' 条都没处理成功' : '已按选中处理 ' + done + ' 条')
+    }
+
+    /**
+     * 一张卡 + 它左边那颗勾。**勾是包在卡外面的**，不改四张卡各自的内部结构——
+     * 卡片本体已经够复杂（标题行 / 旧→新 / 几个动作区），为了一个选择位去改
+     * 四处渲染，迟早有一处忘了给，表现为「有的卡能勾有的不能」。
+     *
+     * 勾画成一个**和树上完成框同尺寸的空框**（`--wb-cb`），不是另配一个控件：
+     * 这一屏里两处「小方框」说的是同一种语言，尺寸就该同源。
+     */
+    const aiPickedRow = (item, card) => {
+      const on = aiPicked.indexOf(item.key) >= 0
+      return h('div', { className: 'dsh-wb-airow' + (on ? ' on' : ''), key: 'row-' + item.key },
+        h('button', {
+          className: 'dsh-wb-aicheck' + (on ? ' on' : ''),
+          title: on ? '取消勾选（它不会处理）' : '勾上它，和其它勾中的一起批量处理',
+          'aria-pressed': on ? 'true' : 'false',
+          'aria-label': '选中「' + String(item.target === undefined ? item.title : item.target) + '」',
+          onClick: () => aiPickToggle(item.key),
+        }, on ? icon('check', 9) : null),
+        card)
+    }
+
+    /**
+     * 整组的选择条：**一个全选 + 一颗批量处理**，放在卡片列表的正上方。
+     *
+     * 只在**两条以上**时出：一条建议时「全选」是没有信息量的（选不选都一样），
+     * 而按钮区多一行就多占一屏的高度，面板是又宽又矮的地方（见密度那节）。
+     *
+     * 「全选」是**切换**而不是「选中」：全中时它的文案变成「取消全选」，
+     * 否则用户勾满之后发现没法一键退回去，只能一条条点掉。
+     */
+    const aiBatchBar = (queue) => {
+      if (queue.length < 2) return null
+      const n = aiPickedOf(queue).length
+      const all = n === queue.length
+      return h('div', { className: 'dsh-wb-aibatch', key: 'batch' },
+        h('button', {
+          className: 'dsh-wb-chip' + (all ? ' sug' : ''),
+          title: all ? '取消全选（哪条都不处理）' : '勾上这一轮全部 ' + queue.length + ' 条',
+          onClick: () => setAiPicked(all ? [] : queue.map((q) => q.item.key)),
+        }, all ? '取消全选' : '全选（' + queue.length + ' 条）'),
+        h('button', {
+          className: 'dsh-wb-aibtn primary',
+          disabled: n === 0,
+          title: n === 0 ? '先勾选要处理的建议' : '按各自的写入口逐条处理选中的 ' + n + ' 条（删除排在最后）',
+          onClick: aiApplyPicked,
+        }, n === 0 ? '按勾选的批量处理' : '按勾选的 ' + n + ' 条批量处理'))
     }
 
     const applyMerge = async (merge) => {
       const keep = nodeById(merge.keepId)
-      if (keep === null) { flash('保留的那条不在了（刚被改过？），刷新再看看'); return }
+      if (keep === null) { flash('保留的那条不在了（刚被改过？），刷新再看看'); return false }
       setAiMerges((prev) => prev.filter((m) => m.key !== merge.key))
       const keepTitle = merge.title !== undefined && merge.title !== '' ? merge.title : String(keep.title)
       const patch = merge.patch === null || merge.patch === undefined ? {} : merge.patch
@@ -1589,13 +1809,15 @@ function apply(ctx) {
           if (r === null) stuck.push(String(node.title))
           else moved.push(String(node.title))
         }
-        setFabOpen(false)
+        // **不关浮层**。用户原话：「点其中一个建议时，这个窗口就退出了，
+        // 不能再点第二个建议。」——采纳一条 ≠ 这一轮结束，这轮还有几条没点呢。
+        // 真正该关的是「这轮真的处理完了」，那是用户的动作（✕），不是我们的。
         flash(moved.length === 0
           ? '没有归组成功的条目（' + (stuck.join('、') || '都被跳过了') + '）'
           : '已归为一个计划：「' + keepTitle + '」下面 ' + moved.length + ' 条：'
             + moved.map((t) => '「' + t + '」').join('、')
             + (stuck.length === 0 ? '' : '（' + stuck.join('、') + ' 没能挪过去）'))
-        return
+        return moved.length > 0
       }
       const done = []
       for (const f of merge.folds) {
@@ -1611,10 +1833,11 @@ function apply(ctx) {
         await write('node-remove', { node: node.id })
         done.push(String(node.title))
       }
-      setFabOpen(false)
+      // 同上：不关浮层（见 children 分支的注释）。
       flash(done.length === 0
         ? '没有可合并的条目'
         : '已合并：' + done.map((t) => '「' + t + '」').join('、') + ' → 「' + keepTitle + '」')
+      return done.length > 0
     }
 
     /**
@@ -1660,7 +1883,7 @@ function apply(ctx) {
      */
     const aiEditNow = async (edit) => {
       const node = nodeById(edit.id)
-      if (node === null) { flash('这条任务不在了（刚被改过？），刷新再看看'); return }
+      if (node === null) { flash('这条任务不在了（刚被改过？），刷新再看看'); return false }
       const p = edit.patch === null || edit.patch === undefined ? {} : edit.patch
       const args = { node: node.id }
       if (typeof p.title === 'string') args.title = p.title
@@ -1676,14 +1899,15 @@ function apply(ctx) {
         if (name === '收件箱' || name === '顶层' || name === '无') args.parent = ''
         else {
           const hit = planByName(plan, name)
-          if (hit === null) { flash('没找到叫「' + name + '」的计划——点「按这个改」进表单自己选'); return }
+          if (hit === null) { flash('没找到叫「' + name + '」的计划——点「按这个改」进表单自己选'); return false }
           args.parent = String(hit.id)
         }
       }
       const res = await write('node-set', args)
-      if (res === null || res === undefined) return
+      if (res === null || res === undefined) return false
       setAiEdits((prev) => prev.filter((e) => e.key !== edit.key))
       flash('已改「' + String(node.title) + '」')
+      return true
     }
 
     /** 一条改动的摘要（用在按钮上）：改了哪几项，一眼看得出。 */
@@ -1754,6 +1978,11 @@ function apply(ctx) {
           }, icon('close')),
         ),
         edit.why === '' || edit.why === undefined ? null : h('div', { className: 'dsh-wb-advice', key: 'w' }, '※ ' + edit.why),
+        // 「按你话里的『单独出来』把它挪到顶层」——**改判的依据必须摆在卡上**。
+        // 没有这一行，用户看到的就是「AI 突然决定把它挪走」，而那句话是他自己说的。
+        edit.detachNote === '' || edit.detachNote === undefined
+          ? null
+          : h('div', { className: 'dsh-wb-advice', key: 'dn' }, '※ ' + edit.detachNote),
         h('div', { className: 'dsh-wb-formlist', key: 'd' },
           rows.map((r, i) => h('div', { className: 'dsh-wb-formrow', key: 'r' + i },
             h('span', { className: 'dsh-wb-fmeta' }, r[0]),
@@ -2279,11 +2508,8 @@ function apply(ctx) {
       //
       // 把四类建议汇成**一条队列**，两类形态读的是同一份队列——所以「第几条」
       // 在两边指的都是同一件事，不会出现手机说 2/5、桌面另算一套。
-      const queue = []
-      for (const t of aiTasks) queue.push({ kind: 'task', item: t })
-      for (const e of aiEdits) queue.push({ kind: 'edit', item: e })
-      for (const m of aiMerges) queue.push({ kind: 'merge', item: m })
-      for (const d of aiDeletes) queue.push({ kind: 'delete', item: d })
+      // 队列本身由 `aiAdviceQueue()` 产出（批量执行、全选、卡片列表读的是同一份）。
+      const queue = aiAdviceQueue()
 
       if (isMobile === true && queue.length === 1) {
         // **单条不进向导**（移动端调研的核心结论之一）。
@@ -2305,13 +2531,17 @@ function apply(ctx) {
         // 才真的在传达信息，逐条才有意义。
         rows.push(aiWizard(queue))
       } else {
-        for (const task of aiTasks) rows.push(aiTaskCard(task))
+        // 桌面档：**一列卡片 + 左侧一颗勾 + 顶上那条批量**。
+        // 手机档（向导）不给勾：一次只有一张卡，勾它再点批量等于多点两次，
+        // 而「下一条」本来就是在推进。
+        rows.push(aiBatchBar(queue))
+        for (const task of aiTasks) rows.push(aiPickedRow(task, aiTaskCard(task)))
         // 「改已有的」与「合并」的卡片。它们和草稿卡是同一层东西（都是**建议**），
         // 所以排在一起；差别只在采纳之后走哪条路。
-        for (const edit of aiEdits) rows.push(aiEditCard(edit))
-        for (const merge of aiMerges) rows.push(aiMergeCard(merge))
+        for (const edit of aiEdits) rows.push(aiPickedRow(edit, aiEditCard(edit)))
+        for (const merge of aiMerges) rows.push(aiPickedRow(merge, aiMergeCard(merge)))
         // 删除建议：与合并卡同层（都是「动已有数据」的提议），也必须逐条确认。
-        for (const item of aiDeletes) rows.push(aiDeleteCard(item))
+        for (const item of aiDeletes) rows.push(aiPickedRow(item, aiDeleteCard(item)))
       }
 
       return h('div', { className: 'dsh-wb-aiwrap', key: 'ai' }, rows)
@@ -2528,26 +2758,33 @@ function apply(ctx) {
      * 是个低频动作，它不配占这种地方。手机与桌面同一个入口，不必各记一套。
      */
     /**
-     * 打开浮层 = **开一个全新的**。
+     * 打开浮层 = **输入框是全新的**；这一轮的建议**不是**。
      *
      * 用户原话：「下次再点开的时候应该自动清空之前那个任务，不然话又堆在一起；
-     * 每次点开那个应该是一个全新的。」——它是件**输入工具**，不是一本对话记录：
-     * 上次没发出去的那句话（用输入法接着说话会**接在后面**）、上一轮的问答、
-     * 上一轮拆出来的草稿卡，全部清掉，打开的永远是干净的一屏。
+     * 每次点开那个应该是一个全新的。」——它说的是**输入**：上次没发出去的那句话
+     * 躺在输入框里，接着用输入法说话会**接在后面**。所以输入框、贴图照旧每次清空。
      *
-     * 代价说清楚：**没处理的 AI 草稿也会一起清**。那是建议、不是数据（真正的数据
-     * 只有点过保存才落库），要一次处理多条就用草稿区那颗「全部按首选建议加入」。
+     * 但**没处理的建议要留着**。用户原话：「点其中一个建议时，这个窗口就退出了，
+     * 不能再点第二个建议。」——浮层会因为「把草稿交给表单」而关掉（表单是整块替换
+     * 面板，留着只会自己弹回来），可这一轮的建议不是一次性输入，扔掉等于强迫他
+     * 把刚才那句话**重新说一遍**才能点第二条。
+     *
+     * 判据是**这一轮还有没有东西**：没东西了（都点过了 / 都丢掉了），打开自然是
+     * 干净的一屏，不需要任何标记位去记「这轮还在不在」——那正是会与真相漂移的东西。
      */
     const openFab = () => {
       setPlainDraft('')
       setAiText('')
       setAiPics([])
-      setAiTurns([])
-      setAiTasks([])
-      setAiEdits([])
-      setAiMerges([])
-      setAiDeletes([])
-      setAiList(null)
+      if (aiAdviceQueue().length === 0) {
+        setAiTurns([])
+        setAiTasks([])
+        setAiEdits([])
+        setAiMerges([])
+        setAiDeletes([])
+        setAiList(null)
+        setAiPicked([])
+      }
       setFabOpen(true)
     }
 
@@ -3353,7 +3590,7 @@ function apply(ctx) {
       const rows = [h('div', Object.assign({
         className: 'dsh-wb-task' + dragClass(node.id),
         key: 'row',
-        style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' },
+        style: { marginLeft: indent(depth) },
         title: statusLabel(node.status) + (node.note ? '\n' + node.note : '')
           + '\n（单击切换完成 · 双击改名 · 拖动可排序或归位）',
       }, dragOnto(node, false)),
@@ -3405,7 +3642,7 @@ function apply(ctx) {
       rows.push(filesBlock(node))
       // 加子项：挂上第一个子项，这条待办就自动变成计划（结构决定形态）。
       if (state.adding === node.id) {
-        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' } },
+        rows.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: indent(depth + 1) } },
           h('input', {
             type: 'text',
             autoFocus: true,
@@ -3463,12 +3700,14 @@ function apply(ctx) {
       const head = h('div', Object.assign({
         className: 'dsh-wb-planhead' + dragClass(node.id),
         key: 'head',
-        style: { marginLeft: 'min(' + (depth * 16) + 'px, 12%)' },
+        style: { marginLeft: indent(depth) },
         // id 不再显示出来：它是等宽不定的（`n3` 与 `n12` 宽度不同），摆在标题前
         // 会让**每条计划的标题起始位置都不一样**，看着就是「上下没对齐」。
         // 保留成 data-id，定位/排查时仍然拿得到。
         'data-id': node.id,
       }, dragOnto(node, true)),
+        // 计划的完成框：占住与待办复选框同一列，于是同深度的计划与待办首字对齐。
+        planBox(node),
         // 展开箭头**跟在标题后面**，不放前面。放前面时标题被顶右，而折到第二行的
         // 元信息是顶格的——两行左边缘对不齐（真机反馈「两行看起来不美观」）。
         // 挪到后面之后，标题与元信息都从最左边开始，两行是一条竖线。
@@ -3504,7 +3743,7 @@ function apply(ctx) {
       const body = [head]
       if (open) {
         if (meta.length > 0) {
-          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: 'min(' + (depth * 16) + 'px, 12%)' } },
+          body.push(h('div', { className: 'dsh-wb-planmeta', key: 'meta', style: { marginLeft: indentTitle(depth) } },
             meta.map((x, i) => h('span', { key: i }, x))))
         }
         // 不再画计划进度条。它横贯整行，紧贴在计划标题下面、子计划上面，读起来
@@ -3519,7 +3758,7 @@ function apply(ctx) {
           if (title === '') return
           addNode({ title, parent: node.id }, () => { setNodeDraft(''); flash('已加待办') })
         }
-        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: 'min(' + (10 + depth * 16) + 'px, 14%)' } },
+        body.push(h('div', { className: 'dsh-wb-add', key: 'add', style: { marginLeft: indent(depth + 1) } },
           h('input', {
             type: 'text',
             autoFocus: true,

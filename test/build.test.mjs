@@ -228,6 +228,72 @@ test('确认按钮用宿主主按钮那一对，且底色不能与它所在行�
   assert.ok(flat.includes('min-height:44px'), '确认按钮的点击区不得小于 44px')
 })
 
+test('样式表带稳定 id、且不随 effect 卸载被删掉（坑 #38）', () => {
+  // 这条守的是一个真机上反复出现的现象：面板有内容、但整份 CSS 不生效，
+  // 而 host 自己的样式照常（截图里顶部 tab 栏正常、面板内全是浏览器默认渲染）。
+  // 根因不在 CSS 内容，而在 injectStyles 把 <style> 的存在绑在 ctx.effect 的
+  // 清理函数上：client 重载跑完清理却没重新 apply，样式就永久消失。
+  assert.ok(client.includes("STYLE_ID = 'dsh-workbench-style'"), '样式表要有稳定 id，用于重复注入幂等')
+  assert.ok(
+    client.includes('document.getElementById(STYLE_ID)'),
+    '注入前要先按 id 找已有元素——apply 跑第二次时必须复用，而不是堆一份',
+  )
+  // 清理函数不得再删元素。留一句空实现是刻意的，注释里写了理由。
+  assert.doesNotMatch(
+    client.slice(client.indexOf('function injectStyles')),
+    /return \(\) => \{ el\.remove\(\) \}/,
+    'injectStyles 不得返回删除 <style> 的清理函数（会让样式随 effect 卸载一起消失）',
+  )
+})
+
+test('复选框列宽钉在 --wb-cb 上，计划框与待办的勾选框据此同宽同列', () => {
+  // 真机反馈「同等级的任务及计划首个字要对齐」。根因是两件事叠加：
+  //  ① 计划（有子项、不能手动完成）**不渲染**复选框，于是那一格是空的，
+  //     而待办的复选框把标题往右顶了一格；
+  //  ② 待办行的缩进是 `10 + depth*16`，计划头是 `depth*16` 且**没有左内边距**。
+  // 两者一叠加，同深度的计划与待办首字差 33px。
+  // 修法是让「复选框列」成为一个有名字的量（--wb-cb），框与勾选框都从它取宽。
+  assert.match(client, /--wb-cb:\s*13px/, '复选框列宽要有 token（实测浏览器默认就是 13px）')
+  assert.ok(
+    client.includes('width:var(--wb-cb);height:var(--wb-cb)'),
+    '计划的完成框要从 --wb-cb 取宽高，不能写死',
+  )
+  assert.ok(
+    /\.dsh-wb-task input\[type=checkbox\]\{[^}]*width:var\(--wb-cb\)/.test(client),
+    '待办的勾选框要显式钉住宽高（不钉就跟着 UA 默认值走，而那个值我们看不见也改不动）',
+  )
+  assert.ok(client.includes('.dsh-wb-cbplan'), '要有计划的完成框样式')
+  assert.ok(client.includes('half'), '完成框要有半满态')
+  // 不可点靠结构（span + 无 handler），不靠 pointer-events——那会连 title 提示一起吞掉
+  assert.doesNotMatch(
+    client.slice(client.indexOf('.dsh-wb-cbplan{')),
+    /pointer-events:none/,
+    '完成框不得用 pointer-events:none 挡点击（会连 tooltip 一起吞掉，「子项完成 2/5」就读不到了）',
+  )
+  // 两行必须从同一条基线起算：行内边距一致，计划头才有资格与待办并排对齐
+  const pad = 'padding:var(--wb-sp-1) var(--wb-sp-2)'
+  assert.ok(client.includes('.dsh-wb-task{display:flex;align-items:flex-start;gap:var(--wb-sp-3);' + pad),
+    '待办行的内边距基线')
+  assert.ok(client.includes('.dsh-wb-planhead{display:flex;align-items:baseline;gap:var(--wb-sp-3);' + pad),
+    '计划头必须与待办行用同一份内边距，否则框列起点就差 4px')
+})
+
+test('缩进只有一条规则：深度 × 16，行样式里不许再叠常数（坑 #40）', () => {
+  // 「10 + depth*16」那种硬凑偏移改一次就得改五处，漏一处就对不齐，而且不报错。
+  assert.ok(client.includes('const INDENT_STEP = 16'), '每级缩进量要有常量')
+  assert.ok(client.includes('const indent = (depth) =>'), '行缩进要有统一的函数')
+  assert.doesNotMatch(
+    client,
+    /10 \+ depth \* 16/,
+    '不许再出现 `10 + depth*16` 这种硬凑偏移——缩进只由 depth 决定',
+  )
+  assert.doesNotMatch(
+    client,
+    /marginLeft: 'min\('/,
+    '行样式不许内联缩进算式，一律走 indent()/indentTitle()（两套百分比上限也是从这里来的）',
+  )
+})
+
 test('client bundle 不引入构建期依赖（只用 require 取 React）', () => {
   const requires = [...client.matchAll(/require\((['"])([^'"]+)\1\)/g)].map((m) => m[2])
   assert.deepEqual([...new Set(requires)], ['react'], '客户端只应 require react')
@@ -291,4 +357,53 @@ test('package.json 声明的入口文件真实存在', () => {
     assert.ok(existsSync(join(root, p)), 'exports[' + k + '] 指向不存在的文件：' + p)
   }
   assert.ok(existsSync(join(root, pkg.dsh.bundle.patch)), 'bundle patch 文件不存在')
+})
+
+test('勾选框与树上的完成框同源；批量处理只调既有写入口，不新写一条批量路径', () => {
+  // 用户原话：「这里面的整条任务，首先要给一个整体可以选择的框。如果我们都确认了，
+  // 就按批量处理；也可以单独点，但单独点的时候，窗口不能退出。」
+  //
+  // 这一屏里现在有两处「小方框」：树行的完成框（--wb-cb）与建议卡的勾选。
+  // 它们说的是同一种语言，尺寸就必须同源 —— 各量各的会出现「勾比完成框大一号」。
+  assert.match(client, /\.dsh-wb-aicheck\{[^}]*width:var\(--wb-cb\)/,
+    '建议卡的勾要从 --wb-cb 取宽高，不能自己配一个')
+  assert.match(client, /\.dsh-wb-aicheck\{[^}]*height:var\(--wb-cb\)/)
+  // 勾是**包在卡外面**的：一处包法服务四张卡。给四张卡各加一次勾，早晚有一处忘了。
+  assert.match(client, /const aiPickedRow = \(item, card\)/)
+  assert.ok(client.includes("aiPickedRow(task, aiTaskCard(task))")
+    && client.includes("aiPickedRow(edit, aiEditCard(edit))")
+    && client.includes("aiPickedRow(merge, aiMergeCard(merge))")
+    && client.includes("aiPickedRow(item, aiDeleteCard(item))"),
+  '四类卡片都要走同一个包勾的函数')
+
+  // **批量不许另写一条写路径**：它逐条调的就是单点「就这么办」那四个函数。
+  // 另写一条的后果很具体 —— 单点修好了、批量没修，用户看到的现象是
+  // 「批量一按就少了一件事」，排查时两边都要看。
+  const batch = client.slice(client.indexOf('const aiApplyPicked = async'), client.indexOf('const aiPickedRow'))
+  for (const fn of ['aiAddNow(', 'aiEditNow(', 'applyMerge(', 'applyDelete(']) {
+    assert.ok(batch.includes(fn), '批量处理必须复用 ' + fn + '（同一批写入口）')
+  }
+  assert.ok(batch.includes('await '), '必须逐条 await：合并要先建计划拿 id 才能挂下一条')
+  // 队列顺序即批量顺序，删除（唯一不可逆的一类）必须排在最后。
+  const q = client.slice(client.indexOf('const aiAdviceQueue = ()'), client.indexOf('const aiPickedOf'))
+  assert.ok(
+    q.indexOf("kind: 'task'") < q.indexOf("kind: 'edit'")
+    && q.indexOf("kind: 'edit'") < q.indexOf("kind: 'merge'")
+    && q.indexOf("kind: 'merge'") < q.indexOf("kind: 'delete'"),
+    '队列顺序：新建 → 改动 → 合并 → 删除（不可逆的排在最后）',
+  )
+
+  // 「单独点一条不许关窗口」：采纳路径里不许再出现 setFabOpen(false)。
+  // 只允许**交给表单**（面板被整块替换，留着只会自己弹回来）与**批量收尾**关。
+  const merge = client.slice(client.indexOf('const applyMerge = async'), client.indexOf('const applyDelete = async'))
+  assert.doesNotMatch(merge, /setFabOpen\(false\)/,
+    '合并卡两个分支原先都调了 setFabOpen(false) —— 点一条就没法点第二条了')
+
+  // 「挪到顶层」要有值可写：白名单当年用 `trim() !== ''` 把空串丢掉，
+  // 于是这个功能**根本没有值可写**（用户看到的就是「点了只能改名」）。
+  // 它在 ai.js 里，而这一层只常驻 client 与 host 两个产物，所以现读。
+  const ai = readFileSync(join(lib, 'ai.js'), 'utf8')
+  assert.match(ai, /export function normPlanTarget/)
+  assert.match(ai, /export function editWantsDetach/)
+  assert.match(ai, /单独出来/)
 })

@@ -101,6 +101,7 @@ import {
   collectText,
   historyText,
   mergeWantsChildren,
+  editWantsDetach,
   parseAiReply,
   planOutline,
 } from './ai.js'
@@ -550,12 +551,27 @@ export function apply(ctx) {
       + '不挂在任何计划下的顶层待办就是收件箱。每个节点都带自动算好的完成度与管控提示。'
       + '返回里另外有三份清单值得先看：delegated（我委派出去的，含逾期未回执）、'
       + 'behind（进度没跟上周期的，按差距排序）、unverified（已完成但没有证据、等你核验的）。'
+      + '还有 recent（最近的变更流水：什么时候加了/改了/删了哪一条，按时间倒序）——'
+      + '想知道「我近期做了什么」先看它，不用去翻 .versions/ 的快照。'
       + '计划文件位于 <工作区>/plan/plan.json。',
-    {},
-    async (_args, exec) => {
+    {
+      recentLimit: { type: 'number', description: '可选：recent 返回多少条变更记录，默认 30' },
+    },
+    async (args, exec) => {
       const store = storeFor(cwdOf(exec))
       const plan = await store.load()
-      return { ok: true, dir: store.dir, plan: withProgress(plan, store.root) }
+      // 流水随 plan_show 一起下发，而不是单开一个工具：多一个工具，agent 每次
+      // 决策就多一个候选，而「近期做了什么」本来就是看计划的一部分。同一份数据
+      // 也喂给 /ai-parse，所以 agent 在面板上问和在工具里看读到的是同一份流水。
+      const limit = Number.isInteger(args?.recentLimit) && args.recentLimit > 0
+        ? Math.min(args.recentLimit, 200)
+        : 30
+      return {
+        ok: true,
+        dir: store.dir,
+        plan: withProgress(plan, store.root),
+        recent: await store.recentActivity(limit),
+      }
     },
   ))
 
@@ -1088,7 +1104,16 @@ export function apply(ctx) {
       const cwd = resolveCwd(body.sessionId)
       const store = storeFor(cwd)
       const plan = await store.load()
-      json(res, { ok: true, cwd, dir: store.dir, ai: aiStatus(), plan: withProgress(plan, store.root) })
+      // recent 随 plan 一起下发：面板要看「最近改了什么」不必再开一条路由
+      // （加能力先问「能不能不加工具、不加路由」——这里两条都没加）。
+      json(res, {
+        ok: true,
+        cwd,
+        dir: store.dir,
+        ai: aiStatus(),
+        plan: withProgress(plan, store.root),
+        recent: await store.recentActivity(50),
+      })
     })
 
     /**
@@ -1188,6 +1213,10 @@ export function apply(ctx) {
 
       let raw = ''
       let truncated = false
+      // 变更流水喂进上下文：助手回答「我最近在忙什么」「上周做了什么」时，
+      // 除了 ⑤ 最近完成，还能看到**加了又删的、改了截止的**那些。它与
+      // plan_show 的 recent 是同一份数据，两处读到的东西一致。
+      const recent = await store.recentActivity(15)
       try {
         const out = await collectText(serverCtx.get('llm'), {
           provider: status.provider,
@@ -1195,7 +1224,7 @@ export function apply(ctx) {
           messages,
           system: aiSystemPrompt(planOutline(plan), today, {
             persona,
-            context: aiContext(plan, today),
+            context: aiContext(plan, today, { recent }),
             history,
           }),
           // 额度要放得下提示词自己要的东西（最多 MAX_TASKS 条带 advice/options 的
@@ -1235,6 +1264,19 @@ export function apply(ctx) {
           m.modeNote = m.modeGiven === true
             ? '按你话里的「作为子计划」，这次按「保留为子任务」执行（不删除）'
             : '模型没写明合并方式，按你话里的「作为子计划」按「保留为子任务」执行（不删除）'
+        }
+      }
+      // **兜住「模型把『挪出来』只做成改名」**：用户原话「我要把它从 DDI 治理里面
+      // 单独出来」，真机上模型给回来的却只有一条标题改动，卡片点下去只能改名。
+      // 根因是 `plan` 白名单曾经把空串丢掉，「挪到顶层」没有值可写（见 normPlanTarget）。
+      // 现在值有了，但模型**仍然可能压根不写这个键**——所以再按用户自己的话兜一道，
+      // 并把依据回显到卡上。判据同样只看 `body.text`，不猜模型的意思；
+      // 模型**已经给了**归属的改动一律不碰（那是它自己的判断，不要覆盖）。
+      if (editWantsDetach(String(body.text ?? ''))) {
+        for (const e of parsed.edits) {
+          if (e.patch.plan !== undefined) continue
+          e.patch.plan = '顶层'
+          e.detachNote = '按你话里的「单独出来」，这条已从原计划挪到顶层'
         }
       }
       // **已有同名任务的「草稿」不是新建，是归位/改动。**
@@ -1362,6 +1404,12 @@ export function apply(ctx) {
           target: e.target,
           patch: e.patch,
           why: e.why,
+          // `options` 与 `detachNote` 是 normEdits 算好、面板要用的东西。
+          // 曾经只透传前三个，于是「可以这样：」那排按钮**永远不出**（面板读的是
+          // edit.options，host 从没给过），「按你话里的『单独出来』已挪到顶层」
+          // 也就没有依据可说——降级不是把字段丢了，是把**人要看见的东西**丢了。
+          options: Array.isArray(e.options) ? e.options : [],
+          detachNote: typeof e.detachNote === 'string' ? e.detachNote : '',
           id: hit === null ? null : String(hit.id ?? ''),
           ok: hit !== null,
         }
